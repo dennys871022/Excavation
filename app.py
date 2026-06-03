@@ -7,7 +7,7 @@ import os
 
 st.set_page_config(page_title="網格生成與方量計算", layout="wide")
 
-st.title("土方開挖分區與方量基準建置 (指定座標定稿版)")
+st.title("土方開挖分區與方量基準建置 (指定絕對座標版)")
 
 st.sidebar.header("1. 主網格起點座標")
 base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
@@ -16,11 +16,7 @@ base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, f
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
-st.sidebar.header("2. 滯洪池絕對 X 座標")
-bc_x_input = st.sidebar.text_input("滯洪池 B.C 區 (逗號分隔)", "-2764.564, -2758.414, -2749.464")
-a_x_input = st.sidebar.text_input("滯洪池 A 區 (逗號分隔)", "-2606.064, -2592.819")
-
-st.sidebar.header("3. 邊界微調與深度")
+st.sidebar.header("2. 邊界微調與深度")
 e_ext = st.sidebar.number_input("E1至3 底部延伸納入量 (m)", value=3.0, step=0.5)
 depth_input = st.sidebar.text_input("各階開挖深度 (逗號分隔)", "2.5, 3.0, 3.5, 2.0")
 
@@ -37,7 +33,6 @@ try:
     base_x = base_x_input / scale_factor
     base_y = base_y_input / scale_factor
 
-    # 運算主網格座標
     x_coords1 = [base_x] + list(base_x + np.cumsum(dx1))
     y_coords1 = [base_y] + list(base_y + np.cumsum(dy1))
 
@@ -96,16 +91,15 @@ try:
             })
             grid_index += 1
 
-    # 3. 生成滯洪池 B.C 區
-    bc_x_vals = [float(x.strip()) for x in bc_x_input.split(",")]
-    xl = sorted(bc_x_vals + [base_x])
-    yl = [y_coords1[1], y_coords1[2], y_coords1[3]]
+    # 3. 生成滯洪池 B.C 區 (完全使用指定座標)
+    bc_x = [-2764.56, -2758.41, -2749.46]
+    bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
     
     idx_l = 1
-    for j in range(len(yl)-1):
-        for i in range(len(xl)-1):
-            x_min, x_max = xl[i], xl[i+1]
-            y_max, y_min = yl[j], yl[j+1]
+    for j in range(len(bc_y)-1):
+        for i in range(len(bc_x)-1):
+            x_min, x_max = bc_x[i], bc_x[i+1]
+            y_max, y_min = bc_y[j], bc_y[j+1]
             grid_id = f"滯洪池B.C{idx_l}"
             
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
@@ -123,20 +117,15 @@ try:
             grid_index += 1
             idx_l += 1
 
-    # 4. 生成滯洪池 A 區
-    a_x_vals = [float(x.strip()) for x in a_x_input.split(",")]
-    # 補齊第三跨的寬度
-    if len(a_x_vals) >= 2:
-        last_width = a_x_vals[-1] - a_x_vals[-2]
-        a_x_vals.append(a_x_vals[-1] + last_width)
-    xr = sorted([x_coords2[-1]] + a_x_vals)
-    yr = [y_coords2[0], y_coords2[1]]
+    # 4. 生成滯洪池 A 區 (完全使用指定座標)
+    a_x = [-2606.06, -2592.82]
+    a_y = [-276.14, -284.44, -290.24, -296.04]
     
     idx_r = 1
-    for j in range(len(yr)-1):
-        for i in range(min(len(xr)-1, 3)):
-            x_min, x_max = xr[i], xr[i+1]
-            y_max, y_min = yr[j], yr[j+1]
+    for j in range(len(a_y)-1):
+        for i in range(len(a_x)-1):
+            x_min, x_max = a_x[i], a_x[i+1]
+            y_max, y_min = a_y[j], a_y[j+1]
             grid_id = f"滯洪池A{idx_r}"
             
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
