@@ -12,7 +12,7 @@ st.sidebar.header("1. 絕對座標與圖資")
 base_x_input = st.sidebar.number_input("起點 X 座標", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("起點 Y 座標", value=-24009.49, format="%.2f")
 
-st.sidebar.info("系統將自動讀取同目錄下的「樁心座標.csv」")
+st.sidebar.info("系統將自動讀取同目錄下的「柱心座標.csv」")
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
@@ -53,7 +53,7 @@ try:
     for j in range(len(dy1)):
         for i in range(len(dx1)):
             if i >= 3 and j >= 2: 
-                continue # 完全跳過 C4-6, D4-6, E4-6
+                continue 
                 
             grid_id = f"{y_labels1[j]}{i+1}"
             x_min, x_max = x_coords1[i], x_coords1[i+1]
@@ -98,7 +98,7 @@ try:
             })
             grid_index += 1
 
-    # 3. 生成左側滯洪池 B.C1-6 (2x3網格)
+    # 3. 生成左側滯洪池 B.C1-6
     dx_l_list = [float(x.strip()) for x in dx_l_input.split(",")]
     xl = [base_x - sum(dx_l_list), base_x - dx_l_list[1], base_x]
     yl = [y_coords1[2], y_coords1[3], y_coords1[4], y_coords1[5] - e_ext]
@@ -123,7 +123,7 @@ try:
             grid_index += 1
             idx_l += 1
 
-    # 4. 生成右側滯洪池 A1-3 (1x3網格)
+    # 4. 生成右側滯洪池 A1-3
     xr = [x_coords2[-1], x_coords2[-1] + dx_r_input]
     yr = [y_coords2[3], y_coords2[4], y_coords2[5], y_coords2[6]]
     
@@ -193,9 +193,9 @@ try:
                 text=row['分區代號'], showarrow=False, font=dict(color="red", size=12)
             )
 
-        # 直接讀取同目錄下的樁心座標
+        # 讀取柱心座標
         try:
-            df_cols = pd.read_csv("樁心座標.csv")
+            df_cols = pd.read_csv("柱心座標.csv")
             x_col = next((c for c in df_cols.columns if 'X' in c.upper()), None)
             y_col = next((c for c in df_cols.columns if 'Y' in c.upper()), None)
             
@@ -203,18 +203,17 @@ try:
                 fig.add_trace(go.Scatter(
                     x=df_cols[x_col] / scale_factor, 
                     y=df_cols[y_col] / scale_factor,
-                    mode='markers', name='實體樁心點位',
+                    mode='markers', name='實體柱心點位',
                     marker=dict(size=6, color='black', symbol='square'),
                     showlegend=True
                 ))
             else:
-                st.warning("「樁心座標.csv」中找不到 X 或 Y 欄位。")
+                st.warning("「柱心座標.csv」中找不到 X 或 Y 欄位。")
         except FileNotFoundError:
-            st.warning("找不到「樁心座標.csv」，請確認檔案已存在 GitHub 同目錄中。")
+            st.warning("找不到「柱心座標.csv」，請確認檔案已存在 GitHub 同目錄中。")
         except Exception as e:
-            st.warning(f"無法讀取樁心資料。錯誤：{e}")
+            st.warning(f"無法讀取柱心資料。錯誤：{e}")
 
-        # 設定 CAD 級距的操作手感
         fig.update_layout(
             dragmode='pan', 
             xaxis_title="絕對 X 座標 (m)", yaxis_title="絕對 Y 座標 (m)",
@@ -223,7 +222,6 @@ try:
             margin=dict(l=20, r=20, t=30, b=20)
         )
         
-        # 啟用滾輪縮放，關閉多餘的選取工具
         st.plotly_chart(fig, use_container_width=True, config={
             'scrollZoom': True,
             'displayModeBar': True,
