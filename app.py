@@ -16,9 +16,11 @@ base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, f
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
-st.sidebar.header("2. 邊界微調與深度")
-e_ext = st.sidebar.number_input("E1至3 底部延伸納入量 (m)", value=3.0, step=0.5)
+st.sidebar.header("2. 開挖深度設定")
 depth_input = st.sidebar.text_input("各階開挖深度 (逗號分隔)", "2.5, 3.0, 3.5, 2.0")
+
+# 寫死 E1-E3 的底部延伸量
+e_ext = 3.25 
 
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
@@ -91,7 +93,7 @@ try:
             })
             grid_index += 1
 
-    # 3. 生成滯洪池 B.C 區 (完全使用指定座標)
+    # 3. 生成滯洪池 B.C 區 (指定座標並剔除 1、3)
     bc_x = [-2764.56, -2758.41, -2749.46]
     bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
     
@@ -100,6 +102,12 @@ try:
         for i in range(len(bc_x)-1):
             x_min, x_max = bc_x[i], bc_x[i+1]
             y_max, y_min = bc_y[j], bc_y[j+1]
+            
+            # 略過 BC1 與 BC3
+            if idx_l in [1, 3]:
+                idx_l += 1
+                continue
+                
             grid_id = f"滯洪池B.C{idx_l}"
             
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
