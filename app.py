@@ -9,17 +9,18 @@ st.set_page_config(page_title="網格生成與方量計算", layout="wide")
 st.title("土方開挖分區與方量基準建置 (絕對座標疊圖版)")
 
 st.sidebar.header("1. 絕對座標基準點")
-st.sidebar.info("設定 1軸與A軸交點 (左上角起始點)")
-base_x = st.sidebar.number_input("起點 X 座標", value=-274.7664, format="%.5f")
-base_y = st.sidebar.number_input("起點 Y 座標", value=-24.00949, format="%.5f")
+st.sidebar.info("設定 1軸與A軸交點 (請輸入CAD原始座標)")
+base_x_input = st.sidebar.number_input("起點 X 座標", value=-274766.4, format="%.2f")
+base_y_input = st.sidebar.number_input("起點 Y 座標", value=-24009.49, format="%.2f")
 
 st.sidebar.header("2. 匯入檢核圖資 (選填)")
 column_file = st.sidebar.file_uploader("上傳實體座標 CSV (需含 X, Y 欄位)", type=["csv"])
+scale_option = st.sidebar.selectbox("CAD圖資單位 (統一轉換為公尺)", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
+scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
 st.sidebar.header("3. 開挖深度設定")
 depth_input = st.sidebar.text_input("各階開挖深度 (以逗號分隔，共4階)", "2.5, 3.0, 3.5, 2.0")
 
-# 系統後台直接定義圖面參數：拆分左右兩大區域
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
 y_labels1 = ["A", "B", "C", "D", "E", "F"]
@@ -31,11 +32,13 @@ y_labels2 = ["A", "B'", "C'", "D'", "E", "E'", "F'", "G"]
 try:
     depths = [float(d.strip()) for d in depth_input.split(",")]
 
-    # 運算左區座標 (加上絕對座標平移)
+    # 將輸入的 CAD 座標轉換為公尺
+    base_x = base_x_input / scale_factor
+    base_y = base_y_input / scale_factor
+
     x_coords1 = [base_x] + list(base_x + np.cumsum(dx1))
     y_coords1 = [base_y] + list(base_y + np.cumsum(dy1))
 
-    # 運算右區座標 (X軸接續左區終點，Y軸同樣加上絕對座標平移)
     x_offset = x_coords1[-1]
     x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
     y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
@@ -43,7 +46,7 @@ try:
     results = []
     grid_index = 0
     
-    # 建立左區網格
+    # 左區網格
     for j in range(len(dy1)):
         for i in range(len(dx1)):
             grid_id = f"{y_labels1[j]}{i+1}"
@@ -54,7 +57,6 @@ try:
             area = poly.area
             vols = [area * d for d in depths]
             
-            # 左區挖空判定
             is_excavated = not (i >= 3 and j >= 3)
             
             results.append({
@@ -68,7 +70,7 @@ try:
             })
             grid_index += 1
 
-    # 建立右區網格
+    # 右區網格
     for j in range(len(dy2)):
         for i in range(len(dx2)):
             grid_id = f"{y_labels2[j]}{i+7}" 
@@ -79,7 +81,6 @@ try:
             area = poly.area
             vols = [area * d for d in depths]
             
-            # 右區全保留
             is_excavated = True
             
             results.append({
@@ -126,7 +127,6 @@ try:
         st.write("### 步驟二：精準網格地圖")
         fig = go.Figure()
         
-        # 繪製網格
         for idx, row in edited_df.iterrows():
             if row['保留開挖區']:
                 r_data = df_results.iloc[idx]
@@ -146,15 +146,16 @@ try:
                     text=row['分區代號'], showarrow=False, font=dict(color="red", size=12)
                 )
 
-        # 繪製匯入的實體座標
         if column_file is not None:
             df_cols = pd.read_csv(column_file)
             x_col = next((c for c in df_cols.columns if 'X' in c.upper()), None)
             y_col = next((c for c in df_cols.columns if 'Y' in c.upper()), None)
             
             if x_col and y_col:
+                # 將匯入的 CSV 座標依比例縮放至公尺
                 fig.add_trace(go.Scatter(
-                    x=df_cols[x_col], y=df_cols[y_col],
+                    x=df_cols[x_col] / scale_factor, 
+                    y=df_cols[y_col] / scale_factor,
                     mode='markers', name='實體圖資點位',
                     marker=dict(size=6, color='black', symbol='square'),
                     showlegend=True
