@@ -6,33 +6,37 @@ from shapely.geometry import Polygon
 
 st.set_page_config(page_title="網格生成與方量計算", layout="wide")
 
-st.title("土方開挖分區與方量基準建置 (絕對座標疊圖版)")
+st.title("土方開挖分區與方量基準建置 (雲端圖資定稿版)")
 
 st.sidebar.header("1. 絕對座標基準點")
-st.sidebar.info("設定 1軸與A軸交點 (請輸入CAD原始座標)")
 base_x_input = st.sidebar.number_input("起點 X 座標", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("起點 Y 座標", value=-24009.49, format="%.2f")
 
-st.sidebar.header("2. 匯入檢核圖資 (選填)")
-column_file = st.sidebar.file_uploader("上傳實體座標 CSV (需含 X, Y 欄位)", type=["csv"])
-scale_option = st.sidebar.selectbox("CAD圖資單位 (統一轉換為公尺)", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
+st.sidebar.header("2. 雲端柱位圖資")
+st.sidebar.info("請貼上 GitHub CSV 檔案的 Raw 網址")
+github_csv_url = st.sidebar.text_input(
+    "GitHub CSV 網址", 
+    "https://raw.githubusercontent.com/你的帳號/你的專案/main/你的檔案.csv"
+)
+scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
 st.sidebar.header("3. 開挖深度設定")
-depth_input = st.sidebar.text_input("各階開挖深度 (以逗號分隔，共4階)", "2.5, 3.0, 3.5, 2.0")
+depth_input = st.sidebar.text_input("各階開挖深度 (逗號分隔)", "2.5, 3.0, 3.5, 2.0")
 
+# 左區：保留 A、B 軸全區，C、D、E 軸第4跨後挖空
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
-y_labels1 = ["A", "B", "C", "D", "E", "F"]
+y_labels1 = ["A", "B", "C", "D", "E"]
 
+# 右區：合併 D' 與 E 形成 9.3m 跨距
 dx2 = [6.9, 9.0, 9.0, 9.3, 9.3, 9.3, 9.3, 9.0, 9.0, 6.0]
-dy2 = [-11.25, -9.0, -9.3, -3.45, -5.85, -9.3, -7.5]
-y_labels2 = ["A", "B'", "C'", "D'", "E", "E'", "F'", "G"]
+dy2 = [-11.25, -9.0, -9.3, -9.3, -9.3, -7.5] 
+y_labels2 = ["A", "B'", "C'", "D'", "E'", "F'"]
 
 try:
     depths = [float(d.strip()) for d in depth_input.split(",")]
 
-    # 將輸入的 CAD 座標轉換為公尺
     base_x = base_x_input / scale_factor
     base_y = base_y_input / scale_factor
 
@@ -46,7 +50,7 @@ try:
     results = []
     grid_index = 0
     
-    # 左區網格
+    # 生成左區網格
     for j in range(len(dy1)):
         for i in range(len(dx1)):
             grid_id = f"{y_labels1[j]}{i+1}"
@@ -57,7 +61,8 @@ try:
             area = poly.area
             vols = [area * d for d in depths]
             
-            is_excavated = not (i >= 3 and j >= 3)
+            # C4以後挖空邏輯 (j>=2 代表 C,D,E 軸；i>=3 代表第4跨起)
+            is_excavated = not (i >= 3 and j >= 2)
             
             results.append({
                 "系統編號": grid_index, "保留開挖區": is_excavated, "分區代號": grid_id,
@@ -70,7 +75,7 @@ try:
             })
             grid_index += 1
 
-    # 右區網格
+    # 生成右區網格
     for j in range(len(dy2)):
         for i in range(len(dx2)):
             grid_id = f"{y_labels2[j]}{i+7}" 
@@ -99,7 +104,7 @@ try:
     col1, col2 = st.columns([3, 2])
     
     with col2:
-        st.write("### 步驟一：微調開挖邊界")
+        st.write("### 步驟一：檢視開挖邊界")
         edited_df = st.data_editor(
             df_results.drop(columns=['x_min', 'x_max', 'y_min', 'y_max', 'x_center', 'y_center']),
             column_config={
@@ -114,12 +119,12 @@ try:
         
         active_df = edited_df[edited_df["保留開挖區"] == True]
         total_vol = active_df["預估總土方"].sum()
-        st.success(f"目前有效開挖區預估總土方量： **{total_vol:,.2f} m³**")
+        st.success(f"有效開挖區預估總土方量： **{total_vol:,.2f} m³**")
 
         st.download_button(
             label="💾 下載定稿資料庫 (CSV)",
             data=active_df.to_csv(index=False).encode('utf-8-sig'),
-            file_name='土方開挖分區總表_絕對座標定稿.csv',
+            file_name='土方開挖分區總表_定稿.csv',
             mime='text/csv'
         )
 
@@ -146,22 +151,24 @@ try:
                     text=row['分區代號'], showarrow=False, font=dict(color="red", size=12)
                 )
 
-        if column_file is not None:
-            df_cols = pd.read_csv(column_file)
-            x_col = next((c for c in df_cols.columns if 'X' in c.upper()), None)
-            y_col = next((c for c in df_cols.columns if 'Y' in c.upper()), None)
-            
-            if x_col and y_col:
-                # 將匯入的 CSV 座標依比例縮放至公尺
-                fig.add_trace(go.Scatter(
-                    x=df_cols[x_col] / scale_factor, 
-                    y=df_cols[y_col] / scale_factor,
-                    mode='markers', name='實體圖資點位',
-                    marker=dict(size=6, color='black', symbol='square'),
-                    showlegend=True
-                ))
-            else:
-                st.warning("CSV 檔案中找不到 X 或 Y 欄位，無法繪製點位。")
+        if github_csv_url and github_csv_url.startswith("http"):
+            try:
+                df_cols = pd.read_csv(github_csv_url)
+                x_col = next((c for c in df_cols.columns if 'X' in c.upper()), None)
+                y_col = next((c for c in df_cols.columns if 'Y' in c.upper()), None)
+                
+                if x_col and y_col:
+                    fig.add_trace(go.Scatter(
+                        x=df_cols[x_col] / scale_factor, 
+                        y=df_cols[y_col] / scale_factor,
+                        mode='markers', name='實體圖資點位',
+                        marker=dict(size=6, color='black', symbol='square'),
+                        showlegend=True
+                    ))
+                else:
+                    st.warning("CSV 檔案中找不到 X 或 Y 欄位。")
+            except Exception as e:
+                st.warning(f"無法讀取 GitHub CSV，請確認網址是否為 Raw 格式。錯誤：{e}")
 
         fig.update_layout(
             xaxis_title="絕對 X 座標 (m)", yaxis_title="絕對 Y 座標 (m)",
