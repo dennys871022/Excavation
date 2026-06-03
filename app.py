@@ -6,18 +6,14 @@ from shapely.geometry import Polygon
 
 st.set_page_config(page_title="網格生成與方量計算", layout="wide")
 
-st.title("土方開挖分區與方量基準建置 (雲端圖資定稿版)")
+st.title("土方開挖分區與方量基準建置 (同資料庫直讀版)")
 
 st.sidebar.header("1. 絕對座標基準點")
 base_x_input = st.sidebar.number_input("起點 X 座標", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("起點 Y 座標", value=-24009.49, format="%.2f")
 
-st.sidebar.header("2. 雲端柱位圖資")
-st.sidebar.info("請貼上 GitHub CSV 檔案的 Raw 網址")
-github_csv_url = st.sidebar.text_input(
-    "GitHub CSV 網址", 
-    "https://raw.githubusercontent.com/你的帳號/你的專案/main/你的檔案.csv"
-)
+st.sidebar.header("2. 實體圖資 (自動讀取)")
+st.sidebar.info("系統已設定自動讀取同資料夾下的「柱心座標.csv」")
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
@@ -61,7 +57,7 @@ try:
             area = poly.area
             vols = [area * d for d in depths]
             
-            # C4以後挖空邏輯 (j>=2 代表 C,D,E 軸；i>=3 代表第4跨起)
+            # C4以後挖空邏輯
             is_excavated = not (i >= 3 and j >= 2)
             
             results.append({
@@ -151,24 +147,26 @@ try:
                     text=row['分區代號'], showarrow=False, font=dict(color="red", size=12)
                 )
 
-        if github_csv_url and github_csv_url.startswith("http"):
-            try:
-                df_cols = pd.read_csv(github_csv_url)
-                x_col = next((c for c in df_cols.columns if 'X' in c.upper()), None)
-                y_col = next((c for c in df_cols.columns if 'Y' in c.upper()), None)
-                
-                if x_col and y_col:
-                    fig.add_trace(go.Scatter(
-                        x=df_cols[x_col] / scale_factor, 
-                        y=df_cols[y_col] / scale_factor,
-                        mode='markers', name='實體圖資點位',
-                        marker=dict(size=6, color='black', symbol='square'),
-                        showlegend=True
-                    ))
-                else:
-                    st.warning("CSV 檔案中找不到 X 或 Y 欄位。")
-            except Exception as e:
-                st.warning(f"無法讀取 GitHub CSV，請確認網址是否為 Raw 格式。錯誤：{e}")
+        # 直接讀取同目錄下的 CSV 檔案
+        try:
+            df_cols = pd.read_csv("柱心座標.csv")
+            x_col = next((c for c in df_cols.columns if 'X' in c.upper()), None)
+            y_col = next((c for c in df_cols.columns if 'Y' in c.upper()), None)
+            
+            if x_col and y_col:
+                fig.add_trace(go.Scatter(
+                    x=df_cols[x_col] / scale_factor, 
+                    y=df_cols[y_col] / scale_factor,
+                    mode='markers', name='實體圖資點位',
+                    marker=dict(size=6, color='black', symbol='square'),
+                    showlegend=True
+                ))
+            else:
+                st.warning("「柱心座標.csv」中找不到 X 或 Y 欄位。")
+        except FileNotFoundError:
+            st.warning("找不到「柱心座標.csv」，請確認檔案已上傳至 GitHub 且檔名完全相符。")
+        except Exception as e:
+            st.warning(f"無法讀取檔案。錯誤：{e}")
 
         fig.update_layout(
             xaxis_title="絕對 X 座標 (m)", yaxis_title="絕對 Y 座標 (m)",
