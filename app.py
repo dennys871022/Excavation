@@ -44,7 +44,7 @@ try:
     x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
     y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
 
-    # 自動偵測滯洪池寬度
+    # 自動偵測滯洪池寬度，若無檔案則給予預設值
     dx_l_list = [5.0, 5.0]
     dx_r = 6.0
     
@@ -71,7 +71,8 @@ try:
     # 1. 生成左區網格
     for j in range(len(dy1)):
         for i in range(len(dx1)):
-            if i >= 3 and j >= 2: 
+            # 挖空 C4-6, D4-6, E4-6
+            if j >= 2 and i >= 3: 
                 continue 
                 
             grid_id = f"{y_labels1[j]}{i+1}"
@@ -116,7 +117,7 @@ try:
             })
             grid_index += 1
 
-    # 3. 生成左側滯洪池 B.C1至6
+    # 3. 生成左側滯洪池 B.C1至6 (對齊 C, D, E 軸)
     xl = [base_x - sum(dx_l_list), base_x - dx_l_list[1], base_x]
     yl = [y_coords1[2], y_coords1[3], y_coords1[4], y_coords1[5] - e_ext]
     
@@ -140,7 +141,7 @@ try:
             grid_index += 1
             idx_l += 1
 
-    # 4. 生成右側滯洪池 A1至3
+    # 4. 生成右側滯洪池 A1至3 (對齊 D', E', F' 軸)
     xr = [x_coords2[-1], x_coords2[-1] + dx_r]
     yr = [y_coords2[3], y_coords2[4], y_coords2[5], y_coords2[6]]
     
