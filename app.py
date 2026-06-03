@@ -7,20 +7,21 @@ import os
 
 st.set_page_config(page_title="網格生成與方量計算", layout="wide")
 
-st.title("土方開挖分區與方量基準建置 (圖資自動捕捉版)")
+st.title("土方開挖分區與方量基準建置 (絕對座標鎖定版)")
 
-st.sidebar.header("1. 絕對座標與圖資")
-base_x_input = st.sidebar.number_input("起點 X 座標", value=-274766.4, format="%.2f")
-base_y_input = st.sidebar.number_input("起點 Y 座標", value=-24009.49, format="%.2f")
+st.sidebar.header("1. 主網格起點座標")
+base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
+base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
 
-st.sidebar.info("系統強制自動讀取「柱心座標.csv」捕捉邊界。")
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
-st.sidebar.header("2. 邊界微調參數")
-e_ext = st.sidebar.number_input("E1至3 底部延伸納入量 (m)", value=3.0, step=0.5)
+st.sidebar.header("2. 滯洪池絕對 X 座標")
+bc_x_input = st.sidebar.text_input("滯洪池 B.C 區 (逗號分隔)", "-2764.564, -2758.414, -2749.464")
+a_x_input = st.sidebar.text_input("滯洪池 A 區 (逗號分隔)", "-2606.064, -2592.819")
 
-st.sidebar.header("3. 開挖深度設定")
+st.sidebar.header("3. 邊界微調與深度")
+e_ext = st.sidebar.number_input("E1至3 底部延伸納入量 (m)", value=3.0, step=0.5)
 depth_input = st.sidebar.text_input("各階開挖深度 (逗號分隔)", "2.5, 3.0, 3.5, 2.0")
 
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
@@ -43,38 +44,17 @@ try:
     x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
     y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
 
-    # 捕捉 CSV 實體點位 X 座標
-    unique_x = []
-    if os.path.exists("柱心座標.csv"):
-        try:
-            df_c = pd.read_csv("柱心座標.csv")
-            xc = next((c for c in df_c.columns if 'X' in c.upper()), None)
-            if xc:
-                unique_x = sorted(list(set(np.round(df_c[xc] / scale_factor, 2))))
-        except Exception:
-            pass
+    # 組合並排序滯洪池 X 邊界
+    bc_x_vals = [float(x.strip()) for x in bc_x_input.split(",")]
+    xl = sorted(bc_x_vals + [base_x])
 
-    # 左側滯洪池 X 邊界防呆捕捉
-    xl_points = [x for x in unique_x if x < base_x - 0.5]
-    if len(xl_points) >= 3:
-        xl = xl_points[-3:] + [base_x]
-    else:
-        xl = [base_x - 15.0, base_x - 10.0, base_x - 5.0, base_x]
-    xl = sorted(xl)
-
-    # 右側滯洪池 X 邊界防呆捕捉
-    end_x = x_coords2[-1]
-    xr_points = [x for x in unique_x if x > end_x + 0.5]
-    if len(xr_points) >= 3:
-        xr = [end_x] + xr_points[:3]
-    else:
-        xr = [end_x, end_x + 6.0, end_x + 12.0, end_x + 18.0]
-    xr = sorted(xr)
+    a_x_vals = [float(x.strip()) for x in a_x_input.split(",")]
+    xr = sorted([x_coords2[-1]] + a_x_vals)
 
     results = []
     grid_index = 0
     
-    # 1. 生成左區主網格 (自動剔除無效區)
+    # 1. 生成左區主網格
     for j in range(len(dy1)):
         for i in range(len(dx1)):
             if j >= 2 and i >= 3: 
@@ -122,19 +102,21 @@ try:
             })
             grid_index += 1
 
-    # 3. 生成左側滯洪池 B.C1至6
+    # 3. 生成滯洪池 B.C 區
     yl = [y_coords1[1], y_coords1[2], y_coords1[3]]
-    basin_l_names = ["滯洪池B.C1", "滯洪池B.C2", "滯洪池B.C3", "滯洪池B.C4", "滯洪池B.C5", "滯洪池B.C6"]
-    idx_l = 0
-    for j in range(2):
-        for i in range(3):
+    idx_l = 1
+    for j in range(len(yl)-1):
+        for i in range(len(xl)-1):
             x_min, x_max = xl[i], xl[i+1]
             y_max, y_min = yl[j], yl[j+1]
+            grid_id = f"滯洪池B.C{idx_l}"
+            
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             area = poly.area
             vols = [area * d for d in depths]
+            
             results.append({
-                "系統編號": grid_index, "分區代號": basin_l_names[idx_l], "面積 (m²)": round(area, 2),
+                "系統編號": grid_index, "分區代號": grid_id, "面積 (m²)": round(area, 2),
                 "一階土方": round(vols[0], 2), "二階土方": round(vols[1], 2),
                 "三階土方": round(vols[2], 2), "四階土方": round(vols[3], 2),
                 "預估總土方": round(sum(vols), 2),
@@ -144,17 +126,20 @@ try:
             grid_index += 1
             idx_l += 1
 
-    # 4. 生成右側滯洪池 A1至3
+    # 4. 生成滯洪池 A 區
     yr = [y_coords2[0], y_coords2[1]]
-    basin_r_names = ["滯洪池A1", "滯洪池A2", "滯洪池A3"]
-    for i in range(3):
+    idx_r = 1
+    for i in range(len(xr)-1):
         x_min, x_max = xr[i], xr[i+1]
         y_max, y_min = yr[0], yr[1]
+        grid_id = f"滯洪池A{idx_r}"
+        
         poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
         area = poly.area
         vols = [area * d for d in depths]
+        
         results.append({
-            "系統編號": grid_index, "分區代號": basin_r_names[i], "面積 (m²)": round(area, 2),
+            "系統編號": grid_index, "分區代號": grid_id, "面積 (m²)": round(area, 2),
             "一階土方": round(vols[0], 2), "二階土方": round(vols[1], 2),
             "三階土方": round(vols[2], 2), "四階土方": round(vols[3], 2),
             "預估總土方": round(sum(vols), 2),
@@ -162,6 +147,7 @@ try:
             "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
         })
         grid_index += 1
+        idx_r += 1
 
     df_results = pd.DataFrame(results)
 
