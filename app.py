@@ -6,12 +6,17 @@ from shapely.geometry import Polygon
 
 st.set_page_config(page_title="網格生成與方量計算", layout="wide")
 
-st.title("土方開挖分區與方量基準建置 (雙網格+柱位檢核版)")
+st.title("土方開挖分區與方量基準建置 (絕對座標疊圖版)")
 
-st.sidebar.header("1. 匯入檢核圖資 (選填)")
-column_file = st.sidebar.file_uploader("上傳柱位座標 CSV (需含 X, Y 欄位)", type=["csv"])
+st.sidebar.header("1. 絕對座標基準點")
+st.sidebar.info("設定 1軸與A軸交點 (左上角起始點)")
+base_x = st.sidebar.number_input("起點 X 座標", value=-274.7664, format="%.5f")
+base_y = st.sidebar.number_input("起點 Y 座標", value=-24.00949, format="%.5f")
 
-st.sidebar.header("2. 開挖深度設定")
+st.sidebar.header("2. 匯入檢核圖資 (選填)")
+column_file = st.sidebar.file_uploader("上傳實體座標 CSV (需含 X, Y 欄位)", type=["csv"])
+
+st.sidebar.header("3. 開挖深度設定")
 depth_input = st.sidebar.text_input("各階開挖深度 (以逗號分隔，共4階)", "2.5, 3.0, 3.5, 2.0")
 
 # 系統後台直接定義圖面參數：拆分左右兩大區域
@@ -26,12 +31,14 @@ y_labels2 = ["A", "B'", "C'", "D'", "E", "E'", "F'", "G"]
 try:
     depths = [float(d.strip()) for d in depth_input.split(",")]
 
-    x_coords1 = [0.0] + list(np.cumsum(dx1))
-    y_coords1 = [0.0] + list(np.cumsum(dy1))
+    # 運算左區座標 (加上絕對座標平移)
+    x_coords1 = [base_x] + list(base_x + np.cumsum(dx1))
+    y_coords1 = [base_y] + list(base_y + np.cumsum(dy1))
 
+    # 運算右區座標 (X軸接續左區終點，Y軸同樣加上絕對座標平移)
     x_offset = x_coords1[-1]
     x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
-    y_coords2 = [0.0] + list(np.cumsum(dy2))
+    y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
 
     results = []
     grid_index = 0
@@ -47,6 +54,7 @@ try:
             area = poly.area
             vols = [area * d for d in depths]
             
+            # 左區挖空判定
             is_excavated = not (i >= 3 and j >= 3)
             
             results.append({
@@ -71,6 +79,7 @@ try:
             area = poly.area
             vols = [area * d for d in depths]
             
+            # 右區全保留
             is_excavated = True
             
             results.append({
@@ -109,7 +118,7 @@ try:
         st.download_button(
             label="💾 下載定稿資料庫 (CSV)",
             data=active_df.to_csv(index=False).encode('utf-8-sig'),
-            file_name='土方開挖分區總表_定稿.csv',
+            file_name='土方開挖分區總表_絕對座標定稿.csv',
             mime='text/csv'
         )
 
@@ -137,25 +146,24 @@ try:
                     text=row['分區代號'], showarrow=False, font=dict(color="red", size=12)
                 )
 
-        # 繪製匯入的柱位座標
+        # 繪製匯入的實體座標
         if column_file is not None:
             df_cols = pd.read_csv(column_file)
-            # 自動尋找包含 X 或 Y 的欄位名稱
             x_col = next((c for c in df_cols.columns if 'X' in c.upper()), None)
             y_col = next((c for c in df_cols.columns if 'Y' in c.upper()), None)
             
             if x_col and y_col:
                 fig.add_trace(go.Scatter(
                     x=df_cols[x_col], y=df_cols[y_col],
-                    mode='markers', name='實體柱位',
-                    marker=dict(size=8, color='black', symbol='square'),
+                    mode='markers', name='實體圖資點位',
+                    marker=dict(size=6, color='black', symbol='square'),
                     showlegend=True
                 ))
             else:
-                st.warning("CSV 檔案中找不到 X 或 Y 欄位，無法繪製柱位。")
+                st.warning("CSV 檔案中找不到 X 或 Y 欄位，無法繪製點位。")
 
         fig.update_layout(
-            xaxis_title="X 座標 (m)", yaxis_title="Y 座標 (m)",
+            xaxis_title="絕對 X 座標 (m)", yaxis_title="絕對 Y 座標 (m)",
             yaxis=dict(scaleanchor="x", scaleratio=1),
             height=700, template="plotly_white",
             margin=dict(l=20, r=20, t=30, b=20)
