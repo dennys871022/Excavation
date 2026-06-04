@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from shapely.geometry import Polygon
 import os
-from datetime import date
+from datetime import datetime, timedelta, date
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="後台管理端", layout="wide")
@@ -20,11 +20,9 @@ except Exception as e:
 
 def load_sheet_data(sheet_name):
     try:
-        # 加上 ttl=0 強制每次重新讀取，避免抓到舊的錯誤快取
         df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
         return df.dropna(how='all')
     except Exception as e:
-        # 前台端如果是 except: 就維持原樣即可
         st.warning(f"無法讀取分頁 `{sheet_name}`。錯誤：{e}")
         return pd.DataFrame()
 
@@ -180,25 +178,44 @@ with tab_stats:
     df_logs = load_sheet_data("dispatch_logs")
     
     if not df_logs.empty and "日期" in df_logs.columns:
-        today_str = date.today().strftime("%Y-%m-%d")
-        today_logs = df_logs[df_logs['日期'].astype(str) == today_str]
+        # 轉換台灣時間
+        tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
+        today_str = tw_today.strftime("%Y-%m-%d")
+        
+        # 排除備註為「1分鐘內連續查詢」的無效紀錄
+        valid_logs = df_logs[df_logs['備註'] != '1分鐘內連續查詢'].copy()
+        today_logs = valid_logs[valid_logs['日期'].astype(str) == today_str]
         
         today_trucks = today_logs['車頭車號'].nunique() if '車頭車號' in today_logs.columns else 0
         today_trips = len(today_logs)
         today_vol = pd.to_numeric(today_logs['載運方量(m³)'], errors='coerce').sum() if '載運方量(m³)' in today_logs.columns else 0
         
-        st.markdown("#### 📅 今日出土概況")
+        st.markdown("#### 📅 今日有效出土概況")
         m1, m2, m3 = st.columns(3)
         m1.metric("今日派車數", f"{today_trucks} 輛")
         m2.metric("今日總車次", f"{today_trips} 趟")
         m3.metric("今日實挖方量", f"{today_vol:,.2f} m³")
         st.divider()
 
+        st.markdown("#### ⚠️ 異常車次管理 (疑似重複查詢)")
+        df_error = df_logs[df_logs['備註'] == '1分鐘內連續查詢'].copy()
+        if not df_error.empty:
+            st.warning("下方為疑似重複刷卡的無效紀錄。若確認為有效車次，請清空「備註」欄位並點擊儲存，系統將重新計入方量。")
+            edited_error = st.data_editor(df_error, use_container_width=True)
+            if st.button("💾 儲存異常紀錄變更"):
+                df_logs.update(edited_error)
+                if save_sheet_data("dispatch_logs", df_logs):
+                    st.success("異常紀錄已更新！")
+                    st.rerun()
+        else:
+            st.success("目前無疑似重複車次紀錄。")
+        st.divider()
+
         st.markdown("#### ⚙️ 批量設定出土分區")
-        df_unassigned = df_logs[df_logs['出土分區'] == '未指定'].copy()
+        df_unassigned = valid_logs[valid_logs['出土分區'] == '未指定'].copy()
         
         if not df_unassigned.empty:
-            st.info(f"尚有 {len(df_unassigned)} 筆紀錄未指定分區，請勾選並套用。")
+            st.info(f"尚有 {len(df_unassigned)} 筆有效紀錄未指定分區，請勾選並套用。")
             df_unassigned.insert(0, '勾選', False)
             edited_unassigned = st.data_editor(
                 df_unassigned, 
@@ -227,12 +244,12 @@ with tab_stats:
                         else:
                             st.warning("請至少勾選一筆紀錄。")
         else:
-            st.success("目前所有紀錄皆已分配分區。")
+            st.success("目前所有有效紀錄皆已分配分區。")
 
         st.divider()
         st.markdown("#### 📍 各分區挖掘進度 (累計)")
-        if '出土分區' in df_logs.columns and '載運方量(m³)' in df_logs.columns:
-            df_assigned = df_logs[df_logs['出土分區'] != '未指定'].copy()
+        if '出土分區' in valid_logs.columns and '載運方量(m³)' in valid_logs.columns:
+            df_assigned = valid_logs[valid_logs['出土分區'] != '未指定'].copy()
             if not df_assigned.empty:
                 df_assigned['載運方量(m³)'] = pd.to_numeric(df_assigned['載運方量(m³)'], errors='coerce')
                 zone_grouped = df_assigned.groupby('出土分區')['載運方量(m³)'].sum().reset_index()
@@ -248,7 +265,12 @@ with tab_stats:
             else:
                 st.info("尚無已分配分區的統計資料。")
             
-        with st.expander("📂 檢視所有歷史紀錄"):
-            st.dataframe(df_logs.sort_values(['日期', '時間'], ascending=[False, False]), use_container_width=True)
+        with st.expander("📂 檢視所有歷史紀錄 (可直接編輯儲存)"):
+            edited_all = st.data_editor(df_logs.sort_values(['日期', '時間'], ascending=[False, False]), use_container_width=True)
+            if st.button("💾 儲存歷史紀錄修改"):
+                df_logs.update(edited_all)
+                if save_sheet_data("dispatch_logs", df_logs):
+                    st.success("歷史紀錄修改已儲存！")
+                    st.rerun()
     else:
         st.info("尚無出土紀錄。")
