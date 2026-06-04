@@ -43,7 +43,14 @@ with tab_grid:
     scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
     scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
     
-    depth_input = st.sidebar.text_input("各階開挖深度 (逗號分隔)", "2.5, 3.0, 3.5, 2.0")
+    st.sidebar.header("【各區開挖參數】")
+    st.sidebar.markdown("""
+    * **行政棟區域** (4挖): 總深 9.9m
+    * **實驗棟區域** (4挖): 總深 11.4m
+    * **滯洪池BC區** (2挖): 總深 7.6m
+    * **滯洪池A區** (2挖): 總深 7.85m
+    """)
+    
     e_ext = 3.25
 
     dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
@@ -54,7 +61,6 @@ with tab_grid:
     y_labels2 = ["A", "B'", "C'", "D'", "E'", "F'"]
 
     try:
-        depths = [float(d.strip()) for d in depth_input.split(",")]
         base_x = base_x_input / scale_factor
         base_y = base_y_input / scale_factor
 
@@ -65,6 +71,9 @@ with tab_grid:
         y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
 
         results = []
+        
+        # 1. 左區 (行政棟 A1~6 to E1~3)
+        depths_admin = [2.5, 1.95, 3.4, 2.05]
         for j in range(len(dy1)):
             for i in range(len(dx1)):
                 if j >= 2 and i >= 3: continue 
@@ -73,18 +82,22 @@ with tab_grid:
                 y_max, y_min = y_coords1[j], y_coords1[j+1]
                 if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
                 poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths]
+                vols = [poly.area * d for d in depths_admin]
                 results.append({"分區代號": grid_id, "面積 (m²)": round(poly.area, 2), "預估總土方": round(sum(vols), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
         
+        # 2. 右區 (實驗棟 A7~16 to F'7~16)
+        depths_lab = [2.5, 1.95, 3.4, 3.55]
         for j in range(len(dy2)):
             for i in range(len(dx2)):
                 grid_id = f"{y_labels2[j]}{i+7}" 
                 x_min, x_max = x_coords2[i], x_coords2[i+1]
                 y_max, y_min = y_coords2[j], y_coords2[j+1]
                 poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths]
+                vols = [poly.area * d for d in depths_lab]
                 results.append({"分區代號": grid_id, "面積 (m²)": round(poly.area, 2), "預估總土方": round(sum(vols), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
         
+        # 3. 滯洪池 B.C 區
+        depths_bc = [1.5, 6.1]
         bc_x = [-2764.56, -2758.41, -2749.46]
         bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
         idx_l = 1
@@ -96,10 +109,12 @@ with tab_grid:
                     idx_l += 1; continue
                 grid_id = f"滯洪池B.C{idx_l}"
                 poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths]
+                vols = [poly.area * d for d in depths_bc]
                 results.append({"分區代號": grid_id, "面積 (m²)": round(poly.area, 2), "預估總土方": round(sum(vols), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
                 idx_l += 1
 
+        # 4. 滯洪池 A 區
+        depths_a = [2.0, 5.85]
         a_x = [-2606.06, -2592.82]
         a_y = [-276.14, -284.44, -290.24, -296.04]
         idx_r = 1
@@ -109,7 +124,7 @@ with tab_grid:
                 y_max, y_min = a_y[j], a_y[j+1]
                 grid_id = f"滯洪池A{idx_r}"
                 poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths]
+                vols = [poly.area * d for d in depths_a]
                 results.append({"分區代號": grid_id, "面積 (m²)": round(poly.area, 2), "預估總土方": round(sum(vols), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
                 idx_r += 1
 
@@ -178,11 +193,9 @@ with tab_stats:
     df_logs = load_sheet_data("dispatch_logs")
     
     if not df_logs.empty and "日期" in df_logs.columns:
-        # 轉換台灣時間
         tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
         today_str = tw_today.strftime("%Y-%m-%d")
         
-        # 排除備註為「1分鐘內連續查詢」的無效紀錄
         valid_logs = df_logs[df_logs['備註'] != '1分鐘內連續查詢'].copy()
         today_logs = valid_logs[valid_logs['日期'].astype(str) == today_str]
         
