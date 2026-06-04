@@ -10,7 +10,6 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 營建土方後台管理系統")
 
-# 建立試算表連線
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
@@ -147,7 +146,7 @@ with tab_vehicle:
     
     df_drivers = load_sheet_data("車籍資料")
     if df_drivers.empty:
-        df_drivers = pd.DataFrame(columns=["姓名", "身分證", "車頭車號", "車斗車號", "標準載重(m³)"])
+        df_drivers = pd.DataFrame(columns=["姓名", "身分證", "車頭車號", "車斗車號"])
 
     uploaded_file = st.file_uploader("📥 匯入 Excel/CSV 檔案 (將覆蓋現有資料)", type=["csv", "xlsx", "xls"])
     if uploaded_file:
