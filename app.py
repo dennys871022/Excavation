@@ -34,13 +34,28 @@ def save_sheet_data(sheet_name, df):
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
         return False
 
-# 側邊欄統一運算圖資
-st.sidebar.header("【圖資與開挖基準設定】")
+st.sidebar.header("【圖資與各區開挖參數】")
 base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
-current_gl = st.sidebar.number_input("現地GL高程增減 (m)", value=0.0, step=0.1)
+
+st.sidebar.markdown("### 開挖深度與高程設定")
+current_gl = st.sidebar.number_input("現地GL高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高，增加第一挖土方；負值代表現地低，減少第一挖土方")
+
+depths_admin_input = st.sidebar.text_input("行政棟區域 (4挖)", "2.5, 1.95, 3.4, 2.05")
+depths_lab_input = st.sidebar.text_input("實驗棟區域 (4挖)", "2.5, 1.95, 3.4, 3.55")
+depths_bc_input = st.sidebar.text_input("滯洪池BC區 (2挖)", "1.5, 6.1")
+depths_a_input = st.sidebar.text_input("滯洪池A區 (2挖)", "2.0, 5.85")
+
+def get_adjusted_depths(input_str, gl_offset):
+    try:
+        d_list = [float(x.strip()) for x in input_str.split(",")]
+        if len(d_list) > 0:
+            d_list[0] = max(0.0, d_list[0] + gl_offset)
+        return d_list
+    except:
+        return []
 
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
@@ -60,8 +75,13 @@ try:
     x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
     y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
 
+    depths_admin = get_adjusted_depths(depths_admin_input, current_gl)
+    depths_lab = get_adjusted_depths(depths_lab_input, current_gl)
+    depths_bc = get_adjusted_depths(depths_bc_input, current_gl)
+    depths_a = get_adjusted_depths(depths_a_input, current_gl)
+
     results = []
-    depths_admin = [max(0, 2.5 + current_gl), 1.95, 3.4, 2.05]
+    
     for j in range(len(dy1)):
         for i in range(len(dx1)):
             if j >= 2 and i >= 3: continue 
@@ -72,7 +92,6 @@ try:
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             results.append({"分區代號": grid_id, "預估總土方": round(sum([poly.area * d for d in depths_admin]), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
     
-    depths_lab = [max(0, 2.5 + current_gl), 1.95, 3.4, 3.55]
     for j in range(len(dy2)):
         for i in range(len(dx2)):
             grid_id = f"{y_labels2[j]}{i+7}" 
@@ -81,7 +100,6 @@ try:
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             results.append({"分區代號": grid_id, "預估總土方": round(sum([poly.area * d for d in depths_lab]), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
     
-    depths_bc = [max(0, 1.5 + current_gl), 6.1]
     bc_x = [-2764.56, -2758.41, -2749.46]
     bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
     idx_l = 1
@@ -96,7 +114,6 @@ try:
             results.append({"分區代號": grid_id, "預估總土方": round(sum([poly.area * d for d in depths_bc]), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
             idx_l += 1
 
-    depths_a = [max(0, 2.0 + current_gl), 5.85]
     a_x = [-2606.06, -2592.82]
     a_y = [-276.14, -284.44, -290.24, -296.04]
     idx_r = 1
