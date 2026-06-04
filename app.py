@@ -178,9 +178,10 @@ with tab_stats:
         st.rerun()
 
     df_logs = load_sheet_data("dispatch_logs")
+    
     if not df_logs.empty and "日期" in df_logs.columns:
-        df_logs['日期'] = pd.to_datetime(df_logs['日期']).dt.date
-        today_logs = df_logs[df_logs['日期'] == date.today()]
+        today_str = date.today().strftime("%Y-%m-%d")
+        today_logs = df_logs[df_logs['日期'].astype(str) == today_str]
         
         today_trucks = today_logs['車頭車號'].nunique() if '車頭車號' in today_logs.columns else 0
         today_trips = len(today_logs)
@@ -192,22 +193,62 @@ with tab_stats:
         m2.metric("今日總車次", f"{today_trips} 趟")
         m3.metric("今日實挖方量", f"{today_vol:,.2f} m³")
         st.divider()
+
+        st.markdown("#### ⚙️ 批量設定出土分區")
+        df_unassigned = df_logs[df_logs['出土分區'] == '未指定'].copy()
         
-        st.markdown("#### 📍 各分區挖掘進度 (累計)")
-        if '出土分區' in df_logs.columns and '載運方量(m³)' in df_logs.columns:
-            df_logs['載運方量(m³)'] = pd.to_numeric(df_logs['載運方量(m³)'], errors='coerce')
-            zone_grouped = df_logs.groupby('出土分區')['載運方量(m³)'].sum().reset_index()
-            zone_grouped.rename(columns={'載運方量(m³)': '累計實挖方量'}, inplace=True)
+        if not df_unassigned.empty:
+            st.info(f"尚有 {len(df_unassigned)} 筆紀錄未指定分區，請勾選並套用。")
+            df_unassigned.insert(0, '勾選', False)
+            edited_unassigned = st.data_editor(
+                df_unassigned, 
+                hide_index=True, 
+                column_config={"勾選": st.column_config.CheckboxColumn(required=True)}
+            )
             
             df_zones = load_sheet_data("grid_zones")
-            if not df_zones.empty and "分區代號" in df_zones.columns:
-                baseline_dict = df_zones.set_index('分區代號')['預估總土方'].to_dict()
-                zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
-                zone_grouped['完成率(%)'] = (zone_grouped['累計實挖方量'] / zone_grouped['預估基準方量'] * 100).fillna(0).round(1)
+            zone_list = df_zones["分區代號"].tolist() if (not df_zones.empty and "分區代號" in df_zones.columns) else []
             
-            st.dataframe(zone_grouped, use_container_width=True, hide_index=True)
+            col_z1, col_z2 = st.columns([2, 1])
+            with col_z1:
+                selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇"] + zone_list)
+            with col_z2:
+                if st.button("套用到勾選的紀錄"):
+                    if selected_zone == "請選擇":
+                        st.error("請先選擇分區")
+                    else:
+                        checked_indices = edited_unassigned[edited_unassigned['勾選'] == True].index
+                        if len(checked_indices) > 0:
+                            original_indices = edited_unassigned.loc[checked_indices].index
+                            df_logs.loc[original_indices, '出土分區'] = selected_zone
+                            if save_sheet_data("dispatch_logs", df_logs):
+                                st.success(f"成功更新 {len(checked_indices)} 筆紀錄！")
+                                st.rerun()
+                        else:
+                            st.warning("請至少勾選一筆紀錄。")
+        else:
+            st.success("目前所有紀錄皆已分配分區。")
+
+        st.divider()
+        st.markdown("#### 📍 各分區挖掘進度 (累計)")
+        if '出土分區' in df_logs.columns and '載運方量(m³)' in df_logs.columns:
+            df_assigned = df_logs[df_logs['出土分區'] != '未指定'].copy()
+            if not df_assigned.empty:
+                df_assigned['載運方量(m³)'] = pd.to_numeric(df_assigned['載運方量(m³)'], errors='coerce')
+                zone_grouped = df_assigned.groupby('出土分區')['載運方量(m³)'].sum().reset_index()
+                zone_grouped.rename(columns={'載運方量(m³)': '累計實挖方量'}, inplace=True)
+                
+                df_zones = load_sheet_data("grid_zones")
+                if not df_zones.empty and "分區代號" in df_zones.columns:
+                    baseline_dict = df_zones.set_index('分區代號')['預估總土方'].to_dict()
+                    zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
+                    zone_grouped['完成率(%)'] = (zone_grouped['累計實挖方量'] / zone_grouped['預估基準方量'] * 100).fillna(0).round(1)
+                
+                st.dataframe(zone_grouped, use_container_width=True, hide_index=True)
+            else:
+                st.info("尚無已分配分區的統計資料。")
             
         with st.expander("📂 檢視所有歷史紀錄"):
-            st.dataframe(df_logs.sort_values('日期', ascending=False), use_container_width=True)
+            st.dataframe(df_logs.sort_values(['日期', '時間'], ascending=[False, False]), use_container_width=True)
     else:
         st.info("尚無出土紀錄。")
