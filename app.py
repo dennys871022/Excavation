@@ -10,7 +10,6 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 營建土方後台管理系統")
 
-# 指定試算表網址
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
 try:
@@ -21,7 +20,6 @@ except Exception as e:
 
 def load_sheet_data(sheet_name):
     try:
-        # 加上 spreadsheet=SHEET_URL
         df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name)
         return df.dropna(how='all')
     except Exception as e:
@@ -30,7 +28,6 @@ def load_sheet_data(sheet_name):
 
 def save_sheet_data(sheet_name, df):
     try:
-        # 加上 spreadsheet=SHEET_URL
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
         return True
     except Exception as e:
@@ -119,7 +116,7 @@ with tab_grid:
         df_results = pd.DataFrame(results)
         
         if st.button("🚀 推送分區資料至雲端試算表"):
-            if save_sheet_data("圖資基準", df_results[['分區代號', '預估總土方']]):
+            if save_sheet_data("grid_zones", df_results[['分區代號', '預估總土方']]):
                 st.success("分區基準已成功上傳！")
 
         col1, col2 = st.columns([3, 2])
@@ -149,7 +146,7 @@ with tab_grid:
 with tab_vehicle:
     st.write("### 📂 車籍資料庫管理")
     
-    df_drivers = load_sheet_data("車籍資料")
+    df_drivers = load_sheet_data("drivers")
     if df_drivers.empty:
         df_drivers = pd.DataFrame(columns=["姓名", "身分證", "車頭車號", "車斗車號"])
 
@@ -161,7 +158,7 @@ with tab_vehicle:
             else:
                 new_df = pd.read_excel(uploaded_file)
             new_df.columns = new_df.columns.str.replace(r'\s+', '', regex=True)
-            if save_sheet_data("車籍資料", new_df):
+            if save_sheet_data("drivers", new_df):
                 st.success("資料庫已成功上傳覆蓋！請重新整理網頁。")
         except Exception as e:
             st.error(f"檔案讀取失敗：{e}")
@@ -170,7 +167,7 @@ with tab_vehicle:
     edited_drivers = st.data_editor(df_drivers, num_rows="dynamic", use_container_width=True, height=400)
     if st.button("💾 將變更儲存至雲端"):
         clean_df = edited_drivers.dropna(subset=["車頭車號"])
-        if save_sheet_data("車籍資料", clean_df):
+        if save_sheet_data("drivers", clean_df):
             st.success("車籍資料已同步更新至 Google 試算表！")
 
 with tab_stats:
@@ -178,7 +175,7 @@ with tab_stats:
     if st.button("🔄 重新抓取最新派車資料"):
         st.rerun()
 
-    df_logs = load_sheet_data("出土紀錄")
+    df_logs = load_sheet_data("dispatch_logs")
     if not df_logs.empty and "日期" in df_logs.columns:
         df_logs['日期'] = pd.to_datetime(df_logs['日期']).dt.date
         today_logs = df_logs[df_logs['日期'] == date.today()]
@@ -200,7 +197,7 @@ with tab_stats:
             zone_grouped = df_logs.groupby('出土分區')['載運方量(m³)'].sum().reset_index()
             zone_grouped.rename(columns={'載運方量(m³)': '累計實挖方量'}, inplace=True)
             
-            df_zones = load_sheet_data("圖資基準")
+            df_zones = load_sheet_data("grid_zones")
             if not df_zones.empty and "分區代號" in df_zones.columns:
                 baseline_dict = df_zones.set_index('分區代號')['預估總土方'].to_dict()
                 zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
