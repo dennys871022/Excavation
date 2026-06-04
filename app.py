@@ -44,6 +44,8 @@ with tab_grid:
     scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
     
     st.sidebar.header("【各區開挖參數】")
+    current_gl = st.sidebar.number_input("現地GL高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高於設計GL以增加一挖土方，負值代表現地低於設計GL以減少一挖土方")
+    
     st.sidebar.markdown("""
     * **行政棟區域** (4挖): 總深 9.9m
     * **實驗棟區域** (4挖): 總深 11.4m
@@ -72,8 +74,8 @@ with tab_grid:
 
         results = []
         
-        # 1. 左區 (行政棟 A1~6 to E1~3)
-        depths_admin = [2.5, 1.95, 3.4, 2.05]
+        # 行政棟
+        depths_admin = [max(0, 2.5 + current_gl), 1.95, 3.4, 2.05]
         for j in range(len(dy1)):
             for i in range(len(dx1)):
                 if j >= 2 and i >= 3: continue 
@@ -85,8 +87,8 @@ with tab_grid:
                 vols = [poly.area * d for d in depths_admin]
                 results.append({"分區代號": grid_id, "面積 (m²)": round(poly.area, 2), "預估總土方": round(sum(vols), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
         
-        # 2. 右區 (實驗棟 A7~16 to F'7~16)
-        depths_lab = [2.5, 1.95, 3.4, 3.55]
+        # 實驗棟
+        depths_lab = [max(0, 2.5 + current_gl), 1.95, 3.4, 3.55]
         for j in range(len(dy2)):
             for i in range(len(dx2)):
                 grid_id = f"{y_labels2[j]}{i+7}" 
@@ -96,8 +98,8 @@ with tab_grid:
                 vols = [poly.area * d for d in depths_lab]
                 results.append({"分區代號": grid_id, "面積 (m²)": round(poly.area, 2), "預估總土方": round(sum(vols), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
         
-        # 3. 滯洪池 B.C 區
-        depths_bc = [1.5, 6.1]
+        # 滯洪池BC區
+        depths_bc = [max(0, 1.5 + current_gl), 6.1]
         bc_x = [-2764.56, -2758.41, -2749.46]
         bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
         idx_l = 1
@@ -113,8 +115,8 @@ with tab_grid:
                 results.append({"分區代號": grid_id, "面積 (m²)": round(poly.area, 2), "預估總土方": round(sum(vols), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
                 idx_l += 1
 
-        # 4. 滯洪池 A 區
-        depths_a = [2.0, 5.85]
+        # 滯洪池A區
+        depths_a = [max(0, 2.0 + current_gl), 5.85]
         a_x = [-2606.06, -2592.82]
         a_y = [-276.14, -284.44, -290.24, -296.04]
         idx_r = 1
@@ -210,6 +212,36 @@ with tab_stats:
         m3.metric("今日實挖方量", f"{today_vol:,.2f} m³")
         st.divider()
 
+        st.markdown("#### 📈 每日出土趨勢與回報統計")
+        if not valid_logs.empty:
+            daily_stats = valid_logs.groupby('日期').agg(
+                每日車次=('車頭車號', 'count'),
+                每日方量=('載運方量(m³)', 'sum')
+            ).reset_index()
+            daily_stats = daily_stats.sort_values('日期')
+            
+            fig_daily = go.Figure()
+            fig_daily.add_trace(go.Bar(
+                x=daily_stats['日期'], 
+                y=daily_stats['每日方量'],
+                text=daily_stats['每日方量'],
+                textposition='auto',
+                marker_color='#3498db',
+                name='載運方量'
+            ))
+            fig_daily.update_layout(
+                title='每日出土方量趨勢圖',
+                xaxis_title='日期',
+                yaxis_title='方量 (m³)',
+                height=400,
+                template='plotly_white'
+            )
+            st.plotly_chart(fig_daily, use_container_width=True)
+            st.dataframe(daily_stats, use_container_width=True, hide_index=True)
+        else:
+            st.info("尚無有效數據可產出圖表。")
+
+        st.divider()
         st.markdown("#### ⚠️ 異常車次管理 (疑似重複查詢)")
         df_error = df_logs[df_logs['備註'] == '1分鐘內連續查詢'].copy()
         if not df_error.empty:
@@ -241,7 +273,7 @@ with tab_stats:
             
             col_z1, col_z2 = st.columns([2, 1])
             with col_z1:
-                selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇"] + zone_list)
+                selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
             with col_z2:
                 if st.button("套用到勾選的紀錄"):
                     if selected_zone == "請選擇":
@@ -269,10 +301,16 @@ with tab_stats:
                 zone_grouped.rename(columns={'載運方量(m³)': '累計實挖方量'}, inplace=True)
                 
                 df_zones = load_sheet_data("grid_zones")
+                baseline_dict = {}
                 if not df_zones.empty and "分區代號" in df_zones.columns:
                     baseline_dict = df_zones.set_index('分區代號')['預估總土方'].to_dict()
-                    zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
-                    zone_grouped['完成率(%)'] = (zone_grouped['累計實挖方量'] / zone_grouped['預估基準方量'] * 100).fillna(0).round(1)
+                    
+                zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
+                zone_grouped['完成率(%)'] = (zone_grouped['累計實挖方量'] / zone_grouped['預估基準方量'] * 100).round(1)
+                
+                zone_grouped['預估基準方量'] = zone_grouped['預估基準方量'].fillna('無基準量')
+                zone_grouped['完成率(%)'] = zone_grouped['完成率(%)'].fillna('不適用').astype(str)
+                zone_grouped['完成率(%)'] = zone_grouped['完成率(%)'].apply(lambda x: f"{x}%" if x != '不適用' else x)
                 
                 st.dataframe(zone_grouped, use_container_width=True, hide_index=True)
             else:
