@@ -20,9 +20,11 @@ except Exception as e:
 
 def load_sheet_data(sheet_name):
     try:
-        df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name)
+        # 加上 ttl=0 強制每次重新讀取，避免抓到舊的錯誤快取
+        df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
         return df.dropna(how='all')
     except Exception as e:
+        # 前台端如果是 except: 就維持原樣即可
         st.warning(f"無法讀取分頁 `{sheet_name}`。錯誤：{e}")
         return pd.DataFrame()
 
