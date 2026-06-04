@@ -10,6 +10,9 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 營建土方後台管理系統")
 
+# 指定試算表網址
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
+
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
@@ -18,7 +21,8 @@ except Exception as e:
 
 def load_sheet_data(sheet_name):
     try:
-        df = conn.read(worksheet=sheet_name)
+        # 加上 spreadsheet=SHEET_URL
+        df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name)
         return df.dropna(how='all')
     except Exception as e:
         st.warning(f"無法讀取分頁 `{sheet_name}`。錯誤：{e}")
@@ -26,7 +30,8 @@ def load_sheet_data(sheet_name):
 
 def save_sheet_data(sheet_name, df):
     try:
-        conn.update(worksheet=sheet_name, data=df)
+        # 加上 spreadsheet=SHEET_URL
+        conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
         return True
     except Exception as e:
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
