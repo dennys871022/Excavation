@@ -3,4 +3,6 @@ pandas
 numpy
 plotly
 shapely
-st-gsheets-connection
+streamlit-gsheets
+requests
+kaleido
