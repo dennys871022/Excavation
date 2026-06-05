@@ -259,7 +259,7 @@ with tab_stats:
         with col_txt:
             st.info(report_text)
             st.markdown("**進度圖例說明：**")
-            st.markdown("⬜ 尚未開挖\n\n🟨 1挖進行中\n\n🟧 2挖進行中\n\n🟦 3挖進行中\n\n🟪 4挖進行中\n\n🟩 開挖完成")
+            st.markdown("⬜ 尚未開挖\n\n🟨 1挖進行中\n\n🟧 1挖完成 / 2挖進行中\n\n🟦 2挖完成 / 3挖進行中\n\n🟪 3挖完成 / 4挖進行中\n\n🟩 開挖完成")
             
         with col_fig:
             if not df_results.empty:
@@ -285,8 +285,11 @@ with tab_stats:
                         else:
                             colors = ['rgba(241, 196, 15, 0.7)', 'rgba(230, 126, 34, 0.7)', 'rgba(52, 152, 219, 0.7)', 'rgba(155, 89, 182, 0.7)']
                             for s_idx, t_vol in enumerate(thresholds):
-                                if current_vol <= t_vol:
-                                    stage_text = f"{s_idx+1}挖進行中"
+                                if current_vol < t_vol * 0.98:
+                                    if s_idx == 0:
+                                        stage_text = "1挖進行中"
+                                    else:
+                                        stage_text = f"{s_idx}挖完成 / {s_idx+1}挖進行中"
                                     fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
                                     break
                     
