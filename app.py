@@ -4,8 +4,12 @@ import numpy as np
 import plotly.graph_objects as go
 from shapely.geometry import Polygon
 import os
+import tempfile
 from datetime import datetime, timedelta, date
 from streamlit_gsheets import GSheetsConnection
+from fpdf import FPDF
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 營建土方後台管理系統")
@@ -33,6 +37,95 @@ def save_sheet_data(sheet_name, df):
     except Exception as e:
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
         return False
+
+def generate_backend_map(df_results, zone_grouped):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    vol_dict = {}
+    if not zone_grouped.empty:
+        vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+    stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
+    
+    for idx, row in df_results.iterrows():
+        grid_id = row['分區代號']
+        current_vol = vol_dict.get(grid_id, 0)
+        thresholds = stage_dict.get(grid_id, [])
+        
+        fill_color = '#F0F0F0' 
+        
+        if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
+            if current_vol >= thresholds[-1] * 0.98:
+                fill_color = '#2ECC71' 
+            else:
+                colors = ['#F1C40F', '#E67E22', '#3498DB', '#9B59B6']
+                for s_idx, t_vol in enumerate(thresholds):
+                    if current_vol < t_vol * 0.98:
+                        fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
+                        break
+                        
+        xy = [[row['x_min'], row['y_min']], [row['x_max'], row['y_min']], 
+              [row['x_max'], row['y_max']], [row['x_min'], row['y_max']]]
+        poly = patches.Polygon(xy, closed=True, facecolor=fill_color, edgecolor='gray', alpha=0.8)
+        ax.add_patch(poly)
+        ax.text(row['x_center'], row['y_center'], grid_id, ha='center', va='center', fontsize=8, color='black')
+        
+    ax.autoscale_view()
+    ax.set_aspect('equal')
+    plt.axis('off')
+    
+    tmp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    plt.savefig(tmp_img.name, bbox_inches='tight', dpi=150)
+    plt.close(fig)
+    return tmp_img.name
+
+def generate_pdf(report_text, df_stats, df_results, zone_grouped):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.add_font("CustomFont", fname="font.ttf")
+    pdf.set_font("CustomFont", size=18)
+    
+    pdf.cell(0, 10, text="營建土方每日回報", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    pdf.set_font("CustomFont", size=12)
+    for line in report_text.split('\n'):
+        pdf.multi_cell(0, 8, text=line.replace('•', '*'))
+        
+    pdf.ln(5)
+    
+    try:
+        img_path = generate_backend_map(df_results, zone_grouped)
+        pdf.image(img_path, x=15, w=180)
+        os.unlink(img_path) 
+    except Exception as e:
+        pdf.set_font("CustomFont", size=10)
+        pdf.cell(0, 10, text=f"(地圖生成失敗: {e})", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.ln(5)
+    pdf.set_font("CustomFont", size=10)
+    pdf.cell(0, 8, text="圖例說明: 淺灰(未開挖) | 黃(1挖) | 橘(2挖) | 藍(3挖) | 紫(4挖) | 綠(完成)", new_x="LMARGIN", new_y="NEXT")
+    
+    pdf.ln(5)
+    pdf.set_font("CustomFont", size=14)
+    pdf.cell(0, 10, text="各分區挖掘進度總表", new_x="LMARGIN", new_y="NEXT")
+    
+    if not df_stats.empty:
+        pdf.set_font("CustomFont", size=9)
+        col_widths = [45, 45, 45, 45]
+        headers = df_stats.columns.tolist()
+        
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], 8, text=str(header), border=1, align='C')
+        pdf.ln()
+        
+        for idx, row in df_stats.iterrows():
+            for i, col in enumerate(headers):
+                pdf.cell(col_widths[i], 8, text=str(row[col]), border=1, align='C')
+            pdf.ln()
+            
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(tmp_file.name)
+    return tmp_file.name
 
 st.sidebar.header("【圖資與各區開挖參數】")
 base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
@@ -223,6 +316,7 @@ with tab_stats:
         total_est = df_results['預估總土方'].sum() if not df_results.empty else 0
         total_all_trips = len(valid_logs)
         
+        display_df = pd.DataFrame()
         if '出土分區' in valid_logs.columns and '載運方量(m³)' in valid_logs.columns:
             df_assigned = valid_logs[valid_logs['出土分區'] != '未指定'].copy()
             if not df_assigned.empty:
@@ -237,8 +331,12 @@ with tab_stats:
                 zone_grouped['預估基準方量_顯示'] = zone_grouped['預估基準方量'].fillna('無基準量')
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率數值'].fillna('不適用').astype(str)
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率_顯示'].apply(lambda x: f"{x}%" if x != '不適用' else x)
+                
+                display_df = zone_grouped[['出土分區', '累計實挖方量', '預估基準方量_顯示', '完成率_顯示']].rename(
+                    columns={'預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
+                )
 
-        st.markdown("#### 📱 每日回報匯出專區")
+        st.markdown("#### 📱 每日回報與報表匯出")
         
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
@@ -256,11 +354,28 @@ with tab_stats:
         with col_txt:
             st.info("💡 點擊下方文字區塊右上角圖示，即可一鍵複製回報文字。")
             st.code(report_text, language="text")
-            st.markdown("**進度圖例說明：**")
-            st.markdown("⬜ 尚未開挖\n\n🟨 1挖進行中\n\n🟧 1挖完成 / 2挖進行中\n\n🟦 2挖完成 / 3挖進行中\n\n🟪 3挖完成 / 4挖進行中\n\n🟩 開挖完成")
             
+            st.markdown("#### 📄 匯出 PDF 報表")
+            if os.path.exists("font.ttf"):
+                with st.spinner("正在繪製地圖與生成報表..."):
+                    try:
+                        pdf_path = generate_pdf(report_text, display_df, df_results, zone_grouped)
+                        with open(pdf_path, "rb") as f:
+                            st.download_button(
+                                label="📥 下載完整 PDF 報表 (包含地圖)",
+                                data=f,
+                                file_name=f"excavation_report_{today_str}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                    except Exception as e:
+                        st.error(f"PDF 產生失敗：{e}")
+            else:
+                st.warning("⚠️ 找不到字型檔 `font.ttf`，無法產生 PDF。請先將檔案上傳至專案根目錄。")
+
         with col_fig:
-            st.info("📸 點擊圖表右上方的「照相機」圖示，即可直接下載進度圖檔。")
+            st.markdown("**進度圖例說明：**")
+            st.markdown("⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
             fig_map = go.Figure()
             if not df_results.empty:
                 vol_dict = {}
@@ -301,20 +416,7 @@ with tab_stats:
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
                 
                 fig_map.update_layout(title="各區階數開挖狀態", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
-                
-                plotly_config = {
-                    'displayModeBar': True,
-                    'displaylogo': False,
-                    'modeBarButtonsToRemove': ['zoom', 'pan', 'select', 'lasso', 'zoomIn', 'zoomOut', 'autoScale', 'resetScale'],
-                    'toImageButtonOptions': {
-                        'format': 'png',
-                        'filename': f'excavation_status_{today_str}',
-                        'height': 600,
-                        'width': 1000,
-                        'scale': 2
-                    }
-                }
-                st.plotly_chart(fig_map, use_container_width=True, config=plotly_config)
+                st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
         
         st.divider()
 
@@ -346,10 +448,7 @@ with tab_stats:
 
         st.divider()
         st.markdown("#### 📍 各分區挖掘進度總表")
-        if not zone_grouped.empty:
-            display_df = zone_grouped[['出土分區', '累計實挖方量', '預估基準方量_顯示', '完成率_顯示']].rename(
-                columns={'預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
-            )
+        if not display_df.empty:
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
         with st.expander("📂 檢視所有歷史紀錄 (可直接編輯儲存)"):
