@@ -5,3 +5,4 @@ plotly
 shapely
 st-gsheets-connection
 requests
+kaleido==0.1.0.post1
