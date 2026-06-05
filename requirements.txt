@@ -1,11 +1,8 @@
 streamlit
 pandas
+numpy
 plotly
-xlsxwriter
-openpyxl
-gspread
-oauth2client
+shapely
+st-gsheets-connection
+fpdf2
 matplotlib
-adjustText
-chardet>=5.0
-adjustText
