@@ -139,7 +139,6 @@ try:
             idx_r += 1
 
     df_results = pd.DataFrame(results)
-    st.session_state['grid_df'] = df_results
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
@@ -239,32 +238,30 @@ with tab_stats:
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率數值'].fillna('不適用').astype(str)
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率_顯示'].apply(lambda x: f"{x}%" if x != '不適用' else x)
 
-        st.markdown("#### 📱 LINE 每日回報預覽")
+        st.markdown("#### 📱 每日回報與圖表匯出")
         
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
         overall_rate = round((total_excavated / total_est * 100), 1) if total_est > 0 else 0
         
-        report_text = f"""
-**【土方開挖每日回報】** {today_str}
-* **本日車次**： {today_trips} 趟 ({today_trucks} 輛)
-* **本日出土方量**： {today_vol:,.2f} m³
-* **累計總車次**： {total_all_trips} 趟
-* **累計實挖方量**： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
-* **預估總土方量**： {total_est:,.2f} m³
-* **總體開挖進度**： {overall_rate}%
-        """
+        report_text = f"""【土方開挖每日回報】 {today_str}
+• 本日車次： {today_trips} 趟 ({today_trucks} 輛)
+• 本日出土方量： {today_vol:,.2f} m³
+• 累計總車次： {total_all_trips} 趟
+• 累計實挖方量： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
+• 預估總土方量： {total_est:,.2f} m³
+• 總體開挖進度： {overall_rate}%
+"""
         
         col_txt, col_fig = st.columns([1, 2])
         with col_txt:
-            st.info(report_text)
+            st.info(report_text.replace("\n", "\n\n"))
             st.markdown("**進度圖例說明：**")
             st.markdown("⬜ 尚未開挖\n\n🟨 1挖進行中\n\n🟧 1挖完成 / 2挖進行中\n\n🟦 2挖完成 / 3挖進行中\n\n🟪 3挖完成 / 4挖進行中\n\n🟩 開挖完成")
             
         with col_fig:
+            fig_map = go.Figure()
             if not df_results.empty:
-                fig_map = go.Figure()
-                
                 vol_dict = {}
                 if not zone_grouped.empty:
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
@@ -304,6 +301,18 @@ with tab_stats:
                 
                 fig_map.update_layout(title="各區階數開挖狀態", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
+            
+            try:
+                img_bytes = fig_map.to_image(format="png", engine="kaleido", width=1200, height=800)
+                st.download_button(
+                    label="📥 下載進度圖檔",
+                    data=img_bytes,
+                    file_name=f"excavation_status_{today_str}.png",
+                    mime="image/png",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.warning("圖檔生成服務尚未就緒，請確認伺服器已安裝 kaleido 套件。")
         
         st.divider()
 
