@@ -94,7 +94,9 @@ try:
             y_max, y_min = y_coords1[j], y_coords1[j+1]
             if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            results.append({"分區代號": grid_id, "預估總土方": round(sum([poly.area * d for d in depths_admin]), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            vols = [poly.area * d for d in depths_admin]
+            cum_vols = list(np.cumsum(vols))
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
     
     for j in range(len(dy2)):
         for i in range(len(dx2)):
@@ -102,7 +104,9 @@ try:
             x_min, x_max = x_coords2[i], x_coords2[i+1]
             y_max, y_min = y_coords2[j], y_coords2[j+1]
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            results.append({"分區代號": grid_id, "預估總土方": round(sum([poly.area * d for d in depths_lab]), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            vols = [poly.area * d for d in depths_lab]
+            cum_vols = list(np.cumsum(vols))
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
     
     bc_x = [-2764.56, -2758.41, -2749.46]
     bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
@@ -115,7 +119,9 @@ try:
                 idx_l += 1; continue
             grid_id = f"滯洪池B.C{idx_l}"
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            results.append({"分區代號": grid_id, "預估總土方": round(sum([poly.area * d for d in depths_bc]), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            vols = [poly.area * d for d in depths_bc]
+            cum_vols = list(np.cumsum(vols))
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
             idx_l += 1
 
     a_x = [-2606.06, -2592.82]
@@ -127,7 +133,9 @@ try:
             y_max, y_min = a_y[j], a_y[j+1]
             grid_id = f"滯洪池A{idx_r}"
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            results.append({"分區代號": grid_id, "預估總土方": round(sum([poly.area * d for d in depths_a]), 2), "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            vols = [poly.area * d for d in depths_a]
+            cum_vols = list(np.cumsum(vols))
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
             idx_r += 1
 
     df_results = pd.DataFrame(results)
@@ -214,6 +222,7 @@ with tab_stats:
 
         zone_grouped = pd.DataFrame()
         total_est = df_results['預估總土方'].sum() if not df_results.empty else 0
+        total_all_trips = len(valid_logs)
         
         if '出土分區' in valid_logs.columns and '載運方量(m³)' in valid_logs.columns:
             df_assigned = valid_logs[valid_logs['出土分區'] != '未指定'].copy()
@@ -240,6 +249,7 @@ with tab_stats:
 **【土方開挖每日回報】** {today_str}
 * **本日車次**： {today_trips} 趟 ({today_trucks} 輛)
 * **本日出土方量**： {today_vol:,.2f} m³
+* **累計總車次**： {total_all_trips} 趟
 * **累計實挖方量**： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
 * **預估總土方量**： {total_est:,.2f} m³
 * **總體開挖進度**： {overall_rate}%
@@ -249,37 +259,47 @@ with tab_stats:
         with col_txt:
             st.info(report_text)
             st.markdown("**進度圖例說明：**")
-            st.markdown("⬜ 0% (尚未開挖)\n\n🟥 1% ~ 25%\n\n🟨 26% ~ 50%\n\n🟦 51% ~ 75%\n\n🟩 76% 以上")
+            st.markdown("⬜ 尚未開挖\n\n🟨 1挖進行中\n\n🟧 2挖進行中\n\n🟦 3挖進行中\n\n🟪 4挖進行中\n\n🟩 開挖完成")
             
         with col_fig:
             if not df_results.empty:
                 fig_map = go.Figure()
                 
-                rate_dict = {}
+                vol_dict = {}
                 if not zone_grouped.empty:
-                    rate_dict = zone_grouped.set_index('出土分區')['完成率數值'].to_dict()
+                    vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+                stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
                 
                 for idx, row in df_results.iterrows():
                     grid_id = row['分區代號']
-                    rate = rate_dict.get(grid_id, 0)
+                    current_vol = vol_dict.get(grid_id, 0)
+                    thresholds = stage_dict.get(grid_id, [])
                     
+                    stage_text = "尚未開挖"
                     fill_color = 'rgba(240, 240, 240, 0.5)' 
-                    if pd.notnull(rate) and rate > 0:
-                        if rate <= 25: fill_color = 'rgba(255, 102, 102, 0.7)'
-                        elif rate <= 50: fill_color = 'rgba(255, 204, 51, 0.7)'
-                        elif rate <= 75: fill_color = 'rgba(51, 153, 255, 0.7)'
-                        else: fill_color = 'rgba(102, 204, 102, 0.7)'
+                    
+                    if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
+                        if current_vol >= thresholds[-1] * 0.98:
+                            stage_text = "開挖完成"
+                            fill_color = 'rgba(46, 204, 113, 0.8)' 
+                        else:
+                            colors = ['rgba(241, 196, 15, 0.7)', 'rgba(230, 126, 34, 0.7)', 'rgba(52, 152, 219, 0.7)', 'rgba(155, 89, 182, 0.7)']
+                            for s_idx, t_vol in enumerate(thresholds):
+                                if current_vol <= t_vol:
+                                    stage_text = f"{s_idx+1}挖進行中"
+                                    fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
+                                    break
                     
                     fig_map.add_trace(go.Scatter(
                         x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
                         y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
                         mode='lines', line=dict(color='gray', width=1),
                         fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
-                        text=f"{grid_id}<br>進度: {rate}%"
+                        text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.1f} m³"
                     ))
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
                 
-                fig_map.update_layout(title="各區開挖完成度視覺化", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
+                fig_map.update_layout(title="各區階數開挖狀態", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
         
         st.divider()
