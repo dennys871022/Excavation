@@ -40,20 +40,24 @@ base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, f
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
-st.sidebar.markdown("### 開挖深度與高程設定")
-current_gl = st.sidebar.number_input("現地GL高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高，增加第一挖土方；負值代表現地低，減少第一挖土方")
+st.sidebar.markdown("### 各區開挖 GL 高程設定")
+current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高，增加第一挖土方；負值代表現地低，減少第一挖土方")
 
-depths_admin_input = st.sidebar.text_input("行政棟區域 (4挖)", "2.5, 1.95, 3.4, 2.05")
-depths_lab_input = st.sidebar.text_input("實驗棟區域 (4挖)", "2.5, 1.95, 3.4, 3.55")
-depths_bc_input = st.sidebar.text_input("滯洪池BC區 (2挖)", "1.5, 6.1")
-depths_a_input = st.sidebar.text_input("滯洪池A區 (2挖)", "2.0, 5.85")
+gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
+gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
+gl_bc_input = st.sidebar.text_input("滯洪池BC區 GL高程 (2挖)", "1.5, 7.6")
+gl_a_input = st.sidebar.text_input("滯洪池A區 GL高程 (2挖)", "2.0, 7.85")
 
-def get_adjusted_depths(input_str, gl_offset):
+def get_thickness_from_gl(gl_str, gl_offset):
     try:
-        d_list = [float(x.strip()) for x in input_str.split(",")]
-        if len(d_list) > 0:
-            d_list[0] = max(0.0, d_list[0] + gl_offset)
-        return d_list
+        gl_list = [float(x.strip()) for x in gl_str.split(",")]
+        thickness = []
+        for i in range(len(gl_list)):
+            if i == 0:
+                thickness.append(max(0.0, gl_list[i] + gl_offset))
+            else:
+                thickness.append(max(0.0, gl_list[i] - gl_list[i-1]))
+        return thickness
     except:
         return []
 
@@ -75,10 +79,10 @@ try:
     x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
     y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
 
-    depths_admin = get_adjusted_depths(depths_admin_input, current_gl)
-    depths_lab = get_adjusted_depths(depths_lab_input, current_gl)
-    depths_bc = get_adjusted_depths(depths_bc_input, current_gl)
-    depths_a = get_adjusted_depths(depths_a_input, current_gl)
+    depths_admin = get_thickness_from_gl(gl_admin_input, current_gl)
+    depths_lab = get_thickness_from_gl(gl_lab_input, current_gl)
+    depths_bc = get_thickness_from_gl(gl_bc_input, current_gl)
+    depths_a = get_thickness_from_gl(gl_a_input, current_gl)
 
     results = []
     
