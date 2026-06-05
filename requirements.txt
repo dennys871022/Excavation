@@ -1,8 +1,11 @@
 streamlit
 pandas
-numpy
 plotly
-shapely
-st-gsheets-connection
-requests
-kaleido==0.1.0.post1
+xlsxwriter
+openpyxl
+gspread
+oauth2client
+matplotlib
+adjustText
+chardet>=5.0
+adjustText
