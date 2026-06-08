@@ -213,8 +213,8 @@ try:
             if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             vols = [poly.area * d for d in depths_admin]
-            cum_vols = list(np.cumsum(vols))
-            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
     
     for j in range(len(dy2)):
         for i in range(len(dx2)):
@@ -223,23 +223,24 @@ try:
             y_max, y_min = y_coords2[j], y_coords2[j+1]
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             vols = [poly.area * d for d in depths_lab]
-            cum_vols = list(np.cumsum(vols))
-            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
     
     bc_x = [-2764.56, -2758.41, -2749.46]
     bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
     idx_l = 1
-    for j in range(len(bc_y)-1):
-        for i in range(len(bc_x)-1):
+    for i in range(len(bc_x)-1):
+        for j in range(len(bc_y)-1):
+            old_idx = j * 2 + i + 1
+            if old_idx in [1, 3]:
+                continue
+            grid_id = f"滯BC{idx_l}"
             x_min, x_max = bc_x[i], bc_x[i+1]
             y_max, y_min = bc_y[j], bc_y[j+1]
-            if idx_l in [1, 3]:
-                idx_l += 1; continue
-            grid_id = f"滯BC{idx_l}"
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             vols = [poly.area * d for d in depths_bc]
-            cum_vols = list(np.cumsum(vols))
-            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
             idx_l += 1
 
     a_x = [-2606.06, -2592.82]
@@ -252,8 +253,8 @@ try:
             grid_id = f"滯洪池A{idx_r}"
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             vols = [poly.area * d for d in depths_a]
-            cum_vols = list(np.cumsum(vols))
-            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 2), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            results.append({"分區代號": grid_id, "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2})
             idx_r += 1
 
     df_results = pd.DataFrame(results)
@@ -409,6 +410,7 @@ with tab_stats:
                 vol_dict = {}
                 if not zone_grouped.empty:
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+                stage_dict = df_results.set_index('分區代號')['開挖階數與高程'].to_dict() if '開挖階數與高程' in df_results.columns else {}
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
                 
                 for idx, row in df_results.iterrows():
