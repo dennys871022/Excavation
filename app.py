@@ -365,14 +365,17 @@ with tab_stats:
         
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
-        overall_rate = round((total_excavated / total_est * 100), 1) if total_est > 0 else 0
+        
+        manifest_total = 79692.0
+        combined_excavated = total_excavated + pre_excavated
+        overall_rate = round((combined_excavated / manifest_total * 100), 1)
         
         report_text = f"""【土方開挖每日回報】 {today_str}
 本日車次： {today_trips} 台
 本日出土方量： {today_vol:,.2f} m³
 累計總車次： {total_all_trips} 台
 累計實挖方量： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
-預估總土方量： {total_est:,.2f} m³
+聯單預估總出土： {manifest_total:,.2f} m³
 總體開挖進度： {overall_rate}%"""
         
         col_txt, col_fig = st.columns([1, 2])
