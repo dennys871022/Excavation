@@ -88,8 +88,9 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped):
     pdf.ln(5)
     
     pdf.set_font("CustomFont", size=12)
+    # 這裡將原本容易因為中文沒空白而崩潰的 multi_cell 改為單行 cell
     for line in report_text.split('\n'):
-        pdf.multi_cell(0, 8, text=line.replace('•', '*'))
+        pdf.cell(0, 8, text=line.replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
         
     pdf.ln(5)
     
@@ -343,17 +344,16 @@ with tab_stats:
         overall_rate = round((total_excavated / total_est * 100), 1) if total_est > 0 else 0
         
         report_text = f"""【土方開挖每日回報】 {today_str}
-• 本日車次： {today_trips} 趟 ({today_trucks} 輛)
-• 本日出土方量： {today_vol:,.2f} m³
-• 累計總車次： {total_all_trips} 趟
-• 累計實挖方量： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
-• 預估總土方量： {total_est:,.2f} m³
-• 總體開挖進度： {overall_rate}%"""
+本日車次： {today_trips} 趟 ({today_trucks} 輛)
+本日出土方量： {today_vol:,.2f} m³
+累計總車次： {total_all_trips} 趟
+累計實挖方量： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
+預估總土方量： {total_est:,.2f} m³
+總體開挖進度： {overall_rate}%"""
         
         col_txt, col_fig = st.columns([1, 2])
         with col_txt:
-            st.info("💡 點擊下方文字區塊右上角圖示，即可一鍵複製回報文字。")
-            st.code(report_text, language="text")
+            st.info(report_text.replace("\n", "\n\n"))
             
             st.markdown("#### 📄 匯出 PDF 報表")
             if os.path.exists("font.ttf"):
