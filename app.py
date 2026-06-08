@@ -42,7 +42,6 @@ def save_sheet_data(sheet_name, df):
 def generate_backend_map(df_results, zone_grouped):
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # 載入自訂中文字型
     font_path = "font.ttf"
     my_font = FontProperties(fname=font_path) if os.path.exists(font_path) else None
     
@@ -73,7 +72,6 @@ def generate_backend_map(df_results, zone_grouped):
         poly = patches.Polygon(xy, closed=True, facecolor=fill_color, edgecolor='gray', alpha=0.8)
         ax.add_patch(poly)
         
-        # 套用字型到地圖文字
         if my_font:
             ax.text(row['x_center'], row['y_center'], grid_id, ha='center', va='center', fontsize=8, color='black', fontproperties=my_font)
         else:
@@ -113,9 +111,26 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped):
 
     pdf.ln(5)
     pdf.set_font("CustomFont", size=10)
-    pdf.cell(0, 8, text="圖例說明: 淺灰(未開挖) | 黃(1挖) | 橘(2挖) | 藍(3挖) | 紫(4挖) | 綠(完成)", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, text="進度圖例說明：", new_x="LMARGIN", new_y="NEXT")
     
-    pdf.ln(5)
+    legend_items = [
+        ("尚未開挖", 240, 240, 240),
+        ("1挖進行中", 241, 196, 15),
+        ("1挖完成/2挖中", 230, 126, 34),
+        ("2挖完成/3挖中", 52, 152, 219),
+        ("3挖完成/4挖中", 155, 89, 182),
+        ("開挖完成", 46, 204, 113)
+    ]
+    
+    for i, (label, r, g, b) in enumerate(legend_items):
+        pdf.set_fill_color(r, g, b)
+        pdf.cell(4, 4, text="", border=1, fill=True)
+        pdf.cell(2, 4, text="")
+        pdf.cell(32, 4, text=label)
+        if i == 2:
+            pdf.ln(6)
+    pdf.ln(6)
+    
     pdf.set_font("CustomFont", size=14)
     pdf.cell(0, 10, text="各分區挖掘進度總表", new_x="LMARGIN", new_y="NEXT")
     
