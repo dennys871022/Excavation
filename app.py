@@ -235,7 +235,7 @@ try:
             y_max, y_min = bc_y[j], bc_y[j+1]
             if idx_l in [1, 3]:
                 idx_l += 1; continue
-            grid_id = f"滯洪池B.C{idx_l}"
+            grid_id = f"滯BC{idx_l}"
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
             vols = [poly.area * d for d in depths_bc]
             cum_vols = list(np.cumsum(vols))
@@ -271,7 +271,7 @@ with tab_grid:
     with col2:
         st.write("### 基準方量總表")
         st.dataframe(df_results[['分區代號', '預估總土方']], height=600)
-        st.success(f"全區預估總土方量： **{df_results['預估總土方'].sum():,.2f} m³**")
+        st.success(f"全區預估總土方量： **{df_results['預估總土方'].sum():,.0f} m³**")
         
     with col1:
         st.write("### 精準網格地圖")
@@ -334,7 +334,7 @@ with tab_stats:
         m1, m2, m3 = st.columns(3)
         m1.metric("今日派車數", f"{today_trucks} 輛")
         m2.metric("今日總車次", f"{today_trips} 趟")
-        m3.metric("今日實挖方量", f"{today_vol:,.2f} m³")
+        m3.metric("今日實挖方量", f"{today_vol:,.0f} m³")
         st.divider()
 
         zone_grouped = pd.DataFrame()
@@ -353,12 +353,13 @@ with tab_stats:
                 zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
                 zone_grouped['完成率數值'] = (zone_grouped['累計實挖方量'] / zone_grouped['預估基準方量'] * 100).round(1)
                 
-                zone_grouped['預估基準方量_顯示'] = zone_grouped['預估基準方量'].fillna('無基準量')
+                zone_grouped['累計實挖方量_顯示'] = zone_grouped['累計實挖方量'].apply(lambda x: f"{x:,.0f}")
+                zone_grouped['預估基準方量_顯示'] = zone_grouped['預估基準方量'].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else '無基準量')
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率數值'].fillna('不適用').astype(str)
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率_顯示'].apply(lambda x: f"{x}%" if x != '不適用' else x)
                 
-                display_df = zone_grouped[['出土分區', '累計實挖方量', '預估基準方量_顯示', '完成率_顯示']].rename(
-                    columns={'預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
+                display_df = zone_grouped[['出土分區', '累計實挖方量_顯示', '預估基準方量_顯示', '完成率_顯示']].rename(
+                    columns={'累計實挖方量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
                 )
 
         st.markdown("#### 📱 每日回報與報表匯出")
@@ -372,10 +373,10 @@ with tab_stats:
         
         report_text = f"""【土方開挖每日回報】 {today_str}
 本日車次： {today_trips} 台
-本日出土方量： {today_vol:,.2f} m³
+本日出土方量： {today_vol:,.0f} m³
 累計總車次： {total_all_trips} 台
-累計實挖方量： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
-聯單預估總出土： {manifest_total:,.2f} m³
+累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
+聯單預估總出土： {manifest_total:,.0f} m³
 總體開挖進度： {overall_rate}%"""
         
         col_txt, col_fig = st.columns([1, 2])
@@ -438,7 +439,7 @@ with tab_stats:
                         y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
                         mode='lines', line=dict(color='gray', width=1),
                         fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
-                        text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.1f} m³"
+                        text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
                     ))
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
                 
