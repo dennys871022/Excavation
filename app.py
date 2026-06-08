@@ -10,6 +10,7 @@ from streamlit_gsheets import GSheetsConnection
 from fpdf import FPDF
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.font_manager import FontProperties
 
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 營建土方後台管理系統")
@@ -41,6 +42,10 @@ def save_sheet_data(sheet_name, df):
 def generate_backend_map(df_results, zone_grouped):
     fig, ax = plt.subplots(figsize=(10, 6))
     
+    # 載入自訂中文字型
+    font_path = "font.ttf"
+    my_font = FontProperties(fname=font_path) if os.path.exists(font_path) else None
+    
     vol_dict = {}
     if not zone_grouped.empty:
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
@@ -67,7 +72,12 @@ def generate_backend_map(df_results, zone_grouped):
               [row['x_max'], row['y_max']], [row['x_min'], row['y_max']]]
         poly = patches.Polygon(xy, closed=True, facecolor=fill_color, edgecolor='gray', alpha=0.8)
         ax.add_patch(poly)
-        ax.text(row['x_center'], row['y_center'], grid_id, ha='center', va='center', fontsize=8, color='black')
+        
+        # 套用字型到地圖文字
+        if my_font:
+            ax.text(row['x_center'], row['y_center'], grid_id, ha='center', va='center', fontsize=8, color='black', fontproperties=my_font)
+        else:
+            ax.text(row['x_center'], row['y_center'], grid_id, ha='center', va='center', fontsize=8, color='black')
         
     ax.autoscale_view()
     ax.set_aspect('equal')
@@ -88,7 +98,6 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped):
     pdf.ln(5)
     
     pdf.set_font("CustomFont", size=12)
-    # 這裡將原本容易因為中文沒空白而崩潰的 multi_cell 改為單行 cell
     for line in report_text.split('\n'):
         pdf.cell(0, 8, text=line.replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
         
@@ -344,9 +353,9 @@ with tab_stats:
         overall_rate = round((total_excavated / total_est * 100), 1) if total_est > 0 else 0
         
         report_text = f"""【土方開挖每日回報】 {today_str}
-本日車次： {today_trips} 趟 ({today_trucks} 輛)
+本日車次： {today_trips} 台
 本日出土方量： {today_vol:,.2f} m³
-累計總車次： {total_all_trips} 趟
+累計總車次： {total_all_trips} 台
 累計實挖方量： {total_excavated:,.2f} m³ (另計開挖前土方: {pre_excavated:,.2f} m³)
 預估總土方量： {total_est:,.2f} m³
 總體開挖進度： {overall_rate}%"""
