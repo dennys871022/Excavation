@@ -85,13 +85,15 @@ def generate_backend_map(df_results, zone_grouped):
     plt.close(fig)
     return tmp_img.name
 
-def generate_pdf(report_text, df_stats, df_results, zone_grouped):
+def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="本日"):
     pdf = FPDF()
     pdf.add_page()
     pdf.add_font("CustomFont", fname="font.ttf")
     pdf.set_font("CustomFont", size=18)
     
-    pdf.cell(0, 10, text="CDC土方每日回報", align='C', new_x="LMARGIN", new_y="NEXT")
+    # 根據區間動態改變 PDF 標題
+    title_text = f"CDC土方{period_label}回報"
+    pdf.cell(0, 10, text=title_text, align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
     pdf.set_font("CustomFont", size=12)
@@ -279,7 +281,6 @@ try:
                 "第3挖方量(m³)": round(v3, 0),
                 "第4挖方量(m³)": round(v4, 0),
                 "預估總土方": round(sum(vols), 0), 
-                "開挖階數與高程": cum_vols,
                 "各階累計方量": cum_vols, 
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
@@ -360,7 +361,6 @@ with tab_vehicle:
                 new_df = pd.read_excel(uploaded_file)
             new_df.columns = new_df.columns.str.replace(r'\s+', '', regex=True)
             
-            # 正規化欄位處理並執行唯一性檢查
             new_df['車頭車號'] = new_df['車頭車號'].astype(str).str.replace(r'\s+', '', regex=True).str.upper()
             if new_df['車頭車號'].duplicated().any():
                 st.error("匯入失敗：偵測到重複的車頭車號，請修正後重新匯入。")
@@ -375,7 +375,6 @@ with tab_vehicle:
         clean_df = edited_drivers.dropna(subset=["車頭車號"]).copy()
         clean_df['車頭車號'] = clean_df['車頭車號'].astype(str).str.replace(r'\s+', '', regex=True).str.upper()
         
-        # 嚴格執行資料唯一性檢查
         if clean_df['車頭車號'].duplicated().any():
             st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存。")
         else:
@@ -387,10 +386,9 @@ with tab_stats:
     
     df_logs = load_sheet_data("dispatch_logs")
     
-    # 跨日期區間查詢功能
     tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
     st.markdown("#### 📅 篩選統計時間區間")
-    date_selection = st.date_input("選擇區間 (單選一日或拖選範圍)：", value=(tw_today, tw_today))
+    date_selection = st.date_input("選擇區間 (單選一日或拖曳選擇範圍)：", value=(tw_today, tw_today))
     
     if isinstance(date_selection, tuple) and len(date_selection) == 2:
         start_date, end_date = date_selection
@@ -399,11 +397,21 @@ with tab_stats:
     else:
         start_date = end_date = date_selection
 
+    # 智慧判斷區間標籤名稱
+    delta_days = (end_date - start_date).days
+    if delta_days == 0:
+        period_label = "本日"
+    elif start_date.weekday() == 0 and end_date.weekday() == 6 and delta_days == 6:
+        period_label = "本週"
+    elif start_date.day == 1 and (end_date + timedelta(days=1)).day == 1 and start_date.month == end_date.month:
+        period_label = "本月"
+    else:
+        period_label = "本區間"
+
     if not df_logs.empty and "日期" in df_logs.columns:
         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
         valid_logs = df_logs[df_logs['備註'].astype(str) != '1分鐘內連續查詢'].copy()
         
-        # 異常數據篩選與旗標自動化標記機制
         if not valid_logs.empty and '時間' in valid_logs.columns:
             valid_logs = valid_logs.sort_values(['車頭車號', '日期', '時間'])
             valid_logs['FullDateTime'] = pd.to_datetime(valid_logs['日期'].astype(str) + ' ' + valid_logs['時間'].astype(str))
@@ -412,7 +420,6 @@ with tab_stats:
             daily_counts = valid_logs.groupby(['車頭車號', '日期']).size().reset_index(name='DailyTripCount')
             valid_logs = valid_logs.merge(daily_counts, on=['車頭車號', '日期'], how='left')
             
-            # 定義異常標記條件
             def flag_anomalies(row):
                 flags = []
                 if pd.notnull(row['TimeDiff']) and row['TimeDiff'] < 180:
@@ -424,27 +431,29 @@ with tab_stats:
             
             valid_logs['備註'] = valid_logs.apply(flag_anomalies, axis=1)
 
-        # 依日期區間過濾資料
+        # 區分「所選區間內」資料 與 「截至結束日期前」的累積資料
         range_logs = valid_logs[(valid_logs['ParsedDate'] >= start_date) & (valid_logs['ParsedDate'] <= end_date)]
+        cumul_logs = valid_logs[valid_logs['ParsedDate'] <= end_date].copy()
         
         range_trucks = range_logs['車頭車號'].nunique() if '車頭車號' in range_logs.columns else 0
         range_trips = len(range_logs)
         range_vol = pd.to_numeric(range_logs['載運方量(m³)'], errors='coerce').sum() if '載運方量(m³)' in range_logs.columns else 0
         
-        st.markdown(f"#### 📊 區間統計結果 ({start_date} 至 {end_date})")
+        st.markdown(f"#### 📊 {period_label}統計結果 ({start_date} 至 {end_date})")
         m1, m2, m3 = st.columns(3)
-        m1.metric("區間出車車頭數", f"{range_trucks} 輛")
-        m2.metric("區間總車次", f"{range_trips} 趟")
-        m3.metric("區間實挖方量", f"{range_vol:,.0f} m³")
+        m1.metric(f"{period_label}出車車頭數", f"{range_trucks} 輛")
+        m2.metric(f"{period_label}總車次", f"{range_trips} 趟")
+        m3.metric(f"{period_label}實挖方量", f"{range_vol:,.0f} m³")
         st.divider()
 
         zone_grouped = pd.DataFrame()
         total_est = df_results['預估總土方'].sum() if not df_results.empty else 0
-        total_all_trips = len(valid_logs)
+        total_all_trips = len(cumul_logs)
         
         display_df = pd.DataFrame()
-        if '出土分區' in valid_logs.columns and '載運方量(m³)' in valid_logs.columns:
-            df_assigned = valid_logs[valid_logs['出土分區'] != '未指定'].copy()
+        # 進度表與地圖需使用「累計」資料來計算各區完成度
+        if '出土分區' in cumul_logs.columns and '載運方量(m³)' in cumul_logs.columns:
+            df_assigned = cumul_logs[cumul_logs['出土分區'] != '未指定'].copy()
             if not df_assigned.empty:
                 df_assigned['載運方量(m³)'] = pd.to_numeric(df_assigned['載運方量(m³)'], errors='coerce')
                 zone_grouped = df_assigned.groupby('出土分區')['載運方量(m³)'].sum().reset_index()
@@ -463,7 +472,7 @@ with tab_stats:
                     columns={'累計實挖方量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
                 )
 
-        st.markdown("#### 📱 區間回報與報表匯出")
+        st.markdown(f"#### 📱 {period_label}回報與報表匯出")
         
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
@@ -472,9 +481,9 @@ with tab_stats:
         combined_excavated = total_excavated + pre_excavated
         overall_rate = round((combined_excavated / manifest_total * 100), 1)
         
-        report_text = f"""【土方開挖每日回報】 區間: {start_date} ~ {end_date}
-本日車次： {range_trips} 台
-本日出土方量： {range_vol:,.0f} m³
+        report_text = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} ~ {end_date}
+{period_label}車次： {range_trips} 台
+{period_label}出土方量： {range_vol:,.0f} m³
 累計總車次： {total_all_trips} 台
 累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
 聯單預估總出土： {manifest_total:,.0f} m³
@@ -488,7 +497,7 @@ with tab_stats:
             if os.path.exists("font.ttf"):
                 with st.spinner("正在繪製地圖與生成報表..."):
                     try:
-                        pdf_path = generate_pdf(report_text, display_df, df_results, zone_grouped)
+                        pdf_path = generate_pdf(report_text, display_df, df_results, zone_grouped, period_label)
                         with open(pdf_path, "rb") as f:
                             st.download_button(
                                 label="📥 下載完整 PDF 報表 (包含地圖)",
@@ -509,7 +518,6 @@ with tab_stats:
             if not df_results.empty:
                 vol_dict = {}
                 if not zone_grouped.empty:
-                    vol_dict = zone_grouped.set_index('出土分區')['開挖階數與高程'].to_dict() if '開挖階數與高程' in zone_grouped.columns else {}
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
                 
@@ -545,7 +553,7 @@ with tab_stats:
                     ))
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
                 
-                fig_map.update_layout(title="各區階數開挖狀態", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
+                fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
         
         st.divider()
