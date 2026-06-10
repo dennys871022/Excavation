@@ -13,22 +13,21 @@ import matplotlib.patches as patches
 from matplotlib.font_manager import FontProperties
 
 st.set_page_config(page_title="後台管理端", layout="wide")
-st.title("🚧 營建土方後台管理系統")
+st.title("🚧 CDC土方管理系統")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error(f"資料庫連線失敗，請檢查 Secrets 設定：{e}")
+    st.error(f"資料庫連線失敗：{e}")
     st.stop()
 
 def load_sheet_data(sheet_name):
     try:
         df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
         return df.dropna(how='all')
-    except Exception as e:
-        st.warning(f"無法讀取分頁 `{sheet_name}`。錯誤：{e}")
+    except:
         return pd.DataFrame()
 
 def save_sheet_data(sheet_name, df):
@@ -47,6 +46,7 @@ def generate_backend_map(df_results, zone_grouped):
     
     vol_dict = {}
     if not zone_grouped.empty:
+        vol_dict = zone_grouped.set_index('出土分區')['開挖階數與高程'].to_dict() if '開挖階數與高程' in zone_grouped.columns else {}
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
     
@@ -92,7 +92,7 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped):
     pdf.add_font("CustomFont", fname="font.ttf")
     pdf.set_font("CustomFont", size=18)
     
-    pdf.cell(0, 10, text="營建土方每日回報", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, text="CDC土方每日回報", align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
     pdf.set_font("CustomFont", size=12)
@@ -250,6 +250,7 @@ try:
                 "第3挖方量(m³)": round(v3, 0),
                 "第4挖方量(m³)": round(v4, 0),
                 "預估總土方": round(sum(vols), 0), 
+                "Spacer1": depths_lab,
                 "各階累計方量": cum_vols, 
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
@@ -308,9 +309,9 @@ try:
                 "第3挖方量(m³)": round(v3, 0),
                 "第4挖方量(m³)": round(v4, 0),
                 "預估總土方": round(sum(vols), 0), 
-                "開挖階數與高程": f"{len(depths_a)}挖",
                 "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_center_val := (x_min + x_max)/2), "y_center": (y_min + y_max)/2,
+                "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_r += 1
 
@@ -405,6 +406,7 @@ with tab_stats:
             df_assigned = valid_logs[valid_logs['出土分區'] != '未指定'].copy()
             if not df_assigned.empty:
                 df_assigned['載運方量(m³)'] = pd.to_numeric(df_assigned['載運方量(m³)'], errors='coerce')
+                zone_grouped = df_assigned.groupby('出土分區')['載運方量(m³)']
                 zone_grouped = df_assigned.groupby('出土分區')['載運方量(m³)'].sum().reset_index()
                 zone_grouped.rename(columns={'載運方量(m³)': '累計實挖方量'}, inplace=True)
                 
