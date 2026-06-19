@@ -91,7 +91,6 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="
     pdf.add_font("CustomFont", fname="font.ttf")
     pdf.set_font("CustomFont", size=18)
     
-    # 根據區間動態改變 PDF 標題
     title_text = f"CDC土方{period_label}回報"
     pdf.cell(0, 10, text=title_text, align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
@@ -397,7 +396,6 @@ with tab_stats:
     else:
         start_date = end_date = date_selection
 
-    # 智慧判斷區間標籤名稱
     delta_days = (end_date - start_date).days
     if delta_days == 0:
         period_label = "本日"
@@ -431,7 +429,6 @@ with tab_stats:
             
             valid_logs['備註'] = valid_logs.apply(flag_anomalies, axis=1)
 
-        # 區分「所選區間內」資料 與 「截至結束日期前」的累積資料
         range_logs = valid_logs[(valid_logs['ParsedDate'] >= start_date) & (valid_logs['ParsedDate'] <= end_date)]
         cumul_logs = valid_logs[valid_logs['ParsedDate'] <= end_date].copy()
         
@@ -451,7 +448,6 @@ with tab_stats:
         total_all_trips = len(cumul_logs)
         
         display_df = pd.DataFrame()
-        # 進度表與地圖需使用「累計」資料來計算各區完成度
         if '出土分區' in cumul_logs.columns and '載運方量(m³)' in cumul_logs.columns:
             df_assigned = cumul_logs[cumul_logs['出土分區'] != '未指定'].copy()
             if not df_assigned.empty:
@@ -562,7 +558,10 @@ with tab_stats:
         df_unassigned = valid_logs[valid_logs['出土分區'] == '未指定'].copy()
         if not df_unassigned.empty:
             st.info(f"尚有 {len(df_unassigned)} 筆有效紀錄未指定分區，請勾選並套用。")
-            df_unassigned.insert(0, '勾選', False)
+            
+            select_all = st.checkbox("☑️ 一鍵全選所有未指定紀錄", value=False)
+            df_unassigned.insert(0, '勾選', select_all)
+            
             edited_unassigned = st.data_editor(df_unassigned, hide_index=True, column_config={"勾選": st.column_config.CheckboxColumn(required=True)})
             
             zone_list = df_results["分區代號"].tolist() if not df_results.empty else []
@@ -581,6 +580,8 @@ with tab_stats:
                             if save_sheet_data("dispatch_logs", df_logs):
                                 st.success(f"成功更新 {len(checked_indices)} 筆紀錄！")
                                 st.rerun()
+                        else:
+                            st.warning("⚠️ 請至少勾選一筆要套用的紀錄。")
         else:
             st.success("目前所有有效紀錄皆已分配分區。")
 
