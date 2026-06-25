@@ -408,11 +408,11 @@ with tab_stats:
 
     if not df_logs.empty and "日期" in df_logs.columns:
         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
-        valid_logs = df_logs[df_logs['備註'].astype(str) != '1分鐘內連續查詢'].copy()
+        valid_logs = df_logs[df_logs['備註'].astype(str) != '1分鐘內連續點擊'].copy()
         
         if not valid_logs.empty and '時間' in valid_logs.columns:
             valid_logs = valid_logs.sort_values(['車頭車號', '日期', '時間'])
-            valid_logs['FullDateTime'] = pd.to_datetime(valid_logs['日期'].astype(str) + ' ' + valid_logs['時間'].astype(str))
+            valid_logs['FullDateTime'] = pd.to_datetime(valid_logs['日期'].astype(str) + ' ' + valid_logs['時間'].astype(str), errors='coerce')
             valid_logs['TimeDiff'] = valid_logs.groupby(['車頭車號', '日期'])['FullDateTime'].diff().dt.total_seconds()
             
             daily_counts = valid_logs.groupby(['車頭車號', '日期']).size().reset_index(name='DailyTripCount')
@@ -515,7 +515,7 @@ with tab_stats:
                 vol_dict = {}
                 if not zone_grouped.empty:
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
-                stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
+                stage_dict = df_results.set_index('分區代號')['`各階累計方量`'].to_dict()
                 
                 for idx, row in df_results.iterrows():
                     grid_id = row['分區代號']
@@ -602,7 +602,9 @@ with tab_stats:
         st.info("尚無出土紀錄。")
 
 with tab_sync:
-    st.write("### 🧾 官方聯單自動對帳與校正")
+    st.write("### 🧾 官方聯單時間序列精準對帳與校正")
+    st.info("💡 演算法說明：系統會自動解析合併欄位。尋找時間最接近的紀錄綁定並強制修正為官方時間（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。")
+    
     sync_date = st.date_input("選擇對帳日期：", value=(datetime.utcnow() + timedelta(hours=8)).date())
 
     uploaded_csv = st.file_uploader("上傳官方電子聯單 CSV 檔案", type=["csv"])
@@ -615,89 +617,135 @@ with tab_sync:
                 uploaded_csv.seek(0)
                 official_df = pd.read_csv(uploaded_csv, encoding='big5')
 
-            st.write("請確認聯單的車號欄位：")
-            plate_col = st.selectbox("車牌號碼欄位", official_df.columns)
+            st.markdown("請確認聯單對應欄位 (系統會自動將日期時間字串拆分)：")
+            
+            # 自動偵測可能的欄位名稱位置
+            default_plate = official_df.columns.get_loc("出場車頭車號") if "出場車頭車號" in official_df.columns else 0
+            default_datetime = official_df.columns.get_loc("出場日期時間") if "出場日期時間" in official_df.columns else 0
 
-            if st.button("開始比對"):
+            col_p, col_dt = st.columns(2)
+            with col_p:
+                plate_col = st.selectbox("車牌號碼欄位", official_df.columns, index=default_plate)
+            with col_dt:
+                datetime_col = st.selectbox("官方日期時間欄位 (合併欄位)", official_df.columns, index=default_datetime)
+
+            if st.button("開始進行時間序列精準比對", use_container_width=True):
+                # 解析合併的官方日期時間欄位
+                official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
+                official_df['ParsedDate'] = official_df['FullTime'].dt.date
                 official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-                off_counts = official_df['正規化車號'].value_counts().reset_index()
-                off_counts.columns = ['車頭車號', '官方趟數']
-
-                df_logs_sync = load_sheet_data("dispatch_logs")
                 
+                sync_off_df = official_df[official_df['ParsedDate'] == sync_date].copy()
+
+                # 讀取並處理系統紀錄
+                df_logs_sync = load_sheet_data("dispatch_logs")
                 if not df_logs_sync.empty and '日期' in df_logs_sync.columns:
                     df_logs_sync['ParsedDate'] = pd.to_datetime(df_logs_sync['日期']).dt.date
-                    day_logs = df_logs_sync[df_logs_sync['ParsedDate'] == sync_date].copy()
-                    
-                    if not day_logs.empty and '車頭車號' in day_logs.columns:
-                        day_logs['正規化車號'] = day_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-                        sys_counts = day_logs['正規化車號'].value_counts().reset_index()
-                        sys_counts.columns = ['車頭車號', '系統趟數']
-                    else:
-                        sys_counts = pd.DataFrame(columns=['車頭車號', '系統趟數'])
+                    df_logs_sync['FullTime'] = pd.to_datetime(df_logs_sync['日期'].astype(str) + ' ' + df_logs_sync['時間'].astype(str), errors='coerce')
+                    df_logs_sync['正規化車號'] = df_logs_sync['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                    sync_sys_df = df_logs_sync[df_logs_sync['ParsedDate'] == sync_date].copy()
                 else:
-                    sys_counts = pd.DataFrame(columns=['車頭車號', '系統趟數'])
+                    sync_sys_df = pd.DataFrame(columns=['正規化車號', 'FullTime'])
+
+                off_counts = sync_off_df['正規化車號'].value_counts().reset_index()
+                off_counts.columns = ['車頭車號', '官方趟數']
+
+                sys_counts = sync_sys_df['正規化車號'].value_counts().reset_index()
+                sys_counts.columns = ['車頭車號', '系統趟數']
 
                 merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
-                merged['差異'] = merged['系統趟數'] - merged['官方趟數']
+                merged['差異 (多按或漏按)'] = merged['系統趟數'] - merged['官方趟數']
                 
-                st.session_state['sync_data'] = merged
+                st.session_state['sync_data_summary'] = merged
                 st.session_state['sync_date'] = sync_date
-                
-        except Exception as e:
-            st.error(f"檔案讀取失敗：{e}")
+                st.session_state['official_ready_df'] = sync_off_df
+                st.success("時間序列比對運算完成！請檢視下方差異並決定是否同步。")
 
-    if st.session_state.get('sync_data') is not None and st.session_state.get('sync_date') == sync_date:
-        merged_data = st.session_state['sync_data']
+        except Exception as e:
+            st.error(f"檔案解析或比對失敗：{e}")
+
+    if st.session_state.get('sync_data_summary') is not None and st.session_state.get('sync_date') == sync_date:
+        merged_data = st.session_state['sync_data_summary']
         
-        st.markdown("#### 比對結果")
+        st.markdown("#### 當日車號數量初步比對結果")
         st.dataframe(merged_data, use_container_width=True)
         
-        diff_count = len(merged_data[merged_data['差異'] != 0])
-        if diff_count == 0:
-            st.success("恭喜！系統趟數與官方聯單完全一致。")
-        else:
-            st.warning(f"發現 {diff_count} 筆車號存在差異，正數代表工班多按，負數代表工班漏按。")
-            
-            if st.button("以官方聯單為主進行同步 (將自動補齊漏按或刪除多餘車次)"):
-                df_logs = load_sheet_data("dispatch_logs")
-                
-                if df_logs.empty:
-                    df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註"])
-                else:
-                    df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
-                
-                to_drop = []
-                to_add = []
+        st.markdown("#### 🔄 執行資料庫智慧校正")
+        st.warning("系統將執行智慧時間鄰居配對。工班重疊多按的紀錄會被清除，漏按的紀錄會完全參照官方的時間順序插入補齊。")
+        
+        if st.button("以官方聯單時間軸為主，執行精準覆蓋與同步校正", use_container_width=True):
+            df_logs = load_sheet_data("dispatch_logs")
+            if df_logs.empty:
+                 df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註"])
 
-                for idx, row in merged_data.iterrows():
-                    plate = row['車頭車號']
-                    diff = int(row['差異'])
+            df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
+            df_logs['FullTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
+            df_logs['正規化車號'] = df_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
 
-                    if diff > 0:
-                        plate_mask = (df_logs['ParsedDate'] == sync_date) & (df_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper() == plate)
-                        plate_indices = df_logs[plate_mask].index.tolist()
-                        to_drop.extend(plate_indices[-diff:])
-                    elif diff < 0:
-                        for _ in range(abs(diff)):
-                            to_add.append({
-                                "日期": sync_date.strftime("%Y-%m-%d"),
-                                "時間": "23:59:59",
-                                "車頭車號": plate,
-                                "出土分區": "未指定",
-                                "載運方量(m³)": 12.0,
-                                "備註": "官方聯單補登"
-                            })
+            sync_off_df = st.session_state['official_ready_df']
 
-                if to_drop:
-                    df_logs = df_logs.drop(index=to_drop)
+            to_delete_indices = []
+            to_add_records = []
+            updates = {}
 
-                if to_add:
-                    df_logs = pd.concat([df_logs, pd.DataFrame(to_add)], ignore_index=True)
+            plates = set(sync_off_df['正規化車號']).union(set(df_logs[df_logs['ParsedDate'] == sync_date]['正規化車號']))
 
-                if 'ParsedDate' in df_logs.columns:
-                    df_logs = df_logs.drop(columns=['ParsedDate'])
+            for plate in plates:
+                o_subset = sync_off_df[sync_off_df['正規化車號'] == plate].sort_values('FullTime')
+                s_subset = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['正規化車號'] == plate)].sort_values('FullTime')
 
-                if save_sheet_data("dispatch_logs", df_logs):
-                    st.success("同步校正完成！請重新整理頁面以檢視最新統計。")
-                    st.session_state['sync_data'] = None
+                s_indices = s_subset.index.tolist()
+                used_s = set()
+
+                for _, o_row in o_subset.iterrows():
+                    o_t = o_row['FullTime']
+                    o_plate_raw = o_row[plate_col]
+                    best_s_idx = None
+                    best_diff = float('inf')
+
+                    for idx in s_indices:
+                        if idx in used_s: continue
+                        s_t = s_subset.loc[idx, 'FullTime']
+                        if pd.isna(o_t) or pd.isna(s_t): continue
+                        diff = abs((o_t - s_t).total_seconds())
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_s_idx = idx
+
+                    # 配對門檻設定在 2 小時內
+                    if best_s_idx is not None and best_diff < 7200:
+                        used_s.add(best_s_idx)
+                        updates[best_s_idx] = o_t.strftime("%H:%M:%S")
+                    else:
+                        # 補登資料自動拆分為系統所需的日期與時間字串
+                        to_add_records.append({
+                            "日期": o_t.strftime("%Y-%m-%d") if pd.notnull(o_t) else sync_date.strftime("%Y-%m-%d"),
+                            "時間": o_t.strftime("%H:%M:%S") if pd.notnull(o_t) else "00:00:00",
+                            "車頭車號": o_plate_raw,
+                            "出土分區": "未指定",
+                            "載運方量(m³)": 12.0,
+                            "備註": "官方聯單補登"
+                        })
+
+                # 沒被配對到的視為工班重疊多按，精準剔除
+                for idx in s_indices:
+                    if idx not in used_s:
+                        to_delete_indices.append(idx)
+
+            if updates:
+                for idx, new_time in updates.items():
+                    df_logs.loc[idx, '時間'] = new_time
+
+            if to_delete_indices:
+                df_logs = df_logs.drop(index=to_delete_indices)
+
+            if to_add_records:
+                df_logs = pd.concat([df_logs, pd.DataFrame(to_add_records)], ignore_index=True)
+
+            # 全表依據日期與時間序列重新排序，確保順序與官方一致
+            df_logs['SortTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
+            df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime'])
+
+            if save_sheet_data("dispatch_logs", df_logs):
+                st.success("✅ 同步校正與官方時間序列排序完成！")
+                st.session_state['sync_data_summary'] = None
