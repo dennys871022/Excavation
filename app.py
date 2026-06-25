@@ -317,7 +317,7 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-tab_grid, tab_vehicle, tab_stats, tab_sync = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳"])
+tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理"])
 
 with tab_grid:
     export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
@@ -407,6 +407,9 @@ with tab_stats:
         period_label = "本區間"
 
     if not df_logs.empty and "日期" in df_logs.columns:
+        if "聯單序號" not in df_logs.columns:
+            df_logs["聯單序號"] = ""
+            
         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
         valid_logs = df_logs[df_logs['備註'].astype(str) != '1分鐘內連續點擊'].copy()
         
@@ -603,7 +606,7 @@ with tab_stats:
 
 with tab_sync:
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
-    st.info("💡 演算法說明：系統會自動解析合併欄位。尋找時間最接近的紀錄綁定並強制修正為官方時間（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。")
+    st.info("💡 演算法說明：系統會自動尋找時間最接近的紀錄綁定並寫入聯單序號（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。")
     
     sync_date = st.date_input("選擇對帳日期：", value=(datetime.utcnow() + timedelta(hours=8)).date())
 
@@ -619,27 +622,29 @@ with tab_sync:
 
             st.markdown("請確認聯單對應欄位 (系統會自動將日期時間字串拆分)：")
             
-            # 自動偵測可能的欄位名稱位置
             default_plate = official_df.columns.get_loc("出場車頭車號") if "出場車頭車號" in official_df.columns else 0
             default_datetime = official_df.columns.get_loc("出場日期時間") if "出場日期時間" in official_df.columns else 0
+            default_serial = official_df.columns.get_loc("聯單序號") if "聯單序號" in official_df.columns else 0
 
-            col_p, col_dt = st.columns(2)
+            col_p, col_dt, col_s = st.columns(3)
             with col_p:
                 plate_col = st.selectbox("車牌號碼欄位", official_df.columns, index=default_plate)
             with col_dt:
-                datetime_col = st.selectbox("官方日期時間欄位 (合併欄位)", official_df.columns, index=default_datetime)
+                datetime_col = st.selectbox("官方日期時間欄位", official_df.columns, index=default_datetime)
+            with col_s:
+                serial_col = st.selectbox("聯單序號欄位", official_df.columns, index=default_serial)
 
             if st.button("開始進行時間序列精準比對", use_container_width=True):
-                # 解析合併的官方日期時間欄位
                 official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
                 official_df['ParsedDate'] = official_df['FullTime'].dt.date
                 official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
                 
                 sync_off_df = official_df[official_df['ParsedDate'] == sync_date].copy()
 
-                # 讀取並處理系統紀錄
                 df_logs_sync = load_sheet_data("dispatch_logs")
                 if not df_logs_sync.empty and '日期' in df_logs_sync.columns:
+                    if "聯單序號" not in df_logs_sync.columns:
+                        df_logs_sync["聯單序號"] = ""
                     df_logs_sync['ParsedDate'] = pd.to_datetime(df_logs_sync['日期']).dt.date
                     df_logs_sync['FullTime'] = pd.to_datetime(df_logs_sync['日期'].astype(str) + ' ' + df_logs_sync['時間'].astype(str), errors='coerce')
                     df_logs_sync['正規化車號'] = df_logs_sync['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
@@ -666,17 +671,16 @@ with tab_sync:
 
     if st.session_state.get('sync_data_summary') is not None and st.session_state.get('sync_date') == sync_date:
         merged_data = st.session_state['sync_data_summary']
-        
-        st.markdown("#### 當日車號數量初步比對結果")
         st.dataframe(merged_data, use_container_width=True)
         
-        st.markdown("#### 🔄 執行資料庫智慧校正")
-        st.warning("系統將執行智慧時間鄰居配對。工班重疊多按的紀錄會被清除，漏按的紀錄會完全參照官方的時間順序插入補齊。")
+        st.warning("點擊下方按鈕，系統將依照官方時序重新整理資料庫，並將 CSV 的「聯單序號」永久寫入雲端紀錄中。")
         
-        if st.button("以官方聯單時間軸為主，執行精準覆蓋與同步校正", use_container_width=True):
+        if st.button("以官方聯單時間軸為主，執行精準覆蓋與寫入序號", use_container_width=True):
             df_logs = load_sheet_data("dispatch_logs")
             if df_logs.empty:
-                 df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註"])
+                 df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註", "聯單序號"])
+            if "聯單序號" not in df_logs.columns:
+                df_logs["聯單序號"] = ""
 
             df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
             df_logs['FullTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
@@ -700,6 +704,8 @@ with tab_sync:
                 for _, o_row in o_subset.iterrows():
                     o_t = o_row['FullTime']
                     o_plate_raw = o_row[plate_col]
+                    o_serial_raw = str(o_row[serial_col])
+                    
                     best_s_idx = None
                     best_diff = float('inf')
 
@@ -712,29 +718,31 @@ with tab_sync:
                             best_diff = diff
                             best_s_idx = idx
 
-                    # 配對門檻設定在 2 小時內
                     if best_s_idx is not None and best_diff < 7200:
                         used_s.add(best_s_idx)
-                        updates[best_s_idx] = o_t.strftime("%H:%M:%S")
+                        updates[best_s_idx] = {
+                            "時間": o_t.strftime("%H:%M:%S"),
+                            "聯單序號": o_serial_raw
+                        }
                     else:
-                        # 補登資料自動拆分為系統所需的日期與時間字串
                         to_add_records.append({
                             "日期": o_t.strftime("%Y-%m-%d") if pd.notnull(o_t) else sync_date.strftime("%Y-%m-%d"),
                             "時間": o_t.strftime("%H:%M:%S") if pd.notnull(o_t) else "00:00:00",
                             "車頭車號": o_plate_raw,
                             "出土分區": "未指定",
                             "載運方量(m³)": 12.0,
-                            "備註": "官方聯單補登"
+                            "備註": "官方聯單補登",
+                            "聯單序號": o_serial_raw
                         })
 
-                # 沒被配對到的視為工班重疊多按，精準剔除
                 for idx in s_indices:
                     if idx not in used_s:
                         to_delete_indices.append(idx)
 
             if updates:
-                for idx, new_time in updates.items():
-                    df_logs.loc[idx, '時間'] = new_time
+                for idx, vals in updates.items():
+                    for k, v in vals.items():
+                        df_logs.loc[idx, k] = v
 
             if to_delete_indices:
                 df_logs = df_logs.drop(index=to_delete_indices)
@@ -742,10 +750,58 @@ with tab_sync:
             if to_add_records:
                 df_logs = pd.concat([df_logs, pd.DataFrame(to_add_records)], ignore_index=True)
 
-            # 全表依據日期與時間序列重新排序，確保順序與官方一致
             df_logs['SortTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
             df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime'])
 
             if save_sheet_data("dispatch_logs", df_logs):
-                st.success("✅ 同步校正與官方時間序列排序完成！")
+                st.success("✅ 同步校正與聯單綁定完成！庫存數量已自動更新。")
                 st.session_state['sync_data_summary'] = None
+
+with tab_manifest:
+    st.write("### 🎫 聯單庫存與發放管理")
+    
+    df_manifest = load_sheet_data("manifest_settings")
+    if df_manifest.empty:
+        df_manifest = pd.DataFrame({
+            "聯單類型": ["B1", "B2-3", "B4", "B5"],
+            "總配額": [1000, 2790, 2821, 30],
+            "已列印數量": [0, 0, 0, 0]
+        })
+        save_sheet_data("manifest_settings", df_manifest)
+    
+    df_logs = load_sheet_data("dispatch_logs")
+    if not df_logs.empty and "聯單序號" in df_logs.columns:
+        used_df = df_logs[df_logs["聯單序號"].astype(str).str.strip() != ""]
+        used_df["Type"] = used_df["聯單序號"].astype(str).str.split("_").str[0]
+        used_counts = used_df["Type"].value_counts().to_dict()
+    else:
+        used_counts = {}
+
+    df_manifest["已使用數量"] = df_manifest["聯單類型"].map(used_counts).fillna(0).astype(int)
+    df_manifest["現場剩餘可用"] = df_manifest["已列印數量"].astype(int) - df_manifest["已使用數量"]
+    df_manifest["雲端未列印配額"] = df_manifest["總配額"].astype(int) - df_manifest["已列印數量"].astype(int)
+    
+    st.info("請於下方表格直接修改「已列印數量」，系統會根據對帳結果自動計算現場剩餘的可用張數。")
+    edited_manifest = st.data_editor(
+        df_manifest, 
+        disabled=["聯單類型", "總配額", "已使用數量", "現場剩餘可用", "雲端未列印配額"],
+        hide_index=True,
+        use_container_width=True
+    )
+    
+    if st.button("💾 儲存列印數量更新"):
+        if save_sheet_data("manifest_settings", edited_manifest[['聯單類型', '總配額', '已列印數量']]):
+            st.success("已更新列印數量！")
+            st.rerun()
+
+    st.divider()
+    st.markdown("#### 🚨 現場庫存狀態警報")
+    
+    alert_triggered = False
+    for idx, row in df_manifest.iterrows():
+        if row["現場剩餘可用"] < 100:
+            st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{row['現場剩餘可用']}** 張！請盡速列印補充備用。 (尚有雲端配額 {row['雲端未列印配額']} 張)")
+            alert_triggered = True
+            
+    if not alert_triggered:
+        st.success("✅ 目前所有類型的聯單現場庫存皆十分充足。")
