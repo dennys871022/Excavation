@@ -620,18 +620,16 @@ with tab_sync:
                 uploaded_csv.seek(0)
                 official_df = pd.read_csv(uploaded_csv, encoding='big5')
 
-            # 寫死指定官方欄位，隱藏選擇介面
+            # 隱藏下拉選單，強制綁定已知官方欄位名稱
             plate_col = "出場車頭車號"
             datetime_col = "出場日期"
             serial_col = "聯單序號"
 
-            # 驗證 CSV 是否包含所需欄位
             missing_cols = [c for c in [plate_col, datetime_col, serial_col] if c not in official_df.columns]
             
             if missing_cols:
-                st.error(f"⚠️ CSV 檔案格式不符！缺少必要欄位：{', '.join(missing_cols)}。請確認官方匯出的檔案格式。")
+                st.error(f"⚠️ CSV 檔案格式不符！缺少必要欄位：{', '.join(missing_cols)}。請確認官方匯出的檔案是否包含這些欄位。")
             else:
-                st.success("✅ 已自動鎖定「出場車頭車號」、「出場日期」與「聯單序號」欄位。")
                 if st.button("開始進行時間序列精準比對", use_container_width=True):
                     official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
                     official_df['ParsedDate'] = official_df['FullTime'].dt.date
@@ -692,7 +690,7 @@ with tab_sync:
 
             plates = set(sync_off_df['正規化車號']).union(set(df_logs[df_logs['ParsedDate'] == sync_date]['正規化車號']))
 
-            # 固定官方欄位名稱，避免 KeyError
+            # 再次聲明避免 KeyError
             plate_col = "出場車頭車號"
             serial_col = "聯單序號"
 
@@ -772,12 +770,16 @@ with tab_manifest:
         save_sheet_data("manifest_settings", df_manifest)
     
     df_logs = load_sheet_data("dispatch_logs")
+    
+    # 強健模糊比對：自動過濾空值，並確保字串包含聯單類型
+    used_counts = {t: 0 for t in df_manifest["聯單類型"]}
     if not df_logs.empty and "聯單序號" in df_logs.columns:
-        used_df = df_logs[df_logs["聯單序號"].astype(str).str.strip() != ""]
-        used_df["Type"] = used_df["聯單序號"].astype(str).str.split("_").str[0]
-        used_counts = used_df["Type"].value_counts().to_dict()
-    else:
-        used_counts = {}
+        valid_serials = df_logs["聯單序號"].dropna().astype(str).str.strip().str.upper()
+        valid_serials = valid_serials[(valid_serials != "") & (valid_serials != "NAN") & (valid_serials != "NONE")]
+        
+        for m_type in df_manifest["聯單類型"]:
+            count = valid_serials.str.contains(m_type.upper(), regex=False).sum()
+            used_counts[m_type] = count
 
     df_manifest["已使用數量"] = df_manifest["聯單類型"].map(used_counts).fillna(0).astype(int)
     df_manifest["現場剩餘可用"] = df_manifest["已列印數量"].astype(int) - df_manifest["已使用數量"]
@@ -801,7 +803,7 @@ with tab_manifest:
     
     alert_triggered = False
     for idx, row in df_manifest.iterrows():
-        # 如果現場低於100張，且雲端還有沒印完的配額時，才觸發警報
+        # 如果現場低於 100 張，且雲端還有沒印完的配額時，才觸發警報
         if row["現場剩餘可用"] < 100 and row["雲端未列印配額"] > 0:
             st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{row['現場剩餘可用']}** 張！請盡速列印補充備用。 (尚有雲端配額 {row['雲端未列印配額']} 張)")
             alert_triggered = True
