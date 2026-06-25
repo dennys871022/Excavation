@@ -317,7 +317,7 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-tab_grid, tab_vehicle, tab_stats = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板"])
+tab_grid, tab_vehicle, tab_stats, tab_sync = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳"])
 
 with tab_grid:
     export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
@@ -360,7 +360,7 @@ with tab_vehicle:
                 new_df = pd.read_excel(uploaded_file)
             new_df.columns = new_df.columns.str.replace(r'\s+', '', regex=True)
             
-            new_df['車頭車號'] = new_df['車頭車號'].astype(str).str.replace(r'\s+', '', regex=True).str.upper()
+            new_df['車頭車號'] = new_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
             if new_df['車頭車號'].duplicated().any():
                 st.error("匯入失敗：偵測到重複的車頭車號，請修正後重新匯入。")
             else:
@@ -372,7 +372,7 @@ with tab_vehicle:
     edited_drivers = st.data_editor(df_drivers, num_rows="dynamic", use_container_width=True, height=400)
     if st.button("💾 將變更儲存至雲端"):
         clean_df = edited_drivers.dropna(subset=["車頭車號"]).copy()
-        clean_df['車頭車號'] = clean_df['車頭車號'].astype(str).str.replace(r'\s+', '', regex=True).str.upper()
+        clean_df['車頭車號'] = clean_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
         
         if clean_df['車頭車號'].duplicated().any():
             st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存。")
@@ -477,7 +477,7 @@ with tab_stats:
         combined_excavated = total_excavated + pre_excavated
         overall_rate = round((combined_excavated / manifest_total * 100), 1)
         
-        report_text = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} ~ {end_date}
+        report_text = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}車次： {range_trips} 台
 {period_label}出土方量： {range_vol:,.0f} m³
 累計總車次： {total_all_trips} 台
@@ -600,3 +600,104 @@ with tab_stats:
                     st.rerun()
     else:
         st.info("尚無出土紀錄。")
+
+with tab_sync:
+    st.write("### 🧾 官方聯單自動對帳與校正")
+    sync_date = st.date_input("選擇對帳日期：", value=(datetime.utcnow() + timedelta(hours=8)).date())
+
+    uploaded_csv = st.file_uploader("上傳官方電子聯單 CSV 檔案", type=["csv"])
+    
+    if uploaded_csv:
+        try:
+            try:
+                official_df = pd.read_csv(uploaded_csv, encoding='utf-8')
+            except UnicodeDecodeError:
+                uploaded_csv.seek(0)
+                official_df = pd.read_csv(uploaded_csv, encoding='big5')
+
+            st.write("請確認聯單的車號欄位：")
+            plate_col = st.selectbox("車牌號碼欄位", official_df.columns)
+
+            if st.button("開始比對"):
+                official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                off_counts = official_df['正規化車號'].value_counts().reset_index()
+                off_counts.columns = ['車頭車號', '官方趟數']
+
+                df_logs_sync = load_sheet_data("dispatch_logs")
+                
+                if not df_logs_sync.empty and '日期' in df_logs_sync.columns:
+                    df_logs_sync['ParsedDate'] = pd.to_datetime(df_logs_sync['日期']).dt.date
+                    day_logs = df_logs_sync[df_logs_sync['ParsedDate'] == sync_date].copy()
+                    
+                    if not day_logs.empty and '車頭車號' in day_logs.columns:
+                        day_logs['正規化車號'] = day_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                        sys_counts = day_logs['正規化車號'].value_counts().reset_index()
+                        sys_counts.columns = ['車頭車號', '系統趟數']
+                    else:
+                        sys_counts = pd.DataFrame(columns=['車頭車號', '系統趟數'])
+                else:
+                    sys_counts = pd.DataFrame(columns=['車頭車號', '系統趟數'])
+
+                merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
+                merged['差異'] = merged['系統趟數'] - merged['官方趟數']
+                
+                st.session_state['sync_data'] = merged
+                st.session_state['sync_date'] = sync_date
+                
+        except Exception as e:
+            st.error(f"檔案讀取失敗：{e}")
+
+    if st.session_state.get('sync_data') is not None and st.session_state.get('sync_date') == sync_date:
+        merged_data = st.session_state['sync_data']
+        
+        st.markdown("#### 比對結果")
+        st.dataframe(merged_data, use_container_width=True)
+        
+        diff_count = len(merged_data[merged_data['差異'] != 0])
+        if diff_count == 0:
+            st.success("恭喜！系統趟數與官方聯單完全一致。")
+        else:
+            st.warning(f"發現 {diff_count} 筆車號存在差異，正數代表工班多按，負數代表工班漏按。")
+            
+            if st.button("以官方聯單為主進行同步 (將自動補齊漏按或刪除多餘車次)"):
+                df_logs = load_sheet_data("dispatch_logs")
+                
+                if df_logs.empty:
+                    df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註"])
+                else:
+                    df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
+                
+                to_drop = []
+                to_add = []
+
+                for idx, row in merged_data.iterrows():
+                    plate = row['車頭車號']
+                    diff = int(row['差異'])
+
+                    if diff > 0:
+                        plate_mask = (df_logs['ParsedDate'] == sync_date) & (df_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper() == plate)
+                        plate_indices = df_logs[plate_mask].index.tolist()
+                        to_drop.extend(plate_indices[-diff:])
+                    elif diff < 0:
+                        for _ in range(abs(diff)):
+                            to_add.append({
+                                "日期": sync_date.strftime("%Y-%m-%d"),
+                                "時間": "23:59:59",
+                                "車頭車號": plate,
+                                "出土分區": "未指定",
+                                "載運方量(m³)": 12.0,
+                                "備註": "官方聯單補登"
+                            })
+
+                if to_drop:
+                    df_logs = df_logs.drop(index=to_drop)
+
+                if to_add:
+                    df_logs = pd.concat([df_logs, pd.DataFrame(to_add)], ignore_index=True)
+
+                if 'ParsedDate' in df_logs.columns:
+                    df_logs = df_logs.drop(columns=['ParsedDate'])
+
+                if save_sheet_data("dispatch_logs", df_logs):
+                    st.success("同步校正完成！請重新整理頁面以檢視最新統計。")
+                    st.session_state['sync_data'] = None
