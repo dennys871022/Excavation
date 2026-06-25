@@ -515,7 +515,7 @@ with tab_stats:
                 vol_dict = {}
                 if not zone_grouped.empty:
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
-                stage_dict = df_results.set_index('分區代號')['`各階累計方量`'].to_dict()
+                stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
                 
                 for idx, row in df_results.iterrows():
                     grid_id = row['分區代號']
