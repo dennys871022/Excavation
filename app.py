@@ -620,51 +620,49 @@ with tab_sync:
                 uploaded_csv.seek(0)
                 official_df = pd.read_csv(uploaded_csv, encoding='big5')
 
-            st.markdown("請確認聯單對應欄位 (系統會自動將日期時間字串拆分)：")
+            # 寫死指定官方欄位，隱藏選擇介面
+            plate_col = "出場車頭車號"
+            datetime_col = "出場日期"
+            serial_col = "聯單序號"
+
+            # 驗證 CSV 是否包含所需欄位
+            missing_cols = [c for c in [plate_col, datetime_col, serial_col] if c not in official_df.columns]
             
-            default_plate = official_df.columns.get_loc("出場車頭車號") if "出場車頭車號" in official_df.columns else 0
-            default_datetime = official_df.columns.get_loc("出場日期時間") if "出場日期時間" in official_df.columns else 0
-            default_serial = official_df.columns.get_loc("聯單序號") if "聯單序號" in official_df.columns else 0
+            if missing_cols:
+                st.error(f"⚠️ CSV 檔案格式不符！缺少必要欄位：{', '.join(missing_cols)}。請確認官方匯出的檔案格式。")
+            else:
+                st.success("✅ 已自動鎖定「出場車頭車號」、「出場日期」與「聯單序號」欄位。")
+                if st.button("開始進行時間序列精準比對", use_container_width=True):
+                    official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
+                    official_df['ParsedDate'] = official_df['FullTime'].dt.date
+                    official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                    
+                    sync_off_df = official_df[official_df['ParsedDate'] == sync_date].copy()
 
-            col_p, col_dt, col_s = st.columns(3)
-            with col_p:
-                plate_col = st.selectbox("車牌號碼欄位", official_df.columns, index=default_plate)
-            with col_dt:
-                datetime_col = st.selectbox("官方日期時間欄位", official_df.columns, index=default_datetime)
-            with col_s:
-                serial_col = st.selectbox("聯單序號欄位", official_df.columns, index=default_serial)
+                    df_logs_sync = load_sheet_data("dispatch_logs")
+                    if not df_logs_sync.empty and '日期' in df_logs_sync.columns:
+                        if "聯單序號" not in df_logs_sync.columns:
+                            df_logs_sync["聯單序號"] = ""
+                        df_logs_sync['ParsedDate'] = pd.to_datetime(df_logs_sync['日期']).dt.date
+                        df_logs_sync['FullTime'] = pd.to_datetime(df_logs_sync['日期'].astype(str) + ' ' + df_logs_sync['時間'].astype(str), errors='coerce')
+                        df_logs_sync['正規化車號'] = df_logs_sync['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                        sync_sys_df = df_logs_sync[df_logs_sync['ParsedDate'] == sync_date].copy()
+                    else:
+                        sync_sys_df = pd.DataFrame(columns=['正規化車號', 'FullTime'])
 
-            if st.button("開始進行時間序列精準比對", use_container_width=True):
-                official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
-                official_df['ParsedDate'] = official_df['FullTime'].dt.date
-                official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-                
-                sync_off_df = official_df[official_df['ParsedDate'] == sync_date].copy()
+                    off_counts = sync_off_df['正規化車號'].value_counts().reset_index()
+                    off_counts.columns = ['車頭車號', '官方趟數']
 
-                df_logs_sync = load_sheet_data("dispatch_logs")
-                if not df_logs_sync.empty and '日期' in df_logs_sync.columns:
-                    if "聯單序號" not in df_logs_sync.columns:
-                        df_logs_sync["聯單序號"] = ""
-                    df_logs_sync['ParsedDate'] = pd.to_datetime(df_logs_sync['日期']).dt.date
-                    df_logs_sync['FullTime'] = pd.to_datetime(df_logs_sync['日期'].astype(str) + ' ' + df_logs_sync['時間'].astype(str), errors='coerce')
-                    df_logs_sync['正規化車號'] = df_logs_sync['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-                    sync_sys_df = df_logs_sync[df_logs_sync['ParsedDate'] == sync_date].copy()
-                else:
-                    sync_sys_df = pd.DataFrame(columns=['正規化車號', 'FullTime'])
+                    sys_counts = sync_sys_df['正規化車號'].value_counts().reset_index()
+                    sys_counts.columns = ['車頭車號', '系統趟數']
 
-                off_counts = sync_off_df['正規化車號'].value_counts().reset_index()
-                off_counts.columns = ['車頭車號', '官方趟數']
-
-                sys_counts = sync_sys_df['正規化車號'].value_counts().reset_index()
-                sys_counts.columns = ['車頭車號', '系統趟數']
-
-                merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
-                merged['差異 (多按或漏按)'] = merged['系統趟數'] - merged['官方趟數']
-                
-                st.session_state['sync_data_summary'] = merged
-                st.session_state['sync_date'] = sync_date
-                st.session_state['official_ready_df'] = sync_off_df
-                st.success("時間序列比對運算完成！請檢視下方差異並決定是否同步。")
+                    merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
+                    merged['差異 (多按或漏按)'] = merged['系統趟數'] - merged['官方趟數']
+                    
+                    st.session_state['sync_data_summary'] = merged
+                    st.session_state['sync_date'] = sync_date
+                    st.session_state['official_ready_df'] = sync_off_df
+                    st.success("時間序列比對運算完成！請檢視下方差異並決定是否同步。")
 
         except Exception as e:
             st.error(f"檔案解析或比對失敗：{e}")
@@ -693,6 +691,10 @@ with tab_sync:
             updates = {}
 
             plates = set(sync_off_df['正規化車號']).union(set(df_logs[df_logs['ParsedDate'] == sync_date]['正規化車號']))
+
+            # 固定官方欄位名稱，避免 KeyError
+            plate_col = "出場車頭車號"
+            serial_col = "聯單序號"
 
             for plate in plates:
                 o_subset = sync_off_df[sync_off_df['正規化車號'] == plate].sort_values('FullTime')
@@ -799,9 +801,10 @@ with tab_manifest:
     
     alert_triggered = False
     for idx, row in df_manifest.iterrows():
-        if row["現場剩餘可用"] < 100:
+        # 如果現場低於100張，且雲端還有沒印完的配額時，才觸發警報
+        if row["現場剩餘可用"] < 100 and row["雲端未列印配額"] > 0:
             st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{row['現場剩餘可用']}** 張！請盡速列印補充備用。 (尚有雲端配額 {row['雲端未列印配額']} 張)")
             alert_triggered = True
             
     if not alert_triggered:
-        st.success("✅ 目前所有類型的聯單現場庫存皆十分充足。")
+        st.success("✅ 目前所有類型的聯單現場庫存皆十分充足，或已全數列印完畢。")
