@@ -557,36 +557,44 @@ with tab_stats:
         
         st.divider()
 
-        st.markdown("#### ⚙️ 批量設定出土分區")
-        df_unassigned = valid_logs[valid_logs['出土分區'] == '未指定'].copy()
-        if not df_unassigned.empty:
-            st.info(f"尚有 {len(df_unassigned)} 筆有效紀錄未指定分區，請勾選並套用。")
-            
-            select_all = st.checkbox("☑️ 一鍵全選所有未指定紀錄", value=False)
-            df_unassigned.insert(0, '勾選', select_all)
-            
-            edited_unassigned = st.data_editor(df_unassigned, hide_index=True, column_config={"勾選": st.column_config.CheckboxColumn(required=True)})
-            
-            zone_list = df_results["分區代號"].tolist() if not df_results.empty else []
-            col_z1, col_z2 = st.columns([2, 1])
-            with col_z1:
-                selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
-            with col_z2:
-                if st.button("套用到勾選的紀錄"):
-                    if selected_zone == "請選擇":
-                        st.error("請先選擇分區")
-                    else:
-                        checked_indices = edited_unassigned[edited_unassigned['勾選'] == True].index
-                        if len(checked_indices) > 0:
-                            original_indices = edited_unassigned.loc[checked_indices].index
-                            df_logs.loc[original_indices, '出土分區'] = selected_zone
-                            if save_sheet_data("dispatch_logs", df_logs):
-                                st.success(f"成功更新 {len(checked_indices)} 筆紀錄！")
-                                st.rerun()
-                        else:
-                            st.warning("⚠️ 請至少勾選一筆要套用的紀錄。")
-        else:
-            st.success("目前所有有效紀錄皆已分配分區。")
+       st.markdown("#### ⚙️ 批量設定出土分區")
+    
+    # 這裡加入強制重新讀取，確保顯示最新資料
+    @st.cache_data(ttl=0)
+    def fetch_logs_fresh():
+        return load_sheet_data("dispatch_logs")
+    
+    df_logs = fetch_logs_fresh()
+    
+    df_unassigned = df_logs[df_logs['出土分區'] == '未指定'].copy()
+    
+    if not df_unassigned.empty:
+        st.info(f"尚有 {len(df_unassigned)} 筆有效紀錄未指定分區。")
+        
+        # 使用 key 確保狀態獨立，並強制同步
+        edited_unassigned = st.data_editor(
+            df_unassigned, 
+            hide_index=True, 
+            key="zone_editor"
+        )
+        
+        zone_list = df_results["分區代號"].tolist() if not df_results.empty else []
+        selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
+        
+        if st.button("立即套用並同步至雲端"):
+            if selected_zone == "請選擇":
+                st.error("請先選擇分區")
+            else:
+                # 取得編輯器中的索引，直接更新原始資料集
+                df_logs.update(edited_unassigned)
+                df_logs.loc[edited_unassigned.index, '出土分區'] = selected_zone
+                
+                if save_sheet_data("dispatch_logs", df_logs):
+                    st.success("成功更新！")
+                    # 強制重新執行，確保 UI 更新
+                    st.rerun()
+    else:
+        st.success("目前所有紀錄皆已分配分區。")
 
         st.divider()
         st.markdown("#### 📍 各分區挖掘進度總表")
