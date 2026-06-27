@@ -12,19 +12,10 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.font_manager import FontProperties
 
-# 初始化頁面配置
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 CDC土方管理系統")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
-
-# 初始化 Session State
-if 'sync_data_summary' not in st.session_state:
-    st.session_state['sync_data_summary'] = None
-if 'sync_date' not in st.session_state:
-    st.session_state['sync_date'] = None
-if 'official_ready_df' not in st.session_state:
-    st.session_state['official_ready_df'] = None
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -36,7 +27,7 @@ def load_sheet_data(sheet_name):
     try:
         df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
         return df.dropna(how='all')
-    except Exception:
+    except:
         return pd.DataFrame()
 
 def save_sheet_data(sheet_name, df):
@@ -97,22 +88,14 @@ def generate_backend_map(df_results, zone_grouped):
 def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="本日"):
     pdf = FPDF()
     pdf.add_page()
+    pdf.add_font("CustomFont", fname="font.ttf")
+    pdf.set_font("CustomFont", size=18)
     
-    if os.path.exists("font.ttf"):
-        pdf.add_font("CustomFont", fname="font.ttf")
-        pdf.set_font("CustomFont", size=18)
-    else:
-        pdf.set_font("Helvetica", size=18)
-        
     title_text = f"CDC土方{period_label}回報"
     pdf.cell(0, 10, text=title_text, align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
-    if os.path.exists("font.ttf"):
-        pdf.set_font("CustomFont", size=12)
-    else:
-        pdf.set_font("Helvetica", size=12)
-        
+    pdf.set_font("CustomFont", size=12)
     for line in report_text.split('\n'):
         pdf.cell(0, 8, text=line.replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
         
@@ -123,18 +106,11 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="
         pdf.image(img_path, x=15, w=180)
         os.unlink(img_path) 
     except Exception as e:
-        if os.path.exists("font.ttf"):
-            pdf.set_font("CustomFont", size=10)
-        else:
-            pdf.set_font("Helvetica", size=10)
+        pdf.set_font("CustomFont", size=10)
         pdf.cell(0, 10, text=f"(地圖生成失敗: {e})", new_x="LMARGIN", new_y="NEXT")
 
     pdf.ln(5)
-    if os.path.exists("font.ttf"):
-        pdf.set_font("CustomFont", size=10)
-    else:
-        pdf.set_font("Helvetica", size=10)
-        
+    pdf.set_font("CustomFont", size=10)
     pdf.cell(0, 6, text="進度圖例說明：", new_x="LMARGIN", new_y="NEXT")
     
     legend_items = [
@@ -155,18 +131,11 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="
             pdf.ln(6)
     pdf.ln(6)
     
-    if os.path.exists("font.ttf"):
-        pdf.set_font("CustomFont", size=14)
-    else:
-        pdf.set_font("Helvetica", size=14)
-        
+    pdf.set_font("CustomFont", size=14)
     pdf.cell(0, 10, text="各分區挖掘進度總表", new_x="LMARGIN", new_y="NEXT")
     
     if not df_stats.empty:
-        if os.path.exists("font.ttf"):
-            pdf.set_font("CustomFont", size=9)
-        else:
-            pdf.set_font("Helvetica", size=9)
+        pdf.set_font("CustomFont", size=9)
         col_widths = [45, 45, 45, 45]
         headers = df_stats.columns.tolist()
         
@@ -183,7 +152,6 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="
     pdf.output(tmp_file.name)
     return tmp_file.name
 
-# 側邊欄參數設定
 st.sidebar.header("【圖資與各區開挖參數】")
 base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
@@ -191,7 +159,7 @@ scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "�
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
 st.sidebar.markdown("### 各區開挖 GL 高程設定")
-current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高增加第一挖土方；負值代表現地低減少第一挖土方")
+current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高，增加第一挖土方；負值代表現地低，減少第一挖土方")
 
 gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
 gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
@@ -208,10 +176,9 @@ def get_thickness_from_gl(gl_str, gl_offset):
             else:
                 thickness.append(max(0.0, gl_list[i] - gl_list[i-1]))
         return thickness
-    except Exception:
+    except:
         return []
 
-# 網格幾何參數
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
@@ -237,7 +204,6 @@ try:
 
     results = []
     
-    # 行政棟區域網格計算
     for j in range(len(dy1)):
         for i in range(len(dx1)):
             if j >= 2 and i >= 3: continue 
@@ -264,7 +230,6 @@ try:
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
     
-    # 實驗棟區域網格計算
     for j in range(len(dy2)):
         for i in range(len(dx2)):
             grid_id = f"{y_labels2[j]}{i+7}" 
@@ -289,14 +254,14 @@ try:
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
     
-    # 滯洪池BC區網格計算
     bc_x = [-2764.56, -2758.41, -2749.46]
     bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
     idx_l = 1
     for i in range(len(bc_x)-1):
         for j in range(len(bc_y)-1):
             old_idx = j * 2 + i + 1
-            if old_idx in [1, 3]: continue
+            if old_idx in [1, 3]:
+                continue
             grid_id = f"滯BC{idx_l}"
             x_min, x_max = bc_x[i], bc_x[i+1]
             y_max, y_min = bc_y[j], bc_y[j+1]
@@ -320,7 +285,6 @@ try:
             })
             idx_l += 1
 
-    # 滯洪池A區網格計算
     a_x = [-2606.06, -2592.82]
     a_y = [-276.14, -284.44, -290.24, -296.04]
     idx_r = 1
@@ -353,7 +317,6 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-# 定義功能分頁
 tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理"])
 
 with tab_grid:
@@ -530,19 +493,22 @@ with tab_stats:
             st.info(report_text.replace("\n", "\n\n"))
             
             st.markdown("#### 📄 匯出 PDF 報表")
-            with st.spinner("正在繪製地圖與生成報表..."):
-                try:
-                    pdf_path = generate_pdf(report_text, display_df, df_results, zone_grouped, period_label)
-                    with open(pdf_path, "rb") as f:
-                        st.download_button(
-                            label="📥 下載完整 PDF 報表 (包含地圖)",
-                            data=f,
-                            file_name=f"excavation_report_{start_date}_{end_date}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True
-                        )
-                except Exception as e:
-                    st.error(f"PDF 產生失敗：{e}")
+            if os.path.exists("font.ttf"):
+                with st.spinner("正在繪製地圖與生成報表..."):
+                    try:
+                        pdf_path = generate_pdf(report_text, display_df, df_results, zone_grouped, period_label)
+                        with open(pdf_path, "rb") as f:
+                            st.download_button(
+                                label="📥 下載完整 PDF 報表 (包含地圖)",
+                                data=f,
+                                file_name=f"excavation_report_{start_date}_{end_date}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                    except Exception as e:
+                        st.error(f"PDF 產生失敗：{e}")
+            else:
+                st.warning("⚠️ 找不到字型檔 `font.ttf`，無法產生 PDF。請先將檔案上傳至專案根目錄。")
 
         with col_fig:
             st.markdown("**進度圖例說明：**")
@@ -551,7 +517,6 @@ with tab_stats:
             if not df_results.empty:
                 vol_dict = {}
                 if not zone_grouped.empty:
-                    vol_dict = zone_grouped.set_index('出土分區')['開挖前土方' != zone_grouped['出土分區']].to_dict()
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
                 
@@ -607,7 +572,7 @@ with tab_stats:
             with col_z1:
                 selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
             with col_z2:
-                if st.button("套送到勾選的紀錄"):
+                if st.button("套用到勾選的紀錄"):
                     if selected_zone == "請選擇":
                         st.error("請先選擇分區")
                     else:
@@ -655,6 +620,7 @@ with tab_sync:
                 uploaded_csv.seek(0)
                 official_df = pd.read_csv(uploaded_csv, encoding='big5')
 
+            # 隱藏下拉選單，強制綁定已知官方欄位名稱
             plate_col = "出場車頭車號"
             datetime_col = "出場日期"
             serial_col = "聯單序號"
@@ -724,6 +690,7 @@ with tab_sync:
 
             plates = set(sync_off_df['正規化車號']).union(set(df_logs[df_logs['ParsedDate'] == sync_date]['正規化車號']))
 
+            # 再次聲明避免 KeyError
             plate_col = "出場車頭車號"
             serial_col = "聯單序號"
 
@@ -804,6 +771,7 @@ with tab_manifest:
     
     df_logs = load_sheet_data("dispatch_logs")
     
+    # 強健模糊比對：自動過濾空值，並確保字串包含聯單類型
     used_counts = {t: 0 for t in df_manifest["聯單類型"]}
     if not df_logs.empty and "聯單序號" in df_logs.columns:
         valid_serials = df_logs["聯單序號"].dropna().astype(str).str.strip().str.upper()
@@ -835,6 +803,7 @@ with tab_manifest:
     
     alert_triggered = False
     for idx, row in df_manifest.iterrows():
+        # 如果現場低於 100 張，且雲端還有沒印完的配額時，才觸發警報
         if row["現場剩餘可用"] < 100 and row["雲端未列印配額"] > 0:
             st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{row['現場剩餘可用']}** 張！請盡速列印補充備用。 (尚有雲端配額 {row['雲端未列印配額']} 張)")
             alert_triggered = True
