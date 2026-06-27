@@ -26,13 +26,22 @@ except Exception as e:
 def load_sheet_data(sheet_name):
     try:
         df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
-        return df.dropna(how='all')
+        df = df.dropna(how='all')
+        # 雲端讀取成功時更新本地快取
+        if not df.empty:
+            st.session_state[f"cache_{sheet_name}"] = df.copy()
+        return df
     except:
+        # 雲端讀取異常或延遲時，自動啟用本地快取機制避錯
+        if f"cache_{sheet_name}" in st.session_state:
+            return st.session_state[f"cache_{sheet_name}"]
         return pd.DataFrame()
 
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
+        # 寫入雲端成功的同時，同步更新本地快取
+        st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
@@ -384,6 +393,9 @@ with tab_stats:
     st.write("### 📊 雲端出土統計儀表板")
     
     df_logs = load_sheet_data("dispatch_logs")
+    # 立刻紀錄原始 Dataframe 真實索引，防範後續排序與 Merge 摧毀索引
+    if not df_logs.empty:
+        df_logs['orig_index'] = df_logs.index
     
     tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
     st.markdown("#### 📅 篩選統計時間區間")
@@ -476,6 +488,21 @@ with tab_stats:
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
         
+        # 精準計算篩選區間內 B1, B2-3, B4, B5 的出土方量與車次
+        manifest_breakdown_str = ""
+        if '聯單序號' in range_logs.columns and '載運方量(m³)' in range_logs.columns:
+            range_serials = range_logs['聯單序號'].fillna('').astype(str).str.strip().str.upper()
+            range_vols = pd.to_numeric(range_logs['載運方量(m³)'], errors='coerce').fillna(0)
+            
+            m_types = ["B1", "B2-3", "B4", "B5"]
+            breakdown_lines = []
+            for m_type in m_types:
+                mask = range_serials.str.contains(m_type.upper(), regex=False)
+                m_trips = mask.sum()
+                m_vol = range_vols[mask].sum()
+                breakdown_lines.append(f"  • {m_type} 聯單： {m_trips} 趟 / {m_vol:,.0f} m³")
+            manifest_breakdown_str = "\n".join(breakdown_lines)
+
         manifest_total = 79692.0
         combined_excavated = total_excavated + pre_excavated
         overall_rate = round((combined_excavated / manifest_total * 100), 1)
@@ -483,6 +510,8 @@ with tab_stats:
         report_text = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}車次： {range_trips} 台
 {period_label}出土方量： {range_vol:,.0f} m³
+區間聯單分類出土：
+{manifest_breakdown_str}
 累計總車次： {total_all_trips} 台
 累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
 聯單預估總出土： {manifest_total:,.0f} m³
@@ -550,6 +579,13 @@ with tab_stats:
                         fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
                         text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
                     ))
+                    fig_map.add_trace(go.Scatter(
+                        x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
+                        y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
+                        mode='lines', line=dict(color='gray', width=1),
+                        fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
+                        text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
+                    ))
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
                 
                 fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
@@ -572,16 +608,24 @@ with tab_stats:
             with col_z1:
                 selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
             with col_z2:
-                if st.button("套用到勾選的紀錄"):
+                if st.button("套送到勾選的紀錄"):
                     if selected_zone == "請選擇":
                         st.error("請先選擇分區")
                     else:
-                        checked_indices = edited_unassigned[edited_unassigned['勾選'] == True].index
-                        if len(checked_indices) > 0:
-                            original_indices = edited_unassigned.loc[checked_indices].index
+                        checked_rows = edited_unassigned[edited_unassigned['勾選'] == True]
+                        if len(checked_rows) > 0:
+                            # 讀取真實保留的 orig_index 列表進行精準覆蓋
+                            original_indices = checked_rows['orig_index'].tolist()
                             df_logs.loc[original_indices, '出土分區'] = selected_zone
+                            
+                            # 儲存前清理輔助欄位
+                            if 'orig_index' in df_logs.columns:
+                                df_logs = df_logs.drop(columns=['orig_index'])
+                            if 'ParsedDate' in df_logs.columns:
+                                df_logs = df_logs.drop(columns=['ParsedDate'])
+                                
                             if save_sheet_data("dispatch_logs", df_logs):
-                                st.success(f"成功更新 {len(checked_indices)} 筆紀錄！")
+                                st.success(f"成功更新 {len(checked_rows)} 筆紀錄！")
                                 st.rerun()
                         else:
                             st.warning("⚠️ 請至少勾選一筆要套用的紀錄。")
@@ -594,11 +638,16 @@ with tab_stats:
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
         with st.expander("📂 檢視所有歷史紀錄 (包含系統自動偵測異常旗標)"):
-            show_logs = df_logs.sort_values(['日期', '時間'], ascending=[False, False])
+            clean_show_logs = df_logs.copy()
+            if 'orig_index' in clean_show_logs.columns:
+                clean_show_logs = clean_show_logs.drop(columns=['orig_index'])
+            if 'ParsedDate' in clean_show_logs.columns:
+                clean_show_logs = clean_show_logs.drop(columns=['ParsedDate'])
+                
+            show_logs = clean_show_logs.sort_values(['日期', '時間'], ascending=[False, False])
             edited_all = st.data_editor(show_logs, use_container_width=True)
             if st.button("💾 儲存歷史紀錄修改"):
-                df_logs.update(edited_all)
-                if save_sheet_data("dispatch_logs", df_logs):
+                if save_sheet_data("dispatch_logs", edited_all):
                     st.success("歷史紀錄修改已儲存！")
                     st.rerun()
     else:
@@ -620,7 +669,6 @@ with tab_sync:
                 uploaded_csv.seek(0)
                 official_df = pd.read_csv(uploaded_csv, encoding='big5')
 
-            # 隱藏下拉選單，強制綁定已知官方欄位名稱
             plate_col = "出場車頭車號"
             datetime_col = "出場日期"
             serial_col = "聯單序號"
@@ -690,7 +738,6 @@ with tab_sync:
 
             plates = set(sync_off_df['正規化車號']).union(set(df_logs[df_logs['ParsedDate'] == sync_date]['正規化車號']))
 
-            # 再次聲明避免 KeyError
             plate_col = "出場車頭車號"
             serial_col = "聯單序號"
 
@@ -771,7 +818,6 @@ with tab_manifest:
     
     df_logs = load_sheet_data("dispatch_logs")
     
-    # 強健模糊比對：自動過濾空值，並確保字串包含聯單類型
     used_counts = {t: 0 for t in df_manifest["聯單類型"]}
     if not df_logs.empty and "聯單序號" in df_logs.columns:
         valid_serials = df_logs["聯單序號"].dropna().astype(str).str.strip().str.upper()
@@ -803,7 +849,6 @@ with tab_manifest:
     
     alert_triggered = False
     for idx, row in df_manifest.iterrows():
-        # 如果現場低於 100 張，且雲端還有沒印完的配額時，才觸發警報
         if row["現場剩餘可用"] < 100 and row["雲端未列印配額"] > 0:
             st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{row['現場剩餘可用']}** 張！請盡速列印補充備用。 (尚有雲端配額 {row['雲端未列印配額']} 張)")
             alert_triggered = True
