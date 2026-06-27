@@ -17,6 +17,14 @@ st.title("🚧 CDC土方管理系統")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
+# 初始化 Session State
+if 'sync_data_summary' not in st.session_state:
+    st.session_state['sync_data_summary'] = None
+if 'sync_date' not in st.session_state:
+    st.session_state['sync_date'] = None
+if 'official_ready_df' not in st.session_state:
+    st.session_state['official_ready_df'] = None
+
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
@@ -27,12 +35,10 @@ def load_sheet_data(sheet_name):
     try:
         df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
         df = df.dropna(how='all')
-        # 雲端讀取成功時更新本地快取
         if not df.empty:
             st.session_state[f"cache_{sheet_name}"] = df.copy()
         return df
-    except:
-        # 雲端讀取異常或延遲時，自動啟用本地快取機制避錯
+    except Exception:
         if f"cache_{sheet_name}" in st.session_state:
             return st.session_state[f"cache_{sheet_name}"]
         return pd.DataFrame()
@@ -40,7 +46,6 @@ def load_sheet_data(sheet_name):
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
-        # 寫入雲端成功的同時，同步更新本地快取
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
@@ -94,32 +99,63 @@ def generate_backend_map(df_results, zone_grouped):
     plt.close(fig)
     return tmp_img.name
 
-def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="本日"):
+def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone_grouped, period_label="本日"):
     pdf = FPDF()
     pdf.add_page()
-    pdf.add_font("CustomFont", fname="font.ttf")
-    pdf.set_font("CustomFont", size=18)
     
+    if os.path.exists("font.ttf"):
+        pdf.add_font("CustomFont", fname="font.ttf")
+        pdf.set_font("CustomFont", size=18)
+    else:
+        pdf.set_font("Helvetica", size=18)
+        
     title_text = f"CDC土方{period_label}回報"
     pdf.cell(0, 10, text=title_text, align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
-    pdf.set_font("CustomFont", size=12)
-    for line in report_text.split('\n'):
-        pdf.cell(0, 8, text=line.replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=12)
+    else:
+        pdf.set_font("Helvetica", size=12)
         
-    pdf.ln(5)
+    start_y = pdf.get_y()
+
+    # 繪製左側數據
+    pdf.set_xy(15, start_y)
+    for line in report_text_left.split('\n'):
+        if line.strip():
+            pdf.set_x(15)
+            pdf.cell(90, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
+    left_end_y = pdf.get_y()
+
+    # 繪製右側聯單分類
+    pdf.set_xy(110, start_y + 8) 
+    for line in report_text_right.split('\n'):
+        if line.strip():
+            pdf.set_x(110)
+            pdf.cell(85, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
+    right_end_y = pdf.get_y()
+
+    # 將指針移動到雙欄最底部的下方
+    pdf.set_y(max(left_end_y, right_end_y) + 5)
     
     try:
         img_path = generate_backend_map(df_results, zone_grouped)
         pdf.image(img_path, x=15, w=180)
         os.unlink(img_path) 
     except Exception as e:
-        pdf.set_font("CustomFont", size=10)
+        if os.path.exists("font.ttf"):
+            pdf.set_font("CustomFont", size=10)
+        else:
+            pdf.set_font("Helvetica", size=10)
         pdf.cell(0, 10, text=f"(地圖生成失敗: {e})", new_x="LMARGIN", new_y="NEXT")
 
     pdf.ln(5)
-    pdf.set_font("CustomFont", size=10)
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=10)
+    else:
+        pdf.set_font("Helvetica", size=10)
+        
     pdf.cell(0, 6, text="進度圖例說明：", new_x="LMARGIN", new_y="NEXT")
     
     legend_items = [
@@ -140,11 +176,18 @@ def generate_pdf(report_text, df_stats, df_results, zone_grouped, period_label="
             pdf.ln(6)
     pdf.ln(6)
     
-    pdf.set_font("CustomFont", size=14)
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=14)
+    else:
+        pdf.set_font("Helvetica", size=14)
+        
     pdf.cell(0, 10, text="各分區挖掘進度總表", new_x="LMARGIN", new_y="NEXT")
     
     if not df_stats.empty:
-        pdf.set_font("CustomFont", size=9)
+        if os.path.exists("font.ttf"):
+            pdf.set_font("CustomFont", size=9)
+        else:
+            pdf.set_font("Helvetica", size=9)
         col_widths = [45, 45, 45, 45]
         headers = df_stats.columns.tolist()
         
@@ -168,7 +211,7 @@ scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "�
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
 st.sidebar.markdown("### 各區開挖 GL 高程設定")
-current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高，增加第一挖土方；負值代表現地低，減少第一挖土方")
+current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高增加第一挖土方；負值代表現地低減少第一挖土方")
 
 gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
 gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
@@ -185,7 +228,7 @@ def get_thickness_from_gl(gl_str, gl_offset):
             else:
                 thickness.append(max(0.0, gl_list[i] - gl_list[i-1]))
         return thickness
-    except:
+    except Exception:
         return []
 
 e_ext = 3.25
@@ -269,8 +312,7 @@ try:
     for i in range(len(bc_x)-1):
         for j in range(len(bc_y)-1):
             old_idx = j * 2 + i + 1
-            if old_idx in [1, 3]:
-                continue
+            if old_idx in [1, 3]: continue
             grid_id = f"滯BC{idx_l}"
             x_min, x_max = bc_x[i], bc_x[i+1]
             y_max, y_min = bc_y[j], bc_y[j+1]
@@ -393,10 +435,9 @@ with tab_stats:
     st.write("### 📊 雲端出土統計儀表板")
     
     df_logs = load_sheet_data("dispatch_logs")
-    # 立刻紀錄原始 Dataframe 真實索引，防範後續排序與 Merge 摧毀索引
     if not df_logs.empty:
         df_logs['orig_index'] = df_logs.index
-    
+        
     tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
     st.markdown("#### 📅 篩選統計時間區間")
     date_selection = st.date_input("選擇區間 (單選一日或拖曳選擇範圍)：", value=(tw_today, tw_today))
@@ -488,7 +529,6 @@ with tab_stats:
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
         
-        # 精準計算篩選區間內 B1, B2-3, B4, B5 的出土方量與車次
         manifest_breakdown_str = ""
         if '聯單序號' in range_logs.columns and '載運方量(m³)' in range_logs.columns:
             range_serials = range_logs['聯單序號'].fillna('').astype(str).str.strip().str.upper()
@@ -500,32 +540,34 @@ with tab_stats:
                 mask = range_serials.str.contains(m_type.upper(), regex=False)
                 m_trips = mask.sum()
                 m_vol = range_vols[mask].sum()
-                breakdown_lines.append(f"  • {m_type} 聯單： {m_trips} 趟 / {m_vol:,.0f} m³")
+                breakdown_lines.append(f"* {m_type} 聯單： {m_trips} 趟 / {m_vol:,.0f} m³")
             manifest_breakdown_str = "\n".join(breakdown_lines)
 
         manifest_total = 79692.0
         combined_excavated = total_excavated + pre_excavated
         overall_rate = round((combined_excavated / manifest_total * 100), 1)
         
-        report_text = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
+        # 拆分為左右兩個字串，以利 PDF 雙欄繪製
+        report_text_left = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}車次： {range_trips} 台
 {period_label}出土方量： {range_vol:,.0f} m³
-區間聯單分類出土：
-{manifest_breakdown_str}
 累計總車次： {total_all_trips} 台
 累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
 聯單預估總出土： {manifest_total:,.0f} m³
 總體開挖進度： {overall_rate}%"""
+
+        report_text_right = f"區間聯單分類出土：\n{manifest_breakdown_str}"
+        ui_display_text = f"{report_text_left}\n\n{report_text_right}"
         
         col_txt, col_fig = st.columns([1, 2])
         with col_txt:
-            st.info(report_text.replace("\n", "\n\n"))
+            st.info(ui_display_text.replace("\n", "\n\n"))
             
             st.markdown("#### 📄 匯出 PDF 報表")
             if os.path.exists("font.ttf"):
                 with st.spinner("正在繪製地圖與生成報表..."):
                     try:
-                        pdf_path = generate_pdf(report_text, display_df, df_results, zone_grouped, period_label)
+                        pdf_path = generate_pdf(report_text_left, report_text_right, display_df, df_results, zone_grouped, period_label)
                         with open(pdf_path, "rb") as f:
                             st.download_button(
                                 label="📥 下載完整 PDF 報表 (包含地圖)",
@@ -579,13 +621,6 @@ with tab_stats:
                         fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
                         text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
                     ))
-                    fig_map.add_trace(go.Scatter(
-                        x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
-                        y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
-                        mode='lines', line=dict(color='gray', width=1),
-                        fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
-                        text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
-                    ))
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
                 
                 fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
@@ -608,17 +643,15 @@ with tab_stats:
             with col_z1:
                 selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
             with col_z2:
-                if st.button("套送到勾選的紀錄"):
+                if st.button("套用到勾選的紀錄"):
                     if selected_zone == "請選擇":
                         st.error("請先選擇分區")
                     else:
                         checked_rows = edited_unassigned[edited_unassigned['勾選'] == True]
                         if len(checked_rows) > 0:
-                            # 讀取真實保留的 orig_index 列表進行精準覆蓋
                             original_indices = checked_rows['orig_index'].tolist()
                             df_logs.loc[original_indices, '出土分區'] = selected_zone
                             
-                            # 儲存前清理輔助欄位
                             if 'orig_index' in df_logs.columns:
                                 df_logs = df_logs.drop(columns=['orig_index'])
                             if 'ParsedDate' in df_logs.columns:
