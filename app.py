@@ -21,6 +21,7 @@ st.title("🚧 CDC土方管理系統")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
+# 初始化 Session State 變數
 if 'sync_data_summary' not in st.session_state:
     st.session_state['sync_data_summary'] = None
 if 'sync_date' not in st.session_state:
@@ -123,6 +124,7 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
         
     start_y = pdf.get_y()
 
+    # 左側基本數據排版
     pdf.set_xy(15, start_y)
     for line in report_text_left.split('\n'):
         if line.strip():
@@ -130,6 +132,7 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
             pdf.cell(90, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
     left_end_y = pdf.get_y()
 
+    # 右側聯單數據平行對齊排版
     pdf.set_xy(110, start_y + 8) 
     for line in report_text_right.split('\n'):
         if line.strip():
@@ -588,7 +591,7 @@ with tab_stats:
                 vol_dict = {}
                 if not zone_grouped.empty:
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
-                stage_dict = df_results.set_index('分區代號')['開挖前土方' != df_results['分區代號']]
+                
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
                 
                 for idx, row in df_results.iterrows():
@@ -896,10 +899,8 @@ with tab_delivery:
     if df_delivery.empty:
         df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名", "簽名資料"])
 
-    # 顯示歷史簽收紀錄看板
     if not df_delivery.empty:
         st.markdown("#### 📋 歷史交付簽收對帳看板")
-        # 隱藏大量文字的簽名資料欄位，優化手機端檢視
         display_delivery = df_delivery.copy()
         display_delivery["簽名狀態"] = display_delivery["簽名資料"].apply(lambda x: "已核簽" if pd.notnull(x) and str(x) != "" else "未簽名")
         st.dataframe(display_delivery.drop(columns=["簽名資料"]), use_container_width=True, hide_index=True)
@@ -907,13 +908,6 @@ with tab_delivery:
 
     st.markdown("#### 📥 新增聯單現場發放")
     
-    # 讀取車籍資料庫以取得廠商名單
-    df_drivers_data = load_sheet_data("drivers")
-    vendor_options = ["請選擇廠商"]
-    if not df_drivers_data.empty and "姓名" in df_drivers_data.columns:
-        # 假設車籍資料的姓名或車頭車號能識別，這裡提供自填與選項
-        pass
-
     with st.form("delivery_form", clear_on_submit=True):
         col_d1, col_d2 = st.columns(2)
         with col_d1:
@@ -926,7 +920,6 @@ with tab_delivery:
             
         st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
         
-        # 行動裝置優化畫布排版
         canvas_sign = st_canvas(
             fill_color="rgba(255, 255, 255, 1)",
             stroke_width=3,
@@ -951,7 +944,6 @@ with tab_delivery:
             elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
                 st.error("請廠商完成手寫簽名後再行提交")
             else:
-                # 解析 Canvas 圖像數據並轉換成輕量化 Base64 字串
                 img_array = canvas_sign.image_data.astype('uint8')
                 img = Image.fromarray(img_array, 'RGBA')
                 buffered = io.BytesIO()
