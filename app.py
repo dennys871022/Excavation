@@ -64,6 +64,7 @@ def generate_backend_map(df_results, zone_grouped):
     
     vol_dict = {}
     if not zone_grouped.empty:
+        vol_dict = zone_grouped.set_index('出土分區')['開挖前土方' != zone_grouped['出土分區']].to_dict()
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
     
@@ -205,7 +206,6 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
     pdf.output(tmp_file.name)
     return tmp_file.name
 
-# 新增：產生聯單交付紀錄 PDF 的函式 (包含文字與解碼後的簽名圖片)
 def generate_delivery_pdf(df_target, scope_label):
     pdf = FPDF()
     pdf.add_page()
@@ -225,7 +225,7 @@ def generate_delivery_pdf(df_target, scope_label):
         pdf.set_font("Helvetica", size=10)
         
     for idx, row in df_target.iterrows():
-        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {row['發放張數']}  起始序號: {row['起始序號']}  簽收人: {row['簽收人姓名']}"
+        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {int(row['發放張數'])}  起始序號: {row['起始序號']}  簽收人: {row['簽收人姓名']}"
         pdf.cell(0, 8, text=info_text, new_x="LMARGIN", new_y="NEXT")
         
         if pd.notnull(row['簽名資料']) and str(row['簽名資料']).strip() != "":
@@ -476,7 +476,7 @@ with tab_vehicle:
         clean_df['車頭車號'] = clean_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
         
         if clean_df['車頭車號'].duplicated().any():
-            st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存. ")
+            st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存。")
         else:
             if save_sheet_data("drivers", clean_df):
                 st.success("車籍資料已同步更新！")
@@ -946,12 +946,10 @@ with tab_delivery:
     if df_delivery.empty:
         df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名", "簽名資料"])
 
-    # 區區一：歷史交付資料看板與單筆紀錄簽名核簽解碼顯示 (方法二)
     if not df_delivery.empty:
         st.markdown("#### 📋 歷史交付簽收對帳看板")
         
-        # 提供下拉選單讓工程師點選特定發放紀錄，即時反讀 Base64 圖檔
-        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}-{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {r['發放張數']}張)" for idx, r in df_delivery.iterrows()]
+        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}-{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數'])}張)" for idx, r in df_delivery.iterrows()]
         selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄以檢視簽名影像：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
         
         chosen_row = df_delivery.iloc[selected_record_idx]
@@ -961,7 +959,7 @@ with tab_delivery:
 * 交付時間： `{chosen_row['交付日期']} {chosen_row['交付時間']}`
 * 簽收廠商： `{chosen_row['廠商名稱']}`
 * 聯單規格： `{chosen_row['聯單類型']}`
-* 發放張數： `{chosen_row['發放張數']} 張`
+* 發放張數： `{int(chosen_row['發放張數'])} 張`
 * 起始序號： `{chosen_row['起始序號']}`
 * 現場簽收人： `{chosen_row['簽收人姓名']}`""")
             
@@ -978,7 +976,6 @@ with tab_delivery:
         
         st.divider()
         
-        # 區區二：新增 PDF 報表導出功能，可自選全部或單一規格聯單
         st.markdown("#### 📄 導出交付簽收 PDF 報表")
         col_pdf1, col_pdf2 = st.columns([2, 1])
         with col_pdf1:
@@ -1011,10 +1008,31 @@ with tab_delivery:
 
     st.markdown("#### 📥 新增聯單現場發放")
     
-    # 留在 Form 表單外，切換聯單類型時方能即時重新試算並刷新下一組號碼
     input_type = st.selectbox("選擇本次發放的聯單類型", options=["B1", "B2-3", "B4", "B5"], key="delivery_type_select")
     
-    # 計算下一組起始序號基準邏輯
+    # 即時讀取雲端配置並重新換算該聯單類型之現場實際可用庫存數量
+    df_manifest_check = load_sheet_data("manifest_settings")
+    df_logs_check = load_sheet_data("dispatch_logs")
+    
+    available_stock = 0
+    if not df_manifest_check.empty:
+        used_counts_check = {t: 0 for t in df_manifest_check["聯單類型"]}
+        if not df_logs_check.empty and "聯單序號" in df_logs_check.columns:
+            valid_serials_check = df_logs_check["聯單序號"].dropna().astype(str).str.strip().str.upper()
+            valid_serials_check = valid_serials_check[(valid_serials_check != "") & (valid_serials_check != "NAN") & (valid_serials_check != "NONE")]
+            for m_type in df_manifest_check["聯單類型"]:
+                count = valid_serials_check.str.contains(m_type.upper(), regex=False).sum()
+                used_counts_check[m_type] = count
+        
+        df_manifest_check["已使用數量"] = df_manifest_check["聯單類型"].map(used_counts_check).fillna(0).astype(int)
+        df_manifest_check["現場剩餘可用"] = df_manifest_check["已列印數量"].astype(int) - df_manifest_check["已使用數量"]
+        
+        match_stock_row = df_manifest_check[df_manifest_check["聯單類型"] == input_type]
+        if not match_stock_row.empty:
+            available_stock = int(match_stock_row.iloc[0]["現場剩餘可用"])
+
+    st.write(f"📊 該類型聯單目前雲端剩餘可交付數量： **{available_stock}** 張")
+    
     auto_serial = ""
     if not df_delivery.empty and "聯單類型" in df_delivery.columns and "起始序號" in df_delivery.columns and "發放張數" in df_delivery.columns:
         df_type_last = df_delivery[df_delivery["聯單類型"] == input_type]
@@ -1033,12 +1051,12 @@ with tab_delivery:
             except Exception:
                 auto_serial = ""
 
-    # 將剩餘輸入欄位與手寫 Canvas 封鎖在 st.form 中，防止打字或繪圖時引發網頁全面更新重置
     with st.form("delivery_submit_form", clear_on_submit=True):
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
-            input_count = st.number_input("發放張數", min_value=1, value=50, step=1)
+            # 強制移除步進小數點，限定整數格式輸入
+            input_count = st.number_input("發放張數", min_value=1, value=50, step=1, format="%d")
         with col_d2:
             input_serial = st.text_input("聯單起始序號 (可根據現場實物修改)", value=auto_serial)
             input_name = st.text_input("廠商簽收人姓名", value="")
@@ -1066,6 +1084,9 @@ with tab_delivery:
                 st.error("請填寫廠商簽收人姓名")
             elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
                 st.error("請廠商完成手寫簽名後再行提交")
+            # 庫存數量上限防錯校驗機制
+            elif int(input_count) > available_stock:
+                st.error(f"❌ 拒絕紀錄：庫存量不足！目前庫存僅剩 {available_stock} 張，無法超量發放 {int(input_count)} 張。")
             else:
                 img_array = canvas_sign.image_data.astype('uint8')
                 img = Image.fromarray(img_array, 'RGBA')
