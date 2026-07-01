@@ -205,6 +205,56 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
     pdf.output(tmp_file.name)
     return tmp_file.name
 
+# 新增：產生聯單交付紀錄 PDF 的函式 (包含文字與解碼後的簽名圖片)
+def generate_delivery_pdf(df_target, scope_label):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    if os.path.exists("font.ttf"):
+        pdf.add_font("CustomFont", fname="font.ttf")
+        pdf.set_font("CustomFont", size=16)
+    else:
+        pdf.set_font("Helvetica", size=16)
+        
+    pdf.cell(0, 10, text=f"聯單交付簽收歷史報表 ({scope_label})", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=10)
+    else:
+        pdf.set_font("Helvetica", size=10)
+        
+    for idx, row in df_target.iterrows():
+        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {row['發放張數']}  起始序號: {row['起始序號']}  簽收人: {row['簽收人姓名']}"
+        pdf.cell(0, 8, text=info_text, new_x="LMARGIN", new_y="NEXT")
+        
+        if pd.notnull(row['簽名資料']) and str(row['簽名資料']).strip() != "":
+            try:
+                img_bytes = base64.b64decode(row['簽名資料'])
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                    tmp_img.write(img_bytes)
+                    tmp_img_path = tmp_img.name
+                
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+                    
+                pdf.cell(25, 15, text="簽名影像: ")
+                pdf.image(tmp_img_path, x=35, w=40, h=15)
+                pdf.ln(16)
+                os.unlink(tmp_img_path)
+            except Exception as e:
+                pdf.cell(0, 6, text=f"(簽名影像解碼失敗: {e})", new_x="LMARGIN", new_y="NEXT")
+        else:
+            pdf.cell(0, 6, text="簽名影像: 無簽名資料", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+            
+        pdf.cell(0, 4, text="==========================================================================================", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+        
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(tmp_file.name)
+    return tmp_file.name
+
 st.sidebar.header("【圖資與各區開挖參數】")
 base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
@@ -303,7 +353,6 @@ try:
                 "第3挖方量(m³)": round(v3, 0),
                 "第4挖方量(m³)": round(v4, 0),
                 "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
     
@@ -360,7 +409,8 @@ try:
                 "第3挖方量(m³)": round(v3, 0),
                 "第4挖方量(m³)": round(v4, 0),
                 "預估總土方": round(sum(vols), 0), 
-                "ox_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_r += 1
 
@@ -426,7 +476,7 @@ with tab_vehicle:
         clean_df['車頭車號'] = clean_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
         
         if clean_df['車頭車號'].duplicated().any():
-            st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存。")
+            st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存. ")
         else:
             if save_sheet_data("drivers", clean_df):
                 st.success("車籍資料已同步更新！")
@@ -896,19 +946,75 @@ with tab_delivery:
     if df_delivery.empty:
         df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名", "簽名資料"])
 
+    # 區區一：歷史交付資料看板與單筆紀錄簽名核簽解碼顯示 (方法二)
     if not df_delivery.empty:
         st.markdown("#### 📋 歷史交付簽收對帳看板")
-        display_delivery = df_delivery.copy()
-        display_delivery["簽名狀態"] = display_delivery["簽名資料"].apply(lambda x: "已核簽" if pd.notnull(x) and str(x) != "" else "未簽名")
-        st.dataframe(display_delivery.drop(columns=["簽名資料"]), use_container_width=True, hide_index=True)
+        
+        # 提供下拉選單讓工程師點選特定發放紀錄，即時反讀 Base64 圖檔
+        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}-{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {r['發放張數']}張)" for idx, r in df_delivery.iterrows()]
+        selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄以檢視簽名影像：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
+        
+        chosen_row = df_delivery.iloc[selected_record_idx]
+        col_rec_txt, col_rec_img = st.columns([2, 1])
+        with col_rec_txt:
+            st.info(f"""**詳細交付核對資訊：**
+* 交付時間： `{chosen_row['交付日期']} {chosen_row['交付時間']}`
+* 簽收廠商： `{chosen_row['廠商名稱']}`
+* 聯單規格： `{chosen_row['聯單類型']}`
+* 發放張數： `{chosen_row['發放張數']} 張`
+* 起始序號： `{chosen_row['起始序號']}`
+* 現場簽收人： `{chosen_row['簽收人姓名']}`""")
+            
+        with col_rec_img:
+            st.markdown("**✍️ 簽收人手寫簽名還原影像：**")
+            if pd.notnull(chosen_row['簽名資料']) and str(chosen_row['簽名資料']).strip() != "":
+                try:
+                    img_bytes = base64.b64decode(chosen_row['簽名資料'])
+                    st.image(img_bytes, width=250)
+                except Exception:
+                    st.error("簽名資料解碼失敗。")
+            else:
+                st.warning("此紀錄無手寫簽名資料。")
+        
+        st.divider()
+        
+        # 區區二：新增 PDF 報表導出功能，可自選全部或單一規格聯單
+        st.markdown("#### 📄 導出交付簽收 PDF 報表")
+        col_pdf1, col_pdf2 = st.columns([2, 1])
+        with col_pdf1:
+            pdf_scope = st.selectbox("選擇要匯出的聯單範圍：", options=["全部聯單類型", "B1", "B2-3", "B4", "B5"], key="pdf_scope_select")
+        with col_pdf2:
+            st.write("")
+            st.write("")
+            if pdf_scope == "全部聯單類型":
+                df_pdf_target = df_delivery.copy()
+            else:
+                df_pdf_target = df_delivery[df_delivery["聯單類型"] == pdf_scope].copy()
+                
+            if df_pdf_target.empty:
+                st.warning("⚠️ 該範圍內無任何交付紀錄，無法產生報表。")
+            else:
+                with st.spinner("正在產生 PDF 簽收報表影像..."):
+                    try:
+                        delivery_pdf_path = generate_delivery_pdf(df_pdf_target, pdf_scope)
+                        with open(delivery_pdf_path, "rb") as pdf_file:
+                            st.download_button(
+                                label=f"📥 下載 {pdf_scope} 簽收 PDF 報表 (含影像)",
+                                data=pdf_file,
+                                file_name=f"delivery_report_{pdf_scope}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                    except Exception as ex:
+                        st.error(f"PDF 導出失敗：{ex}")
         st.divider()
 
     st.markdown("#### 📥 新增聯單現場發放")
     
-    # 聯單類型元件留在表單外，使其更換時能立刻觸發下方序號計算
-    input_type = st.selectbox("選擇發放的聯單類型", options=["B1", "B2-3", "B4", "B5"], key="delivery_type_select")
+    # 留在 Form 表單外，切換聯單類型時方能即時重新試算並刷新下一組號碼
+    input_type = st.selectbox("選擇本次發放的聯單類型", options=["B1", "B2-3", "B4", "B5"], key="delivery_type_select")
     
-    # 計算下一組起始序號
+    # 計算下一組起始序號基準邏輯
     auto_serial = ""
     if not df_delivery.empty and "聯單類型" in df_delivery.columns and "起始序號" in df_delivery.columns and "發放張數" in df_delivery.columns:
         df_type_last = df_delivery[df_delivery["聯單類型"] == input_type]
@@ -927,14 +1033,14 @@ with tab_delivery:
             except Exception:
                 auto_serial = ""
 
-    # 將其餘輸入元件與畫布封鎖進 Form，防止打字或繪圖時重整重新初始化畫布
+    # 將剩餘輸入欄位與手寫 Canvas 封鎖在 st.form 中，防止打字或繪圖時引發網頁全面更新重置
     with st.form("delivery_submit_form", clear_on_submit=True):
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
             input_count = st.number_input("發放張數", min_value=1, value=50, step=1)
         with col_d2:
-            input_serial = st.text_input("聯單起始序號 (可修改)", value=auto_serial)
+            input_serial = st.text_input("聯單起始序號 (可根據現場實物修改)", value=auto_serial)
             input_name = st.text_input("廠商簽收人姓名", value="")
             
         st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
