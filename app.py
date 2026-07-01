@@ -65,7 +65,6 @@ def generate_backend_map(df_results, zone_grouped):
     vol_dict = {}
     if not zone_grouped.empty:
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
-    stage_dict = df_results.set_index('分區代號')['開挖前土方' != df_results['分區代號']]
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
     
     for idx, row in df_results.iterrows():
@@ -361,8 +360,7 @@ try:
                 "第3挖方量(m³)": round(v3, 0),
                 "第4挖方量(m³)": round(v4, 0),
                 "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                "ox_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_r += 1
 
@@ -907,12 +905,9 @@ with tab_delivery:
 
     st.markdown("#### 📥 新增聯單現場發放")
     
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
-        input_type = st.selectbox("聯單類型", options=["B1", "B2-3", "B4", "B5"])
-        input_count = st.number_input("發放張數", min_value=1, value=50, step=1)
-        
+    # 聯單類型元件留在表單外，使其更換時能立刻觸發下方序號計算
+    input_type = st.selectbox("選擇發放的聯單類型", options=["B1", "B2-3", "B4", "B5"], key="delivery_type_select")
+    
     # 計算下一組起始序號
     auto_serial = ""
     if not df_delivery.empty and "聯單類型" in df_delivery.columns and "起始序號" in df_delivery.columns and "發放張數" in df_delivery.columns:
@@ -932,52 +927,60 @@ with tab_delivery:
             except Exception:
                 auto_serial = ""
 
-    with col_d2:
-        input_serial = st.text_input("聯單起始序號 (已自動預估，可手動修改)", value=auto_serial)
-        input_name = st.text_input("廠商簽收人姓名", value="")
+    # 將其餘輸入元件與畫布封鎖進 Form，防止打字或繪圖時重整重新初始化畫布
+    with st.form("delivery_submit_form", clear_on_submit=True):
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
+            input_count = st.number_input("發放張數", min_value=1, value=50, step=1)
+        with col_d2:
+            input_serial = st.text_input("聯單起始序號 (可修改)", value=auto_serial)
+            input_name = st.text_input("廠商簽收人姓名", value="")
+            
+        st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
         
-    st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
-    
-    canvas_sign = st_canvas(
-        fill_color="rgba(255, 255, 255, 1)",
-        stroke_width=3,
-        stroke_color="#000000",
-        background_color="#EEEEEE",
-        height=180,
-        width=340,
-        drawing_mode="freedraw",
-        update_streamlit=True,
-        key="canvas_delivery",
-    )
-    
-    if st.button("確認交付並永久儲存簽收紀錄", use_container_width=True):
-        if not input_serial.strip():
-            st.error("請填寫聯單起始序號")
-        elif not input_name.strip():
-            st.error("請填寫廠商簽收人姓名")
-        elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
-            st.error("請廠商完成手寫簽名後再行提交")
-        else:
-            img_array = canvas_sign.image_data.astype('uint8')
-            img = Image.fromarray(img_array, 'RGBA')
-            buffered = io.BytesIO()
-            img.save(buffered, format="PNG")
-            base64_sign = base64.b64encode(buffered.getvalue()).decode()
-            
-            now_tw = datetime.utcnow() + timedelta(hours=8)
-            new_record = {
-                "交付日期": now_tw.strftime("%Y-%m-%d"),
-                "交付時間": now_tw.strftime("%H:%M:%S"),
-                "廠商名稱": input_vendor.strip(),
-                "聯單類型": input_type,
-                "起始序號": input_serial.strip(),
-                "發放張數": int(input_count),
-                "簽收人姓名": input_name.strip(),
-                "簽名資料": base64_sign
-            }
-            
-            df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
-            
-            if save_sheet_data("manifest_delivery", df_delivery):
-                st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
-                st.rerun()
+        canvas_sign = st_canvas(
+            fill_color="rgba(255, 255, 255, 1)",
+            stroke_width=3,
+            stroke_color="#000000",
+            background_color="#EEEEEE",
+            height=180,
+            width=340,
+            drawing_mode="freedraw",
+            update_streamlit=True,
+            key="canvas_delivery_form",
+        )
+        
+        submit_delivery = st.form_submit_button("確認交付並永久儲存簽收紀錄", use_container_width=True)
+        
+        if submit_delivery:
+            if not input_serial.strip():
+                st.error("請填寫聯單起始序號")
+            elif not input_name.strip():
+                st.error("請填寫廠商簽收人姓名")
+            elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
+                st.error("請廠商完成手寫簽名後再行提交")
+            else:
+                img_array = canvas_sign.image_data.astype('uint8')
+                img = Image.fromarray(img_array, 'RGBA')
+                buffered = io.BytesIO()
+                img.save(buffered, format="PNG")
+                base64_sign = base64.b64encode(buffered.getvalue()).decode()
+                
+                now_tw = datetime.utcnow() + timedelta(hours=8)
+                new_record = {
+                    "交付日期": now_tw.strftime("%Y-%m-%d"),
+                    "交付時間": now_tw.strftime("%H:%M:%S"),
+                    "廠商名稱": input_vendor.strip(),
+                    "聯單類型": input_type,
+                    "起始序號": input_serial.strip(),
+                    "發放張數": int(input_count),
+                    "簽收人姓名": input_name.strip(),
+                    "簽名資料": base64_sign
+                }
+                
+                df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
+                
+                if save_sheet_data("manifest_delivery", df_delivery):
+                    st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
+                    st.rerun()
