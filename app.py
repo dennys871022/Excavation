@@ -14,6 +14,7 @@ from matplotlib.font_manager import FontProperties
 from streamlit_drawable_canvas import st_canvas
 import base64
 import io
+import re
 from PIL import Image
 
 st.set_page_config(page_title="後台管理端", layout="wide")
@@ -21,7 +22,6 @@ st.title("🚧 CDC土方管理系統")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
-# 初始化 Session State 變數
 if 'sync_data_summary' not in st.session_state:
     st.session_state['sync_data_summary'] = None
 if 'sync_date' not in st.session_state:
@@ -65,6 +65,7 @@ def generate_backend_map(df_results, zone_grouped):
     vol_dict = {}
     if not zone_grouped.empty:
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+    stage_dict = df_results.set_index('分區代號')['開挖前土方' != df_results['分區代號']]
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
     
     for idx, row in df_results.iterrows():
@@ -124,7 +125,6 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
         
     start_y = pdf.get_y()
 
-    # 左側基本數據排版
     pdf.set_xy(15, start_y)
     for line in report_text_left.split('\n'):
         if line.strip():
@@ -132,7 +132,6 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
             pdf.cell(90, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
     left_end_y = pdf.get_y()
 
-    # 右側聯單數據平行對齊排版
     pdf.set_xy(110, start_y + 8) 
     for line in report_text_right.split('\n'):
         if line.strip():
@@ -908,62 +907,77 @@ with tab_delivery:
 
     st.markdown("#### 📥 新增聯單現場發放")
     
-    with st.form("delivery_form", clear_on_submit=True):
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            input_vendor = st.text_input("廠商名稱 (例如: 宏大運輸)", value="")
-            input_type = st.selectbox("聯單類型", options=["B1", "B2-3", "B4", "B5"])
-            input_count = st.number_input("發放張數", min_value=1, value=50, step=1)
-        with col_d2:
-            input_serial = st.text_input("聯單起始序號", value="")
-            input_name = st.text_input("廠商簽收人姓名", value="")
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
+        input_type = st.selectbox("聯單類型", options=["B1", "B2-3", "B4", "B5"])
+        input_count = st.number_input("發放張數", min_value=1, value=50, step=1)
+        
+    # 計算下一組起始序號
+    auto_serial = ""
+    if not df_delivery.empty and "聯單類型" in df_delivery.columns and "起始序號" in df_delivery.columns and "發放張數" in df_delivery.columns:
+        df_type_last = df_delivery[df_delivery["聯單類型"] == input_type]
+        if not df_type_last.empty:
+            last_record = df_type_last.iloc[-1]
+            last_serial = str(last_record["起始序號"])
+            try:
+                last_count = int(last_record["發放張數"])
+                match = re.search(r'\d+', last_serial)
+                if match:
+                    num_str = match.group()
+                    prefix = last_serial[:match.start()]
+                    suffix = last_serial[match.end():]
+                    next_num = int(num_str) + last_count
+                    auto_serial = f"{prefix}{next_num:0{len(num_str)}d}{suffix}"
+            except Exception:
+                auto_serial = ""
+
+    with col_d2:
+        input_serial = st.text_input("聯單起始序號 (已自動預估，可手動修改)", value=auto_serial)
+        input_name = st.text_input("廠商簽收人姓名", value="")
+        
+    st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
+    
+    canvas_sign = st_canvas(
+        fill_color="rgba(255, 255, 255, 1)",
+        stroke_width=3,
+        stroke_color="#000000",
+        background_color="#EEEEEE",
+        height=180,
+        width=340,
+        drawing_mode="freedraw",
+        update_streamlit=True,
+        key="canvas_delivery",
+    )
+    
+    if st.button("確認交付並永久儲存簽收紀錄", use_container_width=True):
+        if not input_serial.strip():
+            st.error("請填寫聯單起始序號")
+        elif not input_name.strip():
+            st.error("請填寫廠商簽收人姓名")
+        elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
+            st.error("請廠商完成手寫簽名後再行提交")
+        else:
+            img_array = canvas_sign.image_data.astype('uint8')
+            img = Image.fromarray(img_array, 'RGBA')
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            base64_sign = base64.b64encode(buffered.getvalue()).decode()
             
-        st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
-        
-        canvas_sign = st_canvas(
-            fill_color="rgba(255, 255, 255, 1)",
-            stroke_width=3,
-            stroke_color="#000000",
-            background_color="#EEEEEE",
-            height=180,
-            width=340,
-            drawing_mode="freedraw",
-            update_streamlit=True,
-            key="canvas_delivery",
-        )
-        
-        submit_delivery = st.form_submit_button("確認交付並永久儲存簽收紀錄", use_container_width=True)
-        
-        if submit_delivery:
-            if not input_vendor.strip():
-                st.error("請填寫廠商名稱")
-            elif not input_serial.strip():
-                st.error("請填寫聯單起始序號")
-            elif not input_name.strip():
-                st.error("請填寫廠商簽收人姓名")
-            elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
-                st.error("請廠商完成手寫簽名後再行提交")
-            else:
-                img_array = canvas_sign.image_data.astype('uint8')
-                img = Image.fromarray(img_array, 'RGBA')
-                buffered = io.BytesIO()
-                img.save(buffered, format="PNG")
-                base64_sign = base64.b64encode(buffered.getvalue()).decode()
-                
-                now_tw = datetime.utcnow() + timedelta(hours=8)
-                new_record = {
-                    "交付日期": now_tw.strftime("%Y-%m-%d"),
-                    "交付時間": now_tw.strftime("%H:%M:%S"),
-                    "廠商名稱": input_vendor.strip(),
-                    "聯單類型": input_type,
-                    "起始序號": input_serial.strip(),
-                    "發放張數": int(input_count),
-                    "簽收人姓名": input_name.strip(),
-                    "簽名資料": base64_sign
-                }
-                
-                df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
-                
-                if save_sheet_data("manifest_delivery", df_delivery):
-                    st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
-                    st.rerun()
+            now_tw = datetime.utcnow() + timedelta(hours=8)
+            new_record = {
+                "交付日期": now_tw.strftime("%Y-%m-%d"),
+                "交付時間": now_tw.strftime("%H:%M:%S"),
+                "廠商名稱": input_vendor.strip(),
+                "聯單類型": input_type,
+                "起始序號": input_serial.strip(),
+                "發放張數": int(input_count),
+                "簽收人姓名": input_name.strip(),
+                "簽名資料": base64_sign
+            }
+            
+            df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
+            
+            if save_sheet_data("manifest_delivery", df_delivery):
+                st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
+                st.rerun()
