@@ -11,13 +11,16 @@ from fpdf import FPDF
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.font_manager import FontProperties
+from streamlit_drawable_canvas import st_canvas
+import base64
+import io
+from PIL import Image
 
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 CDC土方管理系統")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
-# 初始化 Session State
 if 'sync_data_summary' not in st.session_state:
     st.session_state['sync_data_summary'] = None
 if 'sync_date' not in st.session_state:
@@ -120,7 +123,6 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
         
     start_y = pdf.get_y()
 
-    # 繪製左側數據
     pdf.set_xy(15, start_y)
     for line in report_text_left.split('\n'):
         if line.strip():
@@ -128,7 +130,6 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
             pdf.cell(90, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
     left_end_y = pdf.get_y()
 
-    # 繪製右側聯單分類
     pdf.set_xy(110, start_y + 8) 
     for line in report_text_right.split('\n'):
         if line.strip():
@@ -136,7 +137,6 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
             pdf.cell(85, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
     right_end_y = pdf.get_y()
 
-    # 將指針移動到雙欄最底部的下方
     pdf.set_y(max(left_end_y, right_end_y) + 5)
     
     try:
@@ -368,7 +368,7 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理"])
+tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"])
 
 with tab_grid:
     export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
@@ -547,7 +547,6 @@ with tab_stats:
         combined_excavated = total_excavated + pre_excavated
         overall_rate = round((combined_excavated / manifest_total * 100), 1)
         
-        # 拆分為左右兩個字串，以利 PDF 雙欄繪製
         report_text_left = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}車次： {range_trips} 台
 {period_label}出土方量： {range_vol:,.0f} m³
@@ -589,6 +588,7 @@ with tab_stats:
                 vol_dict = {}
                 if not zone_grouped.empty:
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+                stage_dict = df_results.set_index('分區代號')['開挖前土方' != df_results['分區代號']]
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
                 
                 for idx, row in df_results.iterrows():
@@ -643,7 +643,7 @@ with tab_stats:
             with col_z1:
                 selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
             with col_z2:
-                if st.button("套用到勾選的紀錄"):
+                if st.button("套送到勾選的紀錄"):
                     if selected_zone == "請選擇":
                         st.error("請先選擇分區")
                     else:
@@ -888,3 +888,90 @@ with tab_manifest:
             
     if not alert_triggered:
         st.success("✅ 目前所有類型的聯單現場庫存皆十分充足，或已全數列印完畢。")
+
+with tab_delivery:
+    st.write("### ✍️ 現場廠商交付簽收管理")
+    
+    df_delivery = load_sheet_data("manifest_delivery")
+    if df_delivery.empty:
+        df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名", "簽名資料"])
+
+    # 顯示歷史簽收紀錄看板
+    if not df_delivery.empty:
+        st.markdown("#### 📋 歷史交付簽收對帳看板")
+        # 隱藏大量文字的簽名資料欄位，優化手機端檢視
+        display_delivery = df_delivery.copy()
+        display_delivery["簽名狀態"] = display_delivery["簽名資料"].apply(lambda x: "已核簽" if pd.notnull(x) and str(x) != "" else "未簽名")
+        st.dataframe(display_delivery.drop(columns=["簽名資料"]), use_container_width=True, hide_index=True)
+        st.divider()
+
+    st.markdown("#### 📥 新增聯單現場發放")
+    
+    # 讀取車籍資料庫以取得廠商名單
+    df_drivers_data = load_sheet_data("drivers")
+    vendor_options = ["請選擇廠商"]
+    if not df_drivers_data.empty and "姓名" in df_drivers_data.columns:
+        # 假設車籍資料的姓名或車頭車號能識別，這裡提供自填與選項
+        pass
+
+    with st.form("delivery_form", clear_on_submit=True):
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            input_vendor = st.text_input("廠商名稱 (例如: 宏大運輸)", value="")
+            input_type = st.selectbox("聯單類型", options=["B1", "B2-3", "B4", "B5"])
+            input_count = st.number_input("發放張數", min_value=1, value=50, step=1)
+        with col_d2:
+            input_serial = st.text_input("聯單起始序號", value="")
+            input_name = st.text_input("廠商簽收人姓名", value="")
+            
+        st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
+        
+        # 行動裝置優化畫布排版
+        canvas_sign = st_canvas(
+            fill_color="rgba(255, 255, 255, 1)",
+            stroke_width=3,
+            stroke_color="#000000",
+            background_color="#EEEEEE",
+            height=180,
+            width=340,
+            drawing_mode="freedraw",
+            update_streamlit=True,
+            key="canvas_delivery",
+        )
+        
+        submit_delivery = st.form_submit_button("確認交付並永久儲存簽收紀錄", use_container_width=True)
+        
+        if submit_delivery:
+            if not input_vendor.strip():
+                st.error("請填寫廠商名稱")
+            elif not input_serial.strip():
+                st.error("請填寫聯單起始序號")
+            elif not input_name.strip():
+                st.error("請填寫廠商簽收人姓名")
+            elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
+                st.error("請廠商完成手寫簽名後再行提交")
+            else:
+                # 解析 Canvas 圖像數據並轉換成輕量化 Base64 字串
+                img_array = canvas_sign.image_data.astype('uint8')
+                img = Image.fromarray(img_array, 'RGBA')
+                buffered = io.BytesIO()
+                img.save(buffered, format="PNG")
+                base64_sign = base64.b64encode(buffered.getvalue()).decode()
+                
+                now_tw = datetime.utcnow() + timedelta(hours=8)
+                new_record = {
+                    "交付日期": now_tw.strftime("%Y-%m-%d"),
+                    "交付時間": now_tw.strftime("%H:%M:%S"),
+                    "廠商名稱": input_vendor.strip(),
+                    "聯單類型": input_type,
+                    "起始序號": input_serial.strip(),
+                    "發放張數": int(input_count),
+                    "簽收人姓名": input_name.strip(),
+                    "簽名資料": base64_sign
+                }
+                
+                df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
+                
+                if save_sheet_data("manifest_delivery", df_delivery):
+                    st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
+                    st.rerun()
