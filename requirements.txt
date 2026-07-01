@@ -6,3 +6,4 @@ shapely
 st-gsheets-connection
 fpdf2
 matplotlib
+streamlit-drawable-canvas
