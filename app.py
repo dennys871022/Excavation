@@ -28,6 +28,8 @@ if 'sync_date' not in st.session_state:
     st.session_state['sync_date'] = None
 if 'official_ready_df' not in st.session_state:
     st.session_state['official_ready_df'] = None
+if 'canvas_key_counter' not in st.session_state:
+    st.session_state['canvas_key_counter'] = 0
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -64,7 +66,6 @@ def generate_backend_map(df_results, zone_grouped):
     
     vol_dict = {}
     if not zone_grouped.empty:
-        vol_dict = zone_grouped.set_index('出土分區')['開挖前土方' != zone_grouped['出土分區']].to_dict()
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
     
@@ -353,6 +354,7 @@ try:
                 "第3挖方量(m³)": round(v3, 0),
                 "第4挖方量(m³)": round(v4, 0),
                 "預估總土方": round(sum(vols), 0), 
+                "各階累計方量": cum_vols, 
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
     
@@ -910,13 +912,22 @@ with tab_manifest:
             count = valid_serials.str.contains(m_type.upper(), regex=False).sum()
             used_counts[m_type] = count
 
+    df_manifest["總配額"] = df_manifest["總配額"].fillna(0).astype(int)
+    df_manifest["已列印數量"] = df_manifest["已列印數量"].fillna(0).astype(int)
     df_manifest["已使用數量"] = df_manifest["聯單類型"].map(used_counts).fillna(0).astype(int)
-    df_manifest["現場剩餘可用"] = df_manifest["已列印數量"].astype(int) - df_manifest["已使用數量"]
-    df_manifest["雲端未列印配額"] = df_manifest["總配額"].astype(int) - df_manifest["已列印數量"].astype(int)
+    df_manifest["現場剩餘可用"] = df_manifest["已列印數量"] - df_manifest["已使用數量"]
+    df_manifest["雲端未列印配額"] = df_manifest["總配額"] - df_manifest["已列印數量"]
     
     st.info("請於下方表格直接修改「已列印數量」，系統會根據對帳結果自動計算現場剩餘的可用張數。")
     edited_manifest = st.data_editor(
         df_manifest, 
+        column_config={
+            "總配額": st.column_config.NumberColumn(format="%d"),
+            "已列印數量": st.column_config.NumberColumn(format="%d", min_value=0),
+            "已使用數量": st.column_config.NumberColumn(format="%d"),
+            "現場剩餘可用": st.column_config.NumberColumn(format="%d"),
+            "雲端未列印配額": st.column_config.NumberColumn(format="%d"),
+        },
         disabled=["聯單類型", "總配額", "已使用數量", "現場剩餘可用", "雲端未列印配額"],
         hide_index=True,
         use_container_width=True
@@ -933,7 +944,7 @@ with tab_manifest:
     alert_triggered = False
     for idx, row in df_manifest.iterrows():
         if row["現場剩餘可用"] < 100 and row["雲端未列印配額"] > 0:
-            st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{row['現場剩餘可用']}** 張！請盡速列印補充備用。 (尚有雲端配額 {row['雲端未列印配額']} 張)")
+            st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{int(row['現場剩餘可用'])}** 張！請盡速列印補充備用。 (尚有雲端配額 {int(row['雲端未列印配額'])} 張)")
             alert_triggered = True
             
     if not alert_triggered:
@@ -1010,7 +1021,6 @@ with tab_delivery:
     
     input_type = st.selectbox("選擇本次發放的聯單類型", options=["B1", "B2-3", "B4", "B5"], key="delivery_type_select")
     
-    # 即時讀取雲端配置並重新換算該聯單類型之現場實際可用庫存數量
     df_manifest_check = load_sheet_data("manifest_settings")
     df_logs_check = load_sheet_data("dispatch_logs")
     
@@ -1051,63 +1061,59 @@ with tab_delivery:
             except Exception:
                 auto_serial = ""
 
-    with st.form("delivery_submit_form", clear_on_submit=True):
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
-            # 強制移除步進小數點，限定整數格式輸入
-            input_count = st.number_input("發放張數", min_value=1, value=50, step=1, format="%d")
-        with col_d2:
-            input_serial = st.text_input("聯單起始序號 (可根據現場實物修改)", value=auto_serial)
-            input_name = st.text_input("廠商簽收人姓名", value="")
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
+        input_count = st.number_input("發放張數", min_value=1, value=50, step=1, format="%d")
+    with col_d2:
+        input_serial = st.text_input("聯單起始序號 (可根據現場實物修改)", value=auto_serial)
+        input_name = st.text_input("廠商簽收人姓名", value="")
+        
+    st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
+    
+    canvas_sign = st_canvas(
+        fill_color="rgba(255, 255, 255, 1)",
+        stroke_width=3,
+        stroke_color="#000000",
+        background_color="#EEEEEE",
+        height=200,
+        width=340,
+        drawing_mode="freedraw",
+        update_streamlit=True,
+        key=f"canvas_delivery_form_{st.session_state['canvas_key_counter']}",
+    )
+    
+    if st.button("確認交付並永久儲存簽收紀錄", use_container_width=True):
+        if not input_serial.strip():
+            st.error("請填寫聯單起始序號")
+        elif not input_name.strip():
+            st.error("請填寫廠商簽收人姓名")
+        elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
+            st.error("請廠商完成手寫簽名後再行提交")
+        elif int(input_count) > available_stock:
+            st.error(f"❌ 拒絕紀錄：庫存量不足！目前庫存僅剩 {available_stock} 張，無法超量發放 {int(input_count)} 張。")
+        else:
+            img_array = canvas_sign.image_data.astype('uint8')
+            img = Image.fromarray(img_array, 'RGBA')
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            base64_sign = base64.b64encode(buffered.getvalue()).decode()
             
-        st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
-        
-        canvas_sign = st_canvas(
-            fill_color="rgba(255, 255, 255, 1)",
-            stroke_width=3,
-            stroke_color="#000000",
-            background_color="#EEEEEE",
-            height=180,
-            width=340,
-            drawing_mode="freedraw",
-            update_streamlit=True,
-            key="canvas_delivery_form",
-        )
-        
-        submit_delivery = st.form_submit_button("確認交付並永久儲存簽收紀錄", use_container_width=True)
-        
-        if submit_delivery:
-            if not input_serial.strip():
-                st.error("請填寫聯單起始序號")
-            elif not input_name.strip():
-                st.error("請填寫廠商簽收人姓名")
-            elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
-                st.error("請廠商完成手寫簽名後再行提交")
-            # 庫存數量上限防錯校驗機制
-            elif int(input_count) > available_stock:
-                st.error(f"❌ 拒絕紀錄：庫存量不足！目前庫存僅剩 {available_stock} 張，無法超量發放 {int(input_count)} 張。")
-            else:
-                img_array = canvas_sign.image_data.astype('uint8')
-                img = Image.fromarray(img_array, 'RGBA')
-                buffered = io.BytesIO()
-                img.save(buffered, format="PNG")
-                base64_sign = base64.b64encode(buffered.getvalue()).decode()
-                
-                now_tw = datetime.utcnow() + timedelta(hours=8)
-                new_record = {
-                    "交付日期": now_tw.strftime("%Y-%m-%d"),
-                    "交付時間": now_tw.strftime("%H:%M:%S"),
-                    "廠商名稱": input_vendor.strip(),
-                    "聯單類型": input_type,
-                    "起始序號": input_serial.strip(),
-                    "發放張數": int(input_count),
-                    "簽收人姓名": input_name.strip(),
-                    "簽名資料": base64_sign
-                }
-                
-                df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
-                
-                if save_sheet_data("manifest_delivery", df_delivery):
-                    st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
-                    st.rerun()
+            now_tw = datetime.utcnow() + timedelta(hours=8)
+            new_record = {
+                "交付日期": now_tw.strftime("%Y-%m-%d"),
+                "交付時間": now_tw.strftime("%H:%M:%S"),
+                "廠商名稱": input_vendor.strip(),
+                "聯單類型": input_type,
+                "起始序號": input_serial.strip(),
+                "發放張數": int(input_count),
+                "簽收人姓名": input_name.strip(),
+                "簽名資料": base64_sign
+            }
+            
+            df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
+            
+            if save_sheet_data("manifest_delivery", df_delivery):
+                st.session_state['canvas_key_counter'] += 1
+                st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
+                st.rerun()
