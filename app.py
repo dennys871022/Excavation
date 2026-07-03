@@ -639,7 +639,6 @@ with tab_stats:
             if not df_results.empty:
                 vol_dict = {}
                 if not zone_grouped.empty:
-                    vol_dict = zone_grouped.set_index('出土分區')['開挖前土方' != zone_grouped['出土分區']].to_dict()
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
                 
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
