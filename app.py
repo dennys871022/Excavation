@@ -37,9 +37,14 @@ except Exception as e:
     st.error(f"資料庫連線失敗：{e}")
     st.stop()
 
+# 導入記憶體快取機制，避免重複連線 Google 雲端造成卡頓
+@st.cache_data(ttl=300)
+def fetch_gsheet_data(sheet_name):
+    return conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
+
 def load_sheet_data(sheet_name):
     try:
-        df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
+        df = fetch_gsheet_data(sheet_name)
         df = df.dropna(how='all')
         if not df.empty:
             st.session_state[f"cache_{sheet_name}"] = df.copy()
@@ -52,6 +57,7 @@ def load_sheet_data(sheet_name):
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
+        st.cache_data.clear()  # 寫入成功後清除快取，確保下次讀取到最新資料
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
@@ -573,7 +579,7 @@ with tab_stats:
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率_顯示'].apply(lambda x: f"{x}%" if x != '不適用' else x)
                 
                 display_df = zone_grouped[['出土分區', '累計實挖方量_顯示', '預估基準方量_顯示', '完成率_顯示']].rename(
-                    columns={'累計實挖方量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
+                    columns={'累計實挖量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
                 )
 
         st.markdown(f"#### 📱 {period_label}回報與報表匯出")
