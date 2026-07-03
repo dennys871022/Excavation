@@ -37,26 +37,48 @@ except Exception as e:
     st.error(f"資料庫連線失敗：{e}")
     st.stop()
 
+# 核心優化：嚴格快取機制，登入後只讀取一次，避開 60次/分鐘 的 API 限制
 def load_sheet_data(sheet_name):
-    try:
-        df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
-        df = df.dropna(how='all')
-        if not df.empty:
+    if f"cache_{sheet_name}" not in st.session_state:
+        try:
+            df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
+            df = df.dropna(how='all')
             st.session_state[f"cache_{sheet_name}"] = df.copy()
-        return df
-    except Exception:
-        if f"cache_{sheet_name}" in st.session_state:
-            return st.session_state[f"cache_{sheet_name}"]
-        return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+    return st.session_state[f"cache_{sheet_name}"].copy()
 
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
+        # 寫入雲端後同步更新本地快取，無需重新消耗額度讀取
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
         return False
+
+# 側邊欄手動強制更新功能
+if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
+    for sheet in ["grid_zones", "drivers", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
+        if f"cache_{sheet}" in st.session_state:
+            del st.session_state[f"cache_{sheet}"]
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.header("【圖資與各區開挖參數】")
+base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
+base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
+scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
+scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
+
+st.sidebar.markdown("### 各區開挖 GL 高程設定")
+current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高增加第一挖土方；負值代表現地低減少第一挖土方")
+
+gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
+gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
+gl_bc_input = st.sidebar.text_input("滯洪池BC區 GL高程 (2挖)", "1.5, 7.6")
+gl_a_input = st.sidebar.text_input("滯洪池A區 GL高程 (2挖)", "2.0, 7.85")
 
 def generate_backend_map(df_results, zone_grouped):
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -259,20 +281,6 @@ def generate_delivery_pdf(df_target, scope_label):
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(tmp_file.name)
     return tmp_file.name
-
-st.sidebar.header("【圖資與各區開挖參數】")
-base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
-base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
-scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
-scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
-
-st.sidebar.markdown("### 各區開挖 GL 高程設定")
-current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高增加第一挖土方；負值代表現地低減少第一挖土方")
-
-gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
-gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
-gl_bc_input = st.sidebar.text_input("滯洪池BC區 GL高程 (2挖)", "1.5, 7.6")
-gl_a_input = st.sidebar.text_input("滯洪池A區 GL高程 (2挖)", "2.0, 7.85")
 
 def get_thickness_from_gl(gl_str, gl_offset):
     try:
@@ -926,7 +934,7 @@ with tab_manifest:
         df_manifest, 
         column_config={
             "總配額": st.column_config.NumberColumn(format="%d"),
-            "開列印數量": st.column_config.NumberColumn(format="%d", min_value=0),
+            "已列印數量": st.column_config.NumberColumn(format="%d", min_value=0),
             "已使用數量": st.column_config.NumberColumn(format="%d"),
             "現場剩餘可用": st.column_config.NumberColumn(format="%d"),
             "雲端未列印配額": st.column_config.NumberColumn(format="%d"),
