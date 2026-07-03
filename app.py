@@ -37,14 +37,9 @@ except Exception as e:
     st.error(f"資料庫連線失敗：{e}")
     st.stop()
 
-# 導入記憶體快取機制，避免重複連線 Google 雲端造成卡頓
-@st.cache_data(ttl=300)
-def fetch_gsheet_data(sheet_name):
-    return conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
-
 def load_sheet_data(sheet_name):
     try:
-        df = fetch_gsheet_data(sheet_name)
+        df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
         df = df.dropna(how='all')
         if not df.empty:
             st.session_state[f"cache_{sheet_name}"] = df.copy()
@@ -57,7 +52,6 @@ def load_sheet_data(sheet_name):
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
-        st.cache_data.clear()  # 寫入成功後清除快取，確保下次讀取到最新資料
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
@@ -232,7 +226,11 @@ def generate_delivery_pdf(df_target, scope_label):
         pdf.set_font("Helvetica", size=10)
         
     for idx, row in df_target.iterrows():
-        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {int(row['發放張數'])}  起始序號: {row['起始序號']}  簽收人: {row['簽收人姓名']}"
+        curr_serial = str(row['起始序號']).strip()
+        if curr_serial.endswith('.0'):
+            curr_serial = curr_serial[:-2]
+            
+        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {int(row['發放張數'])}  起始序號: {curr_serial}  簽收人: {row['簽收人姓名']}"
         pdf.cell(0, 8, text=info_text, new_x="LMARGIN", new_y="NEXT")
         
         if pd.notnull(row['簽名資料']) and str(row['簽名資料']).strip() != "":
@@ -579,7 +577,7 @@ with tab_stats:
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率_顯示'].apply(lambda x: f"{x}%" if x != '不適用' else x)
                 
                 display_df = zone_grouped[['出土分區', '累計實挖方量_顯示', '預估基準方量_顯示', '完成率_顯示']].rename(
-                    columns={'累計實挖量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
+                    columns={'累計實挖方量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
                 )
 
         st.markdown(f"#### 📱 {period_label}回報與報表匯出")
@@ -928,7 +926,7 @@ with tab_manifest:
         df_manifest, 
         column_config={
             "總配額": st.column_config.NumberColumn(format="%d"),
-            "已列印數量": st.column_config.NumberColumn(format="%d", min_value=0),
+            "開列印數量": st.column_config.NumberColumn(format="%d", min_value=0),
             "已使用數量": st.column_config.NumberColumn(format="%d"),
             "現場剩餘可用": st.column_config.NumberColumn(format="%d"),
             "雲端未列印配額": st.column_config.NumberColumn(format="%d"),
@@ -969,6 +967,11 @@ with tab_delivery:
         selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄以檢視簽名影像：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
         
         chosen_row = df_delivery.iloc[selected_record_idx]
+        
+        clean_history_serial = str(chosen_row['起始序號']).strip()
+        if clean_history_serial.endswith('.0'):
+            clean_history_serial = clean_history_serial[:-2]
+            
         col_rec_txt, col_rec_img = st.columns([2, 1])
         with col_rec_txt:
             st.info(f"""**詳細交付核對資訊：**
@@ -976,7 +979,7 @@ with tab_delivery:
 * 簽收廠商： `{chosen_row['廠商名稱']}`
 * 聯單規格： `{chosen_row['聯單類型']}`
 * 發放張數： `{int(chosen_row['發放張數'])} 張`
-* 起始序號： `{chosen_row['起始序號']}`
+* 起始序號： `{clean_history_serial}`
 * 現場簽收人： `{chosen_row['簽收人姓名']}`""")
             
         with col_rec_img:
@@ -1053,7 +1056,9 @@ with tab_delivery:
         df_type_last = df_delivery[df_delivery["聯單類型"] == input_type]
         if not df_type_last.empty:
             last_record = df_type_last.iloc[-1]
-            last_serial = str(last_record["起始序號"])
+            last_serial = str(last_record["起始序號"]).strip()
+            if last_serial.endswith('.0'):
+                last_serial = last_serial[:-2]
             try:
                 last_count = int(last_record["發放張數"])
                 match = re.search(r'\d+', last_serial)
@@ -1104,13 +1109,17 @@ with tab_delivery:
             img.save(buffered, format="PNG")
             base64_sign = base64.b64encode(buffered.getvalue()).decode()
             
+            clean_input_serial = input_serial.strip()
+            if clean_input_serial.endswith('.0'):
+                clean_input_serial = clean_input_serial[:-2]
+                
             now_tw = datetime.utcnow() + timedelta(hours=8)
             new_record = {
                 "交付日期": now_tw.strftime("%Y-%m-%d"),
                 "交付時間": now_tw.strftime("%H:%M:%S"),
                 "廠商名稱": input_vendor.strip(),
                 "聯單類型": input_type,
-                "起始序號": input_serial.strip(),
+                "起始序號": clean_input_serial,
                 "發放張數": int(input_count),
                 "簽收人姓名": input_name.strip(),
                 "簽名資料": base64_sign
