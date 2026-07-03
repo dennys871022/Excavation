@@ -639,6 +639,7 @@ with tab_stats:
             if not df_results.empty:
                 vol_dict = {}
                 if not zone_grouped.empty:
+                    vol_dict = zone_grouped.set_index('出土分區')['開挖前土方' != zone_grouped['出土分區']].to_dict()
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
                 
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
@@ -899,7 +900,6 @@ with tab_manifest:
             "總配額": [1000, 2790, 2821, 30],
             "已列印數量": [0, 0, 0, 0]
         })
-        save_sheet_data("manifest_settings", df_manifest)
     
     df_logs = load_sheet_data("dispatch_logs")
     
@@ -913,7 +913,7 @@ with tab_manifest:
             used_counts[m_type] = count
 
     df_manifest["總配額"] = df_manifest["總配額"].fillna(0).astype(int)
-    df_manifest["已列印數量"] = df_manifest["已列印數量"].fillna(0).astype(int)
+    df_manifest["已列印數量"] = df_manifest["聯單數量_已列印" if "聯單數量_已列印" in df_manifest.columns else "已列印數量"].fillna(0).astype(int)
     df_manifest["已使用數量"] = df_manifest["聯單類型"].map(used_counts).fillna(0).astype(int)
     df_manifest["現場剩餘可用"] = df_manifest["已列印數量"] - df_manifest["已使用數量"]
     df_manifest["雲端未列印配額"] = df_manifest["總配額"] - df_manifest["已列印數量"]
@@ -1035,7 +1035,7 @@ with tab_delivery:
                 used_counts_check[m_type] = count
         
         df_manifest_check["已使用數量"] = df_manifest_check["聯單類型"].map(used_counts_check).fillna(0).astype(int)
-        df_manifest_check["現場剩餘可用"] = df_manifest_check["已列印數量"].astype(int) - df_manifest_check["已使用數量"]
+        df_manifest_check["現場剩餘可用"] = df_manifest_check["聯單數量_已列印" if "聯單數量_已列印" in df_manifest_check.columns else "已列印數量"].astype(int) - df_manifest_check["已使用數量"]
         
         match_stock_row = df_manifest_check[df_manifest_check["聯單類型"] == input_type]
         if not match_stock_row.empty:
