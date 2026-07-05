@@ -37,19 +37,26 @@ except Exception as e:
     st.error(f"資料庫連線失敗：{e}")
     st.stop()
 
+@st.cache_data(ttl=300)
+def fetch_gsheet_data(sheet_name):
+    return conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
+
 def load_sheet_data(sheet_name):
-    if f"cache_{sheet_name}" not in st.session_state:
-        try:
-            df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
-            df = df.dropna(how='all')
+    try:
+        df = fetch_gsheet_data(sheet_name)
+        df = df.dropna(how='all')
+        if not df.empty:
             st.session_state[f"cache_{sheet_name}"] = df.copy()
-        except Exception:
-            return pd.DataFrame()
-    return st.session_state[f"cache_{sheet_name}"].copy()
+        return df
+    except Exception:
+        if f"cache_{sheet_name}" in st.session_state:
+            return st.session_state[f"cache_{sheet_name}"]
+        return pd.DataFrame()
 
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
+        st.cache_data.clear()
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
@@ -60,6 +67,7 @@ if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=
     for sheet in ["grid_zones", "drivers", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
         if f"cache_{sheet}" in st.session_state:
             del st.session_state[f"cache_{sheet}"]
+    st.cache_data.clear()
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -113,7 +121,7 @@ def generate_backend_map(df_results, zone_grouped):
                 fill_color = '#2ECC71' 
             else:
                 colors = ['#F1C40F', '#E67E22', '#3498DB', '#9B59B6']
-                for s_idx, t_vol  in enumerate(thresholds):
+                for s_idx, t_vol in enumerate(thresholds):
                     if current_vol < t_vol * 0.98:
                         fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
                         break
@@ -292,7 +300,6 @@ def generate_delivery_pdf(df_target, scope_label):
     pdf.output(tmp_file.name)
     return tmp_file.name
 
-# 網格幾何參數與區域定義
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
@@ -429,6 +436,8 @@ try:
     df_results = pd.DataFrame(results)
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
+
+tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"])
 
 with tab_grid:
     export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
@@ -642,7 +651,7 @@ with tab_stats:
 
         with col_fig:
             st.markdown("**進度圖例說明：**")
-            st.markdown("結構狀態圖例說明：⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
+            st.markdown("⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
             fig_map = go.Figure()
             if not df_results.empty:
                 vol_dict = {}
@@ -1085,7 +1094,6 @@ with tab_delivery:
         
     st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
     
-    # 確保 st_canvas 不包含在 st.form 容器中，保證在手機和電腦網頁端都能穩定看見灰色簽名區塊
     canvas_sign = st_canvas(
         fill_color="rgba(255, 255, 255, 1)",
         stroke_width=3,
