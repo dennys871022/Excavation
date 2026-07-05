@@ -37,37 +37,32 @@ except Exception as e:
     st.error(f"資料庫連線失敗：{e}")
     st.stop()
 
-@st.cache_data(ttl=300)
-def fetch_gsheet_data(sheet_name):
-    return conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
-
+# 核心優化：嚴格快取機制，登入後只讀取一次，避開 60次/分鐘 的 API 限制
 def load_sheet_data(sheet_name):
-    try:
-        df = fetch_gsheet_data(sheet_name)
-        df = df.dropna(how='all')
-        if not df.empty:
+    if f"cache_{sheet_name}" not in st.session_state:
+        try:
+            df = conn.read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0)
+            df = df.dropna(how='all')
             st.session_state[f"cache_{sheet_name}"] = df.copy()
-        return df
-    except Exception:
-        if f"cache_{sheet_name}" in st.session_state:
-            return st.session_state[f"cache_{sheet_name}"]
-        return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+    return st.session_state[f"cache_{sheet_name}"].copy()
 
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
-        st.cache_data.clear()
+        # 寫入雲端後同步更新本地快取，無需重新消耗額度讀取
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
         return False
 
+# 側邊欄手動強制更新功能
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
     for sheet in ["grid_zones", "drivers", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
         if f"cache_{sheet}" in st.session_state:
             del st.session_state[f"cache_{sheet}"]
-    st.cache_data.clear()
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -84,19 +79,6 @@ gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 
 gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
 gl_bc_input = st.sidebar.text_input("滯洪池BC區 GL高程 (2挖)", "1.5, 7.6")
 gl_a_input = st.sidebar.text_input("滯洪池A區 GL高程 (2挖)", "2.0, 7.85")
-
-def get_thickness_from_gl(gl_str, gl_offset):
-    try:
-        gl_list = [float(x.strip()) for x in gl_str.split(",")]
-        thickness = []
-        for i in range(len(gl_list)):
-            if i == 0:
-                thickness.append(max(0.0, gl_list[i] + gl_offset))
-            else:
-                thickness.append(max(0.0, gl_list[i] - gl_list[i-1]))
-        return thickness
-    except Exception:
-        return []
 
 def generate_backend_map(df_results, zone_grouped):
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -299,6 +281,19 @@ def generate_delivery_pdf(df_target, scope_label):
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(tmp_file.name)
     return tmp_file.name
+
+def get_thickness_from_gl(gl_str, gl_offset):
+    try:
+        gl_list = [float(x.strip()) for x in gl_str.split(",")]
+        thickness = []
+        for i in range(len(gl_list)):
+            if i == 0:
+                thickness.append(max(0.0, gl_list[i] + gl_offset))
+            else:
+                thickness.append(max(0.0, gl_list[i] - gl_list[i-1]))
+        return thickness
+    except Exception:
+        return []
 
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
@@ -879,7 +874,7 @@ with tab_sync:
                             "時間": o_t.strftime("%H:%M:%S") if pd.notnull(o_t) else "00:00:00",
                             "車頭車號": o_plate_raw,
                             "出土分區": "未指定",
-                            "載運方量(m³): 12.0",
+                            "載運方量(m³)": 12.0,
                             "備註": "官方聯單補登",
                             "聯單序號": o_serial_raw
                         })
@@ -976,7 +971,7 @@ with tab_delivery:
     if not df_delivery.empty:
         st.markdown("#### 📋 歷史交付簽收對帳看板")
         
-        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}:{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數'])}張)" for idx, r in df_delivery.iterrows()]
+        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}-{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數'])}張)" for idx, r in df_delivery.iterrows()]
         selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄以檢視簽名影像：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
         
         chosen_row = df_delivery.iloc[selected_record_idx]
