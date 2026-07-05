@@ -37,6 +37,7 @@ except Exception as e:
     st.error(f"資料庫連線失敗：{e}")
     st.stop()
 
+# 核心優化：嚴格快取機制，登入後只讀取一次，避開 60次/分鐘 的 API 限制
 def load_sheet_data(sheet_name):
     if f"cache_{sheet_name}" not in st.session_state:
         try:
@@ -50,12 +51,14 @@ def load_sheet_data(sheet_name):
 def save_sheet_data(sheet_name, df):
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
+        # 寫入雲端後同步更新本地快取，無需重新消耗額度讀取
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
     except Exception as e:
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
         return False
 
+# 側邊欄手動強制更新功能
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
     for sheet in ["grid_zones", "drivers", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
         if f"cache_{sheet}" in st.session_state:
@@ -77,21 +80,9 @@ gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.
 gl_bc_input = st.sidebar.text_input("滯洪池BC區 GL高程 (2挖)", "1.5, 7.6")
 gl_a_input = st.sidebar.text_input("滯洪池A區 GL高程 (2挖)", "2.0, 7.85")
 
-def get_thickness_from_gl(gl_str, gl_offset):
-    try:
-        gl_list = [float(x.strip()) for x in gl_str.split(",")]
-        thickness = []
-        for i in range(len(gl_list)):
-            if i == 0:
-                thickness.append(max(0.0, gl_list[i] + gl_offset))
-            else:
-                thickness.append(max(0.0, gl_list[i] - gl_list[i-1]))
-        return thickness
-    except Exception:
-        return []
-
 def generate_backend_map(df_results, zone_grouped):
     fig, ax = plt.subplots(figsize=(10, 6))
+    
     font_path = "font.ttf"
     my_font = FontProperties(fname=font_path) if os.path.exists(font_path) else None
     
@@ -290,6 +281,156 @@ def generate_delivery_pdf(df_target, scope_label):
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(tmp_file.name)
     return tmp_file.name
+
+def get_thickness_from_gl(gl_str, gl_offset):
+    try:
+        gl_list = [float(x.strip()) for x in gl_str.split(",")]
+        thickness = []
+        for i in range(len(gl_list)):
+            if i == 0:
+                thickness.append(max(0.0, gl_list[i] + gl_offset))
+            else:
+                thickness.append(max(0.0, gl_list[i] - gl_list[i-1]))
+        return thickness
+    except Exception:
+        return []
+
+e_ext = 3.25
+dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
+dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
+y_labels1 = ["A", "B", "C", "D", "E"]
+dx2 = [6.9, 9.0, 9.0, 9.3, 9.3, 9.3, 9.3, 9.0, 9.0, 6.0]
+dy2 = [-11.25, -9.0, -9.3, -9.3, -9.3, -7.5] 
+y_labels2 = ["A", "B'", "C'", "D'", "E'", "F'"]
+
+df_results = pd.DataFrame()
+try:
+    base_x = base_x_input / scale_factor
+    base_y = base_y_input / scale_factor
+    x_coords1 = [base_x] + list(base_x + np.cumsum(dx1))
+    y_coords1 = [base_y] + list(base_y + np.cumsum(dy1))
+    x_offset = x_coords1[-1]
+    x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
+    y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
+
+    depths_admin = get_thickness_from_gl(gl_admin_input, current_gl)
+    depths_lab = get_thickness_from_gl(gl_lab_input, current_gl)
+    depths_bc = get_thickness_from_gl(gl_bc_input, current_gl)
+    depths_a = get_thickness_from_gl(gl_a_input, current_gl)
+
+    results = []
+    
+    for j in range(len(dy1)):
+        for i in range(len(dx1)):
+            if j >= 2 and i >= 3: continue 
+            grid_id = f"{y_labels1[j]}{i+1}"
+            x_min, x_max = x_coords1[i], x_coords1[i+1]
+            y_max, y_min = y_coords1[j], y_coords1[j+1]
+            if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
+            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+            vols = [poly.area * d for d in depths_admin]
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            v1 = vols[0] if len(vols) > 0 else 0
+            v2 = vols[1] if len(vols) > 1 else 0
+            v3 = vols[2] if len(vols) > 2 else 0
+            v4 = vols[3] if len(vols) > 3 else 0
+            results.append({
+                "分區代號": grid_id, 
+                "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0),
+                "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0),
+                "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), 
+                "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+            })
+    
+    for j in range(len(dy2)):
+        for i in range(len(dx2)):
+            grid_id = f"{y_labels2[j]}{i+7}" 
+            x_min, x_max = x_coords2[i], x_coords2[i+1]
+            y_max, y_min = y_coords2[j], y_coords2[j+1]
+            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+            vols = [poly.area * d for d in depths_lab]
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            v1 = vols[0] if len(vols) > 0 else 0
+            v2 = vols[1] if len(vols) > 1 else 0
+            v3 = vols[2] if len(vols) > 2 else 0
+            v4 = vols[3] if len(vols) > 3 else 0
+            results.append({
+                "分區代號": grid_id, 
+                "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0),
+                "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0),
+                "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), 
+                "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+            })
+    
+    bc_x = [-2764.56, -2758.41, -2749.46]
+    bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
+    idx_l = 1
+    for i in range(len(bc_x)-1):
+        for j in range(len(bc_y)-1):
+            old_idx = j * 2 + i + 1
+            if old_idx in [1, 3]: continue
+            grid_id = f"滯BC{idx_l}"
+            x_min, x_max = bc_x[i], bc_x[i+1]
+            y_max, y_min = bc_y[j], bc_y[j+1]
+            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+            vols = [poly.area * d for d in depths_bc]
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            v1 = vols[0] if len(vols) > 0 else 0
+            v2 = vols[1] if len(vols) > 1 else 0
+            v3 = vols[2] if len(vols) > 2 else 0
+            v4 = vols[3] if len(vols) > 3 else 0
+            results.append({
+                "分區代號": grid_id, 
+                "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0),
+                "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0),
+                "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), 
+                "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+            })
+            idx_l += 1
+
+    a_x = [-2606.06, -2592.82]
+    a_y = [-276.14, -284.44, -290.24, -296.04]
+    idx_r = 1
+    for j in range(len(a_y)-1):
+        for i in range(len(a_x)-1):
+            x_min, x_max = a_x[i], a_x[i+1]
+            y_max, y_min = a_y[j], a_y[j+1]
+            grid_id = f"滯洪池A{idx_r}"
+            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+            vols = [poly.area * d for d in depths_a]
+            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+            v1 = vols[0] if len(vols) > 0 else 0
+            v2 = vols[1] if len(vols) > 1 else 0
+            v3 = vols[2] if len(vols) > 2 else 0
+            v4 = vols[3] if len(vols) > 3 else 0
+            results.append({
+                "分區代號": grid_id, 
+                "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0),
+                "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0),
+                "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), 
+                "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+            })
+            idx_r += 1
+
+    df_results = pd.DataFrame(results)
+except Exception as e:
+    st.sidebar.error(f"圖資運算錯誤: {e}")
 
 tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"])
 
@@ -714,9 +855,9 @@ with tab_sync:
 
                     for idx in s_indices:
                         if idx in used_s: continue
-                        st_t = s_subset.loc[idx, 'FullTime']
-                        if pd.isna(o_t) or pd.isna(st_t): continue
-                        diff = abs((o_t - st_t).total_seconds())
+                        s_t = s_subset.loc[idx, 'FullTime']
+                        if pd.isna(o_t) or pd.isna(s_t): continue
+                        diff = abs((o_t - s_t).total_seconds())
                         if diff < best_diff:
                             best_diff = diff
                             best_s_idx = idx
@@ -783,8 +924,7 @@ with tab_manifest:
             used_counts[m_type] = count
 
     df_manifest["總配額"] = df_manifest["總配額"].fillna(0).astype(int)
-    col_print_name = "聯單數量_已列印" if "聯單數量_已列印" in df_manifest.columns else "已列印數量"
-    df_manifest["已列印數量"] = df_manifest[col_print_name].fillna(0).astype(int)
+    df_manifest["已列印數量"] = df_manifest["聯單數量_已列印" if "聯單數量_已列印" in df_manifest.columns else "已列印數量"].fillna(0).astype(int)
     df_manifest["已使用數量"] = df_manifest["聯單類型"].map(used_counts).fillna(0).astype(int)
     df_manifest["現場剩餘可用"] = df_manifest["已列印數量"] - df_manifest["已使用數量"]
     df_manifest["雲端未列印配額"] = df_manifest["總配額"] - df_manifest["已列印數量"]
@@ -901,23 +1041,21 @@ with tab_delivery:
     df_logs_check = load_sheet_data("dispatch_logs")
     
     available_stock = 0
-    if not df_manifest_check.empty and "聯單類型" in df_manifest_check.columns:
-        col_target = "聯單數量_已列印" if "聯單數量_已列印" in df_manifest_check.columns else "已列印數量"
-        if col_target in df_manifest_check.columns:
-            used_counts_check = {t: 0 for t in df_manifest_check["聯單類型"]}
-            if not df_logs_check.empty and "聯單序號" in df_logs_check.columns:
-                valid_serials_check = df_logs_check["聯單序號"].dropna().astype(str).str.strip().str.upper()
-                valid_serials_check = valid_serials_check[(valid_serials_check != "") & (valid_serials_check != "NAN") & (valid_serials_check != "NONE")]
-                for m_type in df_manifest_check["聯單類型"]:
-                    count = valid_serials_check.str.contains(m_type.upper(), regex=False).sum()
-                    used_counts_check[m_type] = count
-            
-            df_manifest_check["已使用數量"] = df_manifest_check["聯單類型"].map(used_counts_check).fillna(0).astype(int)
-            df_manifest_check["現場剩餘可用"] = pd.to_numeric(df_manifest_check[col_target], errors='coerce').fillna(0).astype(int) - df_manifest_check["已使用數量"]
-            
-            match_stock_row = df_manifest_check[df_manifest_check["聯單類型"] == input_type]
-            if not match_stock_row.empty and "現場剩餘可用" in match_stock_row.columns:
-                available_stock = int(match_stock_row.iloc[0]["現場剩餘可用"])
+    if not df_manifest_check.empty:
+        used_counts_check = {t: 0 for t in df_manifest_check["聯單類型"]}
+        if not df_logs_check.empty and "聯單序號" in df_logs_check.columns:
+            valid_serials_check = df_logs_check["聯單序號"].dropna().astype(str).str.strip().str.upper()
+            valid_serials_check = valid_serials_check[(valid_serials_check != "") & (valid_serials_check != "NAN") & (valid_serials_check != "NONE")]
+            for m_type in df_manifest_check["聯單類型"]:
+                count = valid_serials_check.str.contains(m_type.upper(), regex=False).sum()
+                used_counts_check[m_type] = count
+        
+        df_manifest_check["已使用數量"] = df_manifest_check["聯單類型"].map(used_counts_check).fillna(0).astype(int)
+        df_manifest_check["現場剩餘可用"] = df_manifest_check["聯單數量_已列印" if "聯單數量_已列印" in df_manifest_check.columns else "已列印數量"].astype(int) - df_manifest_check["已使用數量"]
+        
+        match_stock_row = df_manifest_check[df_manifest_check["聯單類型"] == input_type]
+        if not match_stock_row.empty:
+            available_stock = int(match_stock_row.iloc[0]["現場剩餘可用"])
 
     st.write(f"📊 該類型聯單目前雲端剩餘可交付數量： **{available_stock}** 張")
     
