@@ -432,9 +432,15 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"])
+page = st.radio(
+    "選擇功能頁面",
+    ["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+st.divider()
 
-with tab_grid:
+if page == "🗺️ 圖資與方量基準":
     export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
     if st.button("🚀 推送分區資料至雲端試算表"):
         if save_sheet_data("grid_zones", df_results[export_columns]):
@@ -460,7 +466,7 @@ with tab_grid:
         fig.update_layout(dragmode='pan', xaxis_title="X (m)", yaxis_title="Y (m)", yaxis=dict(scaleanchor="x", scaleratio=1), height=700, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
-with tab_vehicle:
+elif page == "🚛 車籍資料庫管理":
     st.write("### 📂 車籍資料庫管理")
     df_drivers = load_sheet_data("drivers")
     if df_drivers.empty:
@@ -495,7 +501,7 @@ with tab_vehicle:
             if save_sheet_data("drivers", clean_df):
                 st.success("車籍資料已同步更新！")
 
-with tab_stats:
+elif page == "📊 出土統計儀表板":
     st.write("### 📊 雲端出土統計儀表板")
     
     df_logs = load_sheet_data("dispatch_logs")
@@ -750,7 +756,7 @@ with tab_stats:
     else:
         st.info("尚無出土紀錄。")
 
-with tab_sync:
+elif page == "🧾 官方聯單對帳":
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
     st.info("💡 演算法說明：系統會自動尋找時間最接近的紀錄綁定並寫入聯單序號（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。")
     
@@ -901,7 +907,7 @@ with tab_sync:
                 st.success("✅ 同步校正與聯單綁定完成！庫存數量已自動更新。")
                 st.session_state['sync_data_summary'] = None
 
-with tab_manifest:
+elif page == "🎫 聯單庫存管理":
     st.write("### 🎫 聯單庫存與發放管理")
     
     df_manifest = load_sheet_data("manifest_settings")
@@ -961,7 +967,7 @@ with tab_manifest:
     if not alert_triggered:
         st.success("✅ 目前所有類型的聯單現場庫存皆十分充足，或已全數列印完畢。")
 
-with tab_delivery:
+elif page == "✍️ 現場廠商簽收":
     st.write("### ✍️ 現場廠商交付簽收管理")
     
     df_delivery = load_sheet_data("manifest_delivery")
