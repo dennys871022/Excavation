@@ -303,134 +303,140 @@ dx2 = [6.9, 9.0, 9.0, 9.3, 9.3, 9.3, 9.3, 9.0, 9.0, 6.0]
 dy2 = [-11.25, -9.0, -9.3, -9.3, -9.3, -7.5] 
 y_labels2 = ["A", "B'", "C'", "D'", "E'", "F'"]
 
-df_results = pd.DataFrame()
-try:
-    base_x = base_x_input / scale_factor
-    base_y = base_y_input / scale_factor
-    x_coords1 = [base_x] + list(base_x + np.cumsum(dx1))
-    y_coords1 = [base_y] + list(base_y + np.cumsum(dy1))
-    x_offset = x_coords1[-1]
-    x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
-    y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
+@st.cache_data
+def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, gl_lab_input, gl_bc_input, gl_a_input, current_gl):
+    df_results = pd.DataFrame()
+    try:
+        base_x = base_x_input / scale_factor
+        base_y = base_y_input / scale_factor
+        x_coords1 = [base_x] + list(base_x + np.cumsum(dx1))
+        y_coords1 = [base_y] + list(base_y + np.cumsum(dy1))
+        x_offset = x_coords1[-1]
+        x_coords2 = [x_offset] + list(x_offset + np.cumsum(dx2))
+        y_coords2 = [base_y] + list(base_y + np.cumsum(dy2))
 
-    depths_admin = get_thickness_from_gl(gl_admin_input, current_gl)
-    depths_lab = get_thickness_from_gl(gl_lab_input, current_gl)
-    depths_bc = get_thickness_from_gl(gl_bc_input, current_gl)
-    depths_a = get_thickness_from_gl(gl_a_input, current_gl)
+        depths_admin = get_thickness_from_gl(gl_admin_input, current_gl)
+        depths_lab = get_thickness_from_gl(gl_lab_input, current_gl)
+        depths_bc = get_thickness_from_gl(gl_bc_input, current_gl)
+        depths_a = get_thickness_from_gl(gl_a_input, current_gl)
 
-    results = []
+        results = []
     
-    for j in range(len(dy1)):
-        for i in range(len(dx1)):
-            if j >= 2 and i >= 3: continue 
-            grid_id = f"{y_labels1[j]}{i+1}"
-            x_min, x_max = x_coords1[i], x_coords1[i+1]
-            y_max, y_min = y_coords1[j], y_coords1[j+1]
-            if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
-            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            vols = [poly.area * d for d in depths_admin]
-            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
-            v1 = vols[0] if len(vols) > 0 else 0
-            v2 = vols[1] if len(vols) > 1 else 0
-            v3 = vols[2] if len(vols) > 2 else 0
-            v4 = vols[3] if len(vols) > 3 else 0
-            results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
-            })
+        for j in range(len(dy1)):
+            for i in range(len(dx1)):
+                if j >= 2 and i >= 3: continue 
+                grid_id = f"{y_labels1[j]}{i+1}"
+                x_min, x_max = x_coords1[i], x_coords1[i+1]
+                y_max, y_min = y_coords1[j], y_coords1[j+1]
+                if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
+                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+                vols = [poly.area * d for d in depths_admin]
+                cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+                v1 = vols[0] if len(vols) > 0 else 0
+                v2 = vols[1] if len(vols) > 1 else 0
+                v3 = vols[2] if len(vols) > 2 else 0
+                v4 = vols[3] if len(vols) > 3 else 0
+                results.append({
+                    "分區代號": grid_id, 
+                    "區域面積(㎡)": round(poly.area, 0),
+                    "第1挖方量(m³)": round(v1, 0),
+                    "第2挖方量(m³)": round(v2, 0),
+                    "第3挖方量(m³)": round(v3, 0),
+                    "第4挖方量(m³)": round(v4, 0),
+                    "預估總土方": round(sum(vols), 0), 
+                    "各階累計方量": cum_vols, 
+                    "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                })
     
-    for j in range(len(dy2)):
-        for i in range(len(dx2)):
-            grid_id = f"{y_labels2[j]}{i+7}" 
-            x_min, x_max = x_coords2[i], x_coords2[i+1]
-            y_max, y_min = y_coords2[j], y_coords2[j+1]
-            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            vols = [poly.area * d for d in depths_lab]
-            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
-            v1 = vols[0] if len(vols) > 0 else 0
-            v2 = vols[1] if len(vols) > 1 else 0
-            v3 = vols[2] if len(vols) > 2 else 0
-            v4 = vols[3] if len(vols) > 3 else 0
-            results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
-            })
+        for j in range(len(dy2)):
+            for i in range(len(dx2)):
+                grid_id = f"{y_labels2[j]}{i+7}" 
+                x_min, x_max = x_coords2[i], x_coords2[i+1]
+                y_max, y_min = y_coords2[j], y_coords2[j+1]
+                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+                vols = [poly.area * d for d in depths_lab]
+                cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+                v1 = vols[0] if len(vols) > 0 else 0
+                v2 = vols[1] if len(vols) > 1 else 0
+                v3 = vols[2] if len(vols) > 2 else 0
+                v4 = vols[3] if len(vols) > 3 else 0
+                results.append({
+                    "分區代號": grid_id, 
+                    "區域面積(㎡)": round(poly.area, 0),
+                    "第1挖方量(m³)": round(v1, 0),
+                    "第2挖方量(m³)": round(v2, 0),
+                    "第3挖方量(m³)": round(v3, 0),
+                    "第4挖方量(m³)": round(v4, 0),
+                    "預估總土方": round(sum(vols), 0), 
+                    "各階累計方量": cum_vols, 
+                    "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                })
     
-    bc_x = [-2764.56, -2758.41, -2749.46]
-    bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
-    idx_l = 1
-    for i in range(len(bc_x)-1):
-        for j in range(len(bc_y)-1):
-            old_idx = j * 2 + i + 1
-            if old_idx in [1, 3]: continue
-            grid_id = f"滯BC{idx_l}"
-            x_min, x_max = bc_x[i], bc_x[i+1]
-            y_max, y_min = bc_y[j], bc_y[j+1]
-            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            vols = [poly.area * d for d in depths_bc]
-            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
-            v1 = vols[0] if len(vols) > 0 else 0
-            v2 = vols[1] if len(vols) > 1 else 0
-            v3 = vols[2] if len(vols) > 2 else 0
-            v4 = vols[3] if len(vols) > 3 else 0
-            results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
-            })
-            idx_l += 1
+        bc_x = [-2764.56, -2758.41, -2749.46]
+        bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
+        idx_l = 1
+        for i in range(len(bc_x)-1):
+            for j in range(len(bc_y)-1):
+                old_idx = j * 2 + i + 1
+                if old_idx in [1, 3]: continue
+                grid_id = f"滯BC{idx_l}"
+                x_min, x_max = bc_x[i], bc_x[i+1]
+                y_max, y_min = bc_y[j], bc_y[j+1]
+                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+                vols = [poly.area * d for d in depths_bc]
+                cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+                v1 = vols[0] if len(vols) > 0 else 0
+                v2 = vols[1] if len(vols) > 1 else 0
+                v3 = vols[2] if len(vols) > 2 else 0
+                v4 = vols[3] if len(vols) > 3 else 0
+                results.append({
+                    "分區代號": grid_id, 
+                    "區域面積(㎡)": round(poly.area, 0),
+                    "第1挖方量(m³)": round(v1, 0),
+                    "第2挖方量(m³)": round(v2, 0),
+                    "第3挖方量(m³)": round(v3, 0),
+                    "第4挖方量(m³)": round(v4, 0),
+                    "預估總土方": round(sum(vols), 0), 
+                    "各階累計方量": cum_vols, 
+                    "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                })
+                idx_l += 1
 
-    a_x = [-2606.06, -2592.82]
-    a_y = [-276.14, -284.44, -290.24, -296.04]
-    idx_r = 1
-    for j in range(len(a_y)-1):
-        for i in range(len(a_x)-1):
-            x_min, x_max = a_x[i], a_x[i+1]
-            y_max, y_min = a_y[j], a_y[j+1]
-            grid_id = f"滯洪池A{idx_r}"
-            poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-            vols = [poly.area * d for d in depths_a]
-            cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
-            v1 = vols[0] if len(vols) > 0 else 0
-            v2 = vols[1] if len(vols) > 1 else 0
-            v3 = vols[2] if len(vols) > 2 else 0
-            v4 = vols[3] if len(vols) > 3 else 0
-            results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
-            })
-            idx_r += 1
+        a_x = [-2606.06, -2592.82]
+        a_y = [-276.14, -284.44, -290.24, -296.04]
+        idx_r = 1
+        for j in range(len(a_y)-1):
+            for i in range(len(a_x)-1):
+                x_min, x_max = a_x[i], a_x[i+1]
+                y_max, y_min = a_y[j], a_y[j+1]
+                grid_id = f"滯洪池A{idx_r}"
+                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
+                vols = [poly.area * d for d in depths_a]
+                cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
+                v1 = vols[0] if len(vols) > 0 else 0
+                v2 = vols[1] if len(vols) > 1 else 0
+                v3 = vols[2] if len(vols) > 2 else 0
+                v4 = vols[3] if len(vols) > 3 else 0
+                results.append({
+                    "分區代號": grid_id, 
+                    "區域面積(㎡)": round(poly.area, 0),
+                    "第1挖方量(m³)": round(v1, 0),
+                    "第2挖方量(m³)": round(v2, 0),
+                    "第3挖方量(m³)": round(v3, 0),
+                    "第4挖方量(m³)": round(v4, 0),
+                    "預估總土方": round(sum(vols), 0), 
+                    "各階累計方量": cum_vols, 
+                    "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                })
+                idx_r += 1
 
-    df_results = pd.DataFrame(results)
-except Exception as e:
-    st.sidebar.error(f"圖資運算錯誤: {e}")
+        df_results = pd.DataFrame(results)
+    except Exception as e:
+        st.sidebar.error(f"圖資運算錯誤: {e}")
+    return df_results
+
+df_results = compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, gl_lab_input, gl_bc_input, gl_a_input, current_gl)
+
 
 page = st.radio(
     "選擇功能頁面",
