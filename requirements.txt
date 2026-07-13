@@ -2,7 +2,6 @@ streamlit==1.37.0
 pandas==2.1.4
 numpy==1.26.4
 plotly==5.22.0
-shapely==2.0.4
 st-gsheets-connection==0.1.0
 fpdf2==2.7.9
 matplotlib==3.8.4
