@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from shapely.geometry import Polygon
 import os
 import tempfile
 from datetime import datetime, timedelta, date
@@ -329,8 +328,8 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 x_min, x_max = x_coords1[i], x_coords1[i+1]
                 y_max, y_min = y_coords1[j], y_coords1[j+1]
                 if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
-                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths_admin]
+                poly_area = (x_max - x_min) * (y_max - y_min)  # 矩形面積直接計算，不需shapely
+                vols = [poly_area * d for d in depths_admin]
                 cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
                 v1 = vols[0] if len(vols) > 0 else 0
                 v2 = vols[1] if len(vols) > 1 else 0
@@ -338,7 +337,7 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 v4 = vols[3] if len(vols) > 3 else 0
                 results.append({
                     "分區代號": grid_id, 
-                    "區域面積(㎡)": round(poly.area, 0),
+                    "區域面積(㎡)": round(poly_area, 0),
                     "第1挖方量(m³)": round(v1, 0),
                     "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0),
@@ -353,8 +352,8 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 grid_id = f"{y_labels2[j]}{i+7}" 
                 x_min, x_max = x_coords2[i], x_coords2[i+1]
                 y_max, y_min = y_coords2[j], y_coords2[j+1]
-                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths_lab]
+                poly_area = (x_max - x_min) * (y_max - y_min)  # 矩形面積直接計算，不需shapely
+                vols = [poly_area * d for d in depths_lab]
                 cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
                 v1 = vols[0] if len(vols) > 0 else 0
                 v2 = vols[1] if len(vols) > 1 else 0
@@ -362,7 +361,7 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 v4 = vols[3] if len(vols) > 3 else 0
                 results.append({
                     "分區代號": grid_id, 
-                    "區域面積(㎡)": round(poly.area, 0),
+                    "區域面積(㎡)": round(poly_area, 0),
                     "第1挖方量(m³)": round(v1, 0),
                     "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0),
@@ -382,8 +381,8 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 grid_id = f"滯BC{idx_l}"
                 x_min, x_max = bc_x[i], bc_x[i+1]
                 y_max, y_min = bc_y[j], bc_y[j+1]
-                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths_bc]
+                poly_area = (x_max - x_min) * (y_max - y_min)  # 矩形面積直接計算，不需shapely
+                vols = [poly_area * d for d in depths_bc]
                 cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
                 v1 = vols[0] if len(vols) > 0 else 0
                 v2 = vols[1] if len(vols) > 1 else 0
@@ -391,7 +390,7 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 v4 = vols[3] if len(vols) > 3 else 0
                 results.append({
                     "分區代號": grid_id, 
-                    "區域面積(㎡)": round(poly.area, 0),
+                    "區域面積(㎡)": round(poly_area, 0),
                     "第1挖方量(m³)": round(v1, 0),
                     "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0),
@@ -410,8 +409,8 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 x_min, x_max = a_x[i], a_x[i+1]
                 y_max, y_min = a_y[j], a_y[j+1]
                 grid_id = f"滯洪池A{idx_r}"
-                poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths_a]
+                poly_area = (x_max - x_min) * (y_max - y_min)  # 矩形面積直接計算，不需shapely
+                vols = [poly_area * d for d in depths_a]
                 cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
                 v1 = vols[0] if len(vols) > 0 else 0
                 v2 = vols[1] if len(vols) > 1 else 0
@@ -419,7 +418,7 @@ def compute_grid_data(base_x_input, base_y_input, scale_factor, gl_admin_input, 
                 v4 = vols[3] if len(vols) > 3 else 0
                 results.append({
                     "分區代號": grid_id, 
-                    "區域面積(㎡)": round(poly.area, 0),
+                    "區域面積(㎡)": round(poly_area, 0),
                     "第1挖方量(m³)": round(v1, 0),
                     "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0),
