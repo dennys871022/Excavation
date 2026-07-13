@@ -639,19 +639,22 @@ elif page == "📊 出土統計儀表板":
             
             st.markdown("#### 📄 匯出 PDF 報表")
             if os.path.exists("font.ttf"):
-                with st.spinner("正在繪製地圖與生成報表..."):
-                    try:
-                        pdf_path = generate_pdf(report_text_left, report_text_right, display_df, df_results, zone_grouped, period_label)
-                        with open(pdf_path, "rb") as f:
-                            st.download_button(
-                                label="📥 下載完整 PDF 報表 (包含地圖)",
-                                data=f,
-                                file_name=f"excavation_report_{start_date}_{end_date}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True
-                            )
-                    except Exception as e:
-                        st.error(f"PDF 產生失敗：{e}")
+                # 【修正】改為按鈕觸發才產生，避免每次頁面重跑(包含切換分頁)都自動重新繪製地圖，
+                # 這是先前反覆 Segmentation fault 的根本原因：matplotlib 原生字型渲染被無條件反覆觸發。
+                if st.button("📄 產生 PDF 報表 (包含地圖)", use_container_width=True):
+                    with st.spinner("正在繪製地圖與生成報表..."):
+                        try:
+                            pdf_path = generate_pdf(report_text_left, report_text_right, display_df, df_results, zone_grouped, period_label)
+                            with open(pdf_path, "rb") as f:
+                                st.download_button(
+                                    label="📥 下載完整 PDF 報表 (包含地圖)",
+                                    data=f,
+                                    file_name=f"excavation_report_{start_date}_{end_date}.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
+                        except Exception as e:
+                            st.error(f"PDF 產生失敗：{e}")
             else:
                 st.warning("⚠️ 找不到字型檔 `font.ttf`，無法產生 PDF。請先將檔案上傳至專案根目錄。")
 
@@ -1029,19 +1032,21 @@ elif page == "✍️ 現場廠商簽收":
             if df_pdf_target.empty:
                 st.warning("⚠️ 該範圍內無任何交付紀錄，無法產生報表。")
             else:
-                with st.spinner("正在產生 PDF 簽收報表影像..."):
-                    try:
-                        delivery_pdf_path = generate_delivery_pdf(df_pdf_target, pdf_scope)
-                        with open(delivery_pdf_path, "rb") as pdf_file:
-                            st.download_button(
-                                label=f"📥 下載 {pdf_scope} 簽收 PDF 報表 (含影像)",
-                                data=pdf_file,
-                                file_name=f"delivery_report_{pdf_scope}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True
-                            )
-                    except Exception as ex:
-                        st.error(f"PDF 導出失敗：{ex}")
+                # 【修正】改為按鈕觸發才產生，避免每次頁面重跑都自動重新產生PDF與解碼所有簽名影像
+                if st.button(f"📄 產生 {pdf_scope} 簽收 PDF 報表", use_container_width=True, key="gen_delivery_pdf_btn"):
+                    with st.spinner("正在產生 PDF 簽收報表影像..."):
+                        try:
+                            delivery_pdf_path = generate_delivery_pdf(df_pdf_target, pdf_scope)
+                            with open(delivery_pdf_path, "rb") as pdf_file:
+                                st.download_button(
+                                    label=f"📥 下載 {pdf_scope} 簽收 PDF 報表 (含影像)",
+                                    data=pdf_file,
+                                    file_name=f"delivery_report_{pdf_scope}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
+                        except Exception as ex:
+                            st.error(f"PDF 導出失敗：{ex}")
         st.divider()
 
     st.markdown("#### 📥 新增聯單現場發放")
