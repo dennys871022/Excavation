@@ -10,7 +10,7 @@ from fpdf import FPDF
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.font_manager import FontProperties
-from streamlit_drawable_canvas import st_canvas
+# from streamlit_drawable_canvas import st_canvas  # 【診斷測試】暫時停用
 import base64
 import io
 import re
@@ -1100,17 +1100,10 @@ elif page == "✍️ 現場廠商簽收":
         
     st.markdown("**請廠商簽收人於下方灰色畫布手寫簽名：**")
     
-    canvas_sign = st_canvas(
-        fill_color="rgba(255, 255, 255, 1)",
-        stroke_width=3,
-        stroke_color="#000000",
-        background_color="#EEEEEE",
-        height=200,
-        width=340,
-        drawing_mode="freedraw",
-        update_streamlit=True,
-        key=f"canvas_delivery_form_{st.session_state['canvas_key_counter']}",
-    )
+    st.warning("⚠️ 【診斷模式】簽名畫布功能暫時停用，用於排查系統崩潰問題。")
+    class _DummyCanvas:
+        image_data = None
+    canvas_sign = _DummyCanvas()
     
     if st.button("確認交付並永久儲存簽收紀錄", use_container_width=True):
         if not input_serial.strip():
