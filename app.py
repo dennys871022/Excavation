@@ -5,15 +5,19 @@ import plotly.graph_objects as go
 from shapely.geometry import Polygon
 import os
 import tempfile
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
+from fpdf import FPDF
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.font_manager import FontProperties
+import re
 
 st.set_page_config(page_title="後台管理端", layout="wide")
 st.title("🚧 CDC土方管理系統 (輕量穩定版)")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
-# 狀態管理初始化
 if 'sync_data_summary' not in st.session_state:
     st.session_state['sync_data_summary'] = None
 if 'sync_date' not in st.session_state:
@@ -53,23 +57,19 @@ def save_sheet_data(sheet_name, df):
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
         return False
 
-# 側邊欄強制同步按鈕
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
-    for sheet in ["grid_zones", "dispatch_logs"]:
+    for sheet in ["grid_zones", "drivers", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
         if f"cache_{sheet}" in st.session_state:
             del st.session_state[f"cache_{sheet}"]
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.markdown("---")
-st.sidebar.header("【圖資與各區開挖參數】")
+st.sidebar.markdown("### 各區開挖 GL 高程設定")
 base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
-
-st.sidebar.markdown("### 各區開挖 GL 高程設定")
-current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1, help="正值代表現地高增加第一挖土方；負值代表現地低減少第一挖土方")
+current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1)
 
 gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
 gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
@@ -89,13 +89,7 @@ def get_thickness_from_gl(gl_str, gl_offset):
     except Exception:
         return []
 
-# 延遲載入 (Lazy Loading): 只有在產生地圖時才載入 matplotlib，釋放大量記憶體
 def generate_backend_map(df_results, zone_grouped):
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-    from matplotlib.font_manager import FontProperties
-    import gc
-    
     fig, ax = plt.subplots(figsize=(10, 6))
     
     font_path = "font.ttf"
@@ -141,13 +135,11 @@ def generate_backend_map(df_results, zone_grouped):
     plt.savefig(tmp_img.name, bbox_inches='tight', dpi=150)
     fig.clf()
     plt.close('all')
+    import gc
     gc.collect()
     return tmp_img.name
 
-# 延遲載入 (Lazy Loading): 只有按下按鈕才載入 fpdf
 def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone_grouped, period_label="本日"):
-    from fpdf import FPDF
-    
     pdf = FPDF()
     pdf.add_page()
     
@@ -249,7 +241,38 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
     pdf.output(tmp_file.name)
     return tmp_file.name
 
-# 網格幾何參數與區域定義
+def generate_delivery_pdf(df_target, scope_label):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    if os.path.exists("font.ttf"):
+        pdf.add_font("CustomFont", fname="font.ttf")
+        pdf.set_font("CustomFont", size=16)
+    else:
+        pdf.set_font("Helvetica", size=16)
+        
+    pdf.cell(0, 10, text=f"聯單交付紀錄報表 ({scope_label})", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=10)
+    else:
+        pdf.set_font("Helvetica", size=10)
+        
+    for idx, row in df_target.iterrows():
+        curr_serial = str(row['起始序號']).strip()
+        if curr_serial.endswith('.0'):
+            curr_serial = curr_serial[:-2]
+            
+        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {int(row['發放張數'])}  起始序號: {curr_serial}  簽收人: {row['簽收人姓名']}"
+        pdf.cell(0, 8, text=info_text, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 4, text="==========================================================================================", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+        
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(tmp_file.name)
+    return tmp_file.name
+
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
@@ -387,8 +410,7 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-# 精簡為三個核心分頁
-tab_grid, tab_stats, tab_sync = st.tabs(["🗺️ 圖資與方量基準", "📊 出土統計儀表板", "🧾 官方聯單對帳"])
+tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"])
 
 with tab_grid:
     export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
@@ -415,6 +437,41 @@ with tab_grid:
             fig.add_annotation(x=row['x_center'], y=row['y_center'], text=row['分區代號'], showarrow=False, font=dict(color="red", size=12))
         fig.update_layout(dragmode='pan', xaxis_title="X (m)", yaxis_title="Y (m)", yaxis=dict(scaleanchor="x", scaleratio=1), height=700, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
+
+with tab_vehicle:
+    st.write("### 📂 車籍資料庫管理")
+    df_drivers = load_sheet_data("drivers")
+    if df_drivers.empty:
+        df_drivers = pd.DataFrame(columns=["姓名", "身分證", "車頭車號", "車斗車號"])
+
+    uploaded_file = st.file_uploader("📥 匯入 Excel/CSV 檔案 (將覆蓋現有資料)", type=["csv", "xlsx", "xls"])
+    if uploaded_file:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                new_df = pd.read_csv(uploaded_file)
+            else:
+                new_df = pd.read_excel(uploaded_file)
+            new_df.columns = new_df.columns.str.replace(r'\s+', '', regex=True)
+            
+            new_df['車頭車號'] = new_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+            if new_df['車頭車號'].duplicated().any():
+                st.error("匯入失敗：偵測到重複的車頭車號，請修正後重新匯入。")
+            else:
+                if save_sheet_data("drivers", new_df):
+                    st.success("資料庫已成功上傳覆蓋！請重新整理網頁。")
+        except Exception as e:
+            st.error(f"檔案讀取失敗：{e}")
+            
+    edited_drivers = st.data_editor(df_drivers, num_rows="dynamic", use_container_width=True, height=400)
+    if st.button("💾 將變更儲存至雲端"):
+        clean_df = edited_drivers.dropna(subset=["車頭車號"]).copy()
+        clean_df['車頭車號'] = clean_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+        
+        if clean_df['車頭車號'].duplicated().any():
+            st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存。")
+        else:
+            if save_sheet_data("drivers", clean_df):
+                st.success("車籍資料已同步更新！")
 
 with tab_stats:
     st.write("### 📊 雲端出土統計儀表板")
@@ -629,7 +686,7 @@ with tab_stats:
             with col_z1:
                 selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
             with col_z2:
-                if st.button("套送到勾選的紀錄"):
+                if st.button("套用到勾選的紀錄"):
                     if selected_zone == "請選擇":
                         st.error("請先選擇分區")
                     else:
@@ -820,5 +877,206 @@ with tab_sync:
             df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime'])
 
             if save_sheet_data("dispatch_logs", df_logs):
-                st.success("✅ 同步校正與聯單綁定完成！庫存數量已自動更新。")
+                st.success("✅ 同步校正與聯單綁定完成！")
                 st.session_state['sync_data_summary'] = None
+
+with tab_manifest:
+    st.write("### 🎫 聯單庫存與發放管理")
+    
+    df_manifest = load_sheet_data("manifest_settings")
+    if df_manifest.empty:
+        df_manifest = pd.DataFrame({
+            "聯單類型": ["B1", "B2-3", "B4", "B5"],
+            "總配額": [1000, 2790, 2821, 30],
+            "已列印數量": [0, 0, 0, 0]
+        })
+    
+    df_logs = load_sheet_data("dispatch_logs")
+    
+    used_counts = {t: 0 for t in df_manifest["聯單類型"]}
+    if not df_logs.empty and "聯單序號" in df_logs.columns:
+        valid_serials = df_logs["聯單序號"].dropna().astype(str).str.strip().str.upper()
+        valid_serials = valid_serials[(valid_serials != "") & (valid_serials != "NAN") & (valid_serials != "NONE")]
+        
+        for m_type in df_manifest["聯單類型"]:
+            count = valid_serials.str.contains(m_type.upper(), regex=False).sum()
+            used_counts[m_type] = count
+
+    df_manifest["總配額"] = pd.to_numeric(df_manifest["總配額"], errors='coerce').fillna(0).astype(int)
+    col_print_name = "聯單數量_已列印" if "聯單數量_已列印" in df_manifest.columns else "已列印數量"
+    df_manifest["已列印數量"] = pd.to_numeric(df_manifest[col_print_name], errors='coerce').fillna(0).astype(int)
+    df_manifest["已使用數量"] = df_manifest["聯單類型"].map(used_counts).fillna(0).astype(int)
+    df_manifest["現場剩餘可用"] = df_manifest["已列印數量"] - df_manifest["已使用數量"]
+    df_manifest["雲端未列印配額"] = df_manifest["總配額"] - df_manifest["已列印數量"]
+    
+    st.info("請於下方表格直接修改「已列印數量」，系統會根據對帳結果自動計算現場剩餘的可用張數。")
+    edited_manifest = st.data_editor(
+        df_manifest, 
+        column_config={
+            "總配額": st.column_config.NumberColumn(format="%d"),
+            "已列印數量": st.column_config.NumberColumn(format="%d", min_value=0),
+            "已使用數量": st.column_config.NumberColumn(format="%d"),
+            "現場剩餘可用": st.column_config.NumberColumn(format="%d"),
+            "雲端未列印配額": st.column_config.NumberColumn(format="%d"),
+        },
+        disabled=["聯單類型", "總配額", "已使用數量", "現場剩餘可用", "雲端未列印配額"],
+        hide_index=True,
+        use_container_width=True
+    )
+    
+    if st.button("💾 儲存列印數量更新"):
+        if save_sheet_data("manifest_settings", edited_manifest[['聯單類型', '總配額', '已列印數量']]):
+            st.success("已更新列印數量！")
+            st.rerun()
+
+    st.markdown("#### 🚨 現場庫存狀態警報")
+    
+    alert_triggered = False
+    for idx, row in df_manifest.iterrows():
+        if pd.notnull(row["現場剩餘可用"]) and pd.notnull(row["雲端未列印配額"]):
+            if row["現場剩餘可用"] < 100 and row["雲端未列印配額"] > 0:
+                st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{int(row['現場剩餘可用'])}** 張！請盡速列印補充備用。 (尚有雲端配額 {int(row['雲端未列印配額'])} 張)")
+                alert_triggered = True
+            
+    if not alert_triggered:
+        st.success("✅ 目前所有類型的聯單現場庫存皆十分充足，或已全數列印完畢。")
+
+with tab_delivery:
+    st.write("### ✍️ 現場廠商交付簽收管理 (無畫布版)")
+    
+    df_delivery = load_sheet_data("manifest_delivery")
+    if df_delivery.empty:
+        df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名"])
+
+    if not df_delivery.empty:
+        st.markdown("#### 📋 歷史交付對帳看板")
+        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}-{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數']) if pd.notnull(r['發放張數']) else 0}張)" for idx, r in df_delivery.iterrows()]
+        selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
+        
+        chosen_row = df_delivery.iloc[selected_record_idx]
+        clean_history_serial = str(chosen_row['起始序號']).strip()
+        if clean_history_serial.endswith('.0'):
+            clean_history_serial = clean_history_serial[:-2]
+            
+        st.info(f"""**詳細交付核對資訊：**
+* 交付時間： `{chosen_row['交付日期']} {chosen_row['交付時間']}`
+* 簽收廠商： `{chosen_row['廠商名稱']}`
+* 聯單規格： `{chosen_row['聯單類型']}`
+* 發放張數： `{int(chosen_row['發放張數']) if pd.notnull(chosen_row['發放張數']) else 0} 張`
+* 起始序號： `{clean_history_serial}`
+* 現場簽收人： `{chosen_row['簽收人姓名']}`""")
+        
+        st.markdown("#### 📄 導出交付紀錄 PDF 報表")
+        col_pdf1, col_pdf2 = st.columns([2, 1])
+        with col_pdf1:
+            pdf_scope = st.selectbox("選擇要匯出的聯單範圍：", options=["全部聯單類型", "B1", "B2-3", "B4", "B5"], key="pdf_scope_select")
+        with col_pdf2:
+            st.write("")
+            st.write("")
+            if pdf_scope == "全部聯單類型":
+                df_pdf_target = df_delivery.copy()
+            else:
+                df_pdf_target = df_delivery[df_delivery["聯單類型"] == pdf_scope].copy()
+                
+            if df_pdf_target.empty:
+                st.warning("⚠️ 該範圍內無任何交付紀錄，無法產生報表。")
+            else:
+                if st.button("📥 下載 PDF 報表", key="btn_download_delivery_pdf"):
+                    with st.spinner("產生中..."):
+                        try:
+                            delivery_pdf_path = generate_delivery_pdf(df_pdf_target, pdf_scope)
+                            with open(delivery_pdf_path, "rb") as pdf_file:
+                                st.download_button(
+                                    label=f"✅ 點此儲存 {pdf_scope} 紀錄報表",
+                                    data=pdf_file,
+                                    file_name=f"delivery_report_{pdf_scope}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
+                        except Exception as ex:
+                            st.error(f"PDF 導出失敗：{ex}")
+
+    st.markdown("#### 📥 新增聯單現場發放")
+    
+    input_type = st.selectbox("選擇本次發放的聯單類型", options=["B1", "B2-3", "B4", "B5"], key="delivery_type_select")
+    
+    df_manifest_check = load_sheet_data("manifest_settings")
+    df_logs_check = load_sheet_data("dispatch_logs")
+    
+    available_stock = 0
+    if not df_manifest_check.empty and "聯單類型" in df_manifest_check.columns:
+        col_target = "聯單數量_已列印" if "聯單數量_已列印" in df_manifest_check.columns else "已列印數量"
+        if col_target in df_manifest_check.columns:
+            used_counts_check = {t: 0 for t in df_manifest_check["聯單類型"]}
+            if not df_logs_check.empty and "聯單序號" in df_logs_check.columns:
+                valid_serials_check = df_logs_check["聯單序號"].dropna().astype(str).str.strip().str.upper()
+                valid_serials_check = valid_serials_check[(valid_serials_check != "") & (valid_serials_check != "NAN") & (valid_serials_check != "NONE")]
+                for m_type in df_manifest_check["聯單類型"]:
+                    count = valid_serials_check.str.contains(m_type.upper(), regex=False).sum()
+                    used_counts_check[m_type] = count
+            
+            df_manifest_check["已使用數量"] = df_manifest_check["聯單類型"].map(used_counts_check).fillna(0).astype(int)
+            df_manifest_check["現場剩餘可用"] = pd.to_numeric(df_manifest_check[col_target], errors='coerce').fillna(0).astype(int) - df_manifest_check["已使用數量"]
+            
+            match_stock_row = df_manifest_check[df_manifest_check["聯單類型"] == input_type]
+            if not match_stock_row.empty and "現場剩餘可用" in match_stock_row.columns:
+                available_stock = int(match_stock_row.iloc[0]["現場剩餘可用"])
+
+    st.write(f"📊 該類型聯單目前雲端剩餘可交付數量： **{available_stock}** 張")
+    
+    auto_serial = ""
+    if not df_delivery.empty and "聯單類型" in df_delivery.columns and "起始序號" in df_delivery.columns and "發放張數" in df_delivery.columns:
+        df_type_last = df_delivery[df_delivery["聯單類型"] == input_type]
+        if not df_type_last.empty:
+            last_record = df_type_last.iloc[-1]
+            last_serial = str(last_record["起始序號"]).strip()
+            if last_serial.endswith('.0'):
+                last_serial = last_serial[:-2]
+            try:
+                last_count = int(last_record["發放張數"]) if pd.notnull(last_record["發放張數"]) else 0
+                match = re.search(r'\d+', last_serial)
+                if match:
+                    num_str = match.group()
+                    prefix = last_serial[:match.start()]
+                    suffix = last_serial[match.end():]
+                    next_num = int(num_str) + last_count
+                    auto_serial = f"{prefix}{next_num:0{len(num_str)}d}{suffix}"
+            except Exception:
+                auto_serial = ""
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        input_vendor = st.text_input("廠商名稱", value="力勤", disabled=True)
+        input_count = st.number_input("發放張數", min_value=1, value=50, step=1, format="%d")
+    with col_d2:
+        input_serial = st.text_input("聯單起始序號 (可根據現場實物修改)", value=auto_serial)
+        input_name = st.text_input("廠商簽收人姓名", value="")
+        
+    if st.button("確認交付並永久儲存紀錄", use_container_width=True):
+        if not input_serial.strip():
+            st.error("請填寫聯單起始序號")
+        elif not input_name.strip():
+            st.error("請填寫廠商簽收人姓名")
+        elif int(input_count) > available_stock:
+            st.error(f"❌ 拒絕紀錄：庫存量不足！目前庫存僅剩 {available_stock} 張，無法超量發放 {int(input_count)} 張。")
+        else:
+            clean_input_serial = input_serial.strip()
+            if clean_input_serial.endswith('.0'):
+                clean_input_serial = clean_input_serial[:-2]
+                
+            now_tw = datetime.utcnow() + timedelta(hours=8)
+            new_record = {
+                "交付日期": now_tw.strftime("%Y-%m-%d"),
+                "交付時間": now_tw.strftime("%H:%M:%S"),
+                "廠商名稱": input_vendor.strip(),
+                "聯單類型": input_type,
+                "起始序號": clean_input_serial,
+                "發放張數": int(input_count),
+                "簽收人姓名": input_name.strip()
+            }
+            
+            df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
+            
+            if save_sheet_data("manifest_delivery", df_delivery):
+                st.success("✅ 聯單現場交付成功！紀錄已即時寫入雲端。")
+                st.rerun()
