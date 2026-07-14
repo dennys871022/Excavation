@@ -10,7 +10,7 @@ from streamlit_gsheets import GSheetsConnection
 import re
 
 st.set_page_config(page_title="後台管理端", layout="wide")
-st.title("🚧 CDC土方管理系統 (高效瘦身版)")
+st.title("🚧 CDC土方管理系統 ")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
