@@ -5,16 +5,12 @@ import plotly.graph_objects as go
 from shapely.geometry import Polygon
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from streamlit_gsheets import GSheetsConnection
-from fpdf import FPDF
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.font_manager import FontProperties
 import re
 
 st.set_page_config(page_title="後台管理端", layout="wide")
-st.title("🚧 CDC土方管理系統 ")
+st.title("🚧 CDC土方管理系統 (高效瘦身版)")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
@@ -24,6 +20,8 @@ if 'sync_date' not in st.session_state:
     st.session_state['sync_date'] = None
 if 'official_ready_df' not in st.session_state:
     st.session_state['official_ready_df'] = None
+if 'canvas_key_counter' not in st.session_state:
+    st.session_state['canvas_key_counter'] = 0
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -58,7 +56,7 @@ def save_sheet_data(sheet_name, df):
         return False
 
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
-    for sheet in ["grid_zones", "drivers", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
+    for sheet in ["grid_zones", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
         if f"cache_{sheet}" in st.session_state:
             del st.session_state[f"cache_{sheet}"]
     st.cache_data.clear()
@@ -90,8 +88,12 @@ def get_thickness_from_gl(gl_str, gl_offset):
         return []
 
 def generate_backend_map(df_results, zone_grouped):
-    fig, ax = plt.subplots(figsize=(10, 6))
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from matplotlib.font_manager import FontProperties
+    import gc
     
+    fig, ax = plt.subplots(figsize=(10, 6))
     font_path = "font.ttf"
     my_font = FontProperties(fname=font_path) if os.path.exists(font_path) else None
     
@@ -104,7 +106,6 @@ def generate_backend_map(df_results, zone_grouped):
         grid_id = row['分區代號']
         current_vol = vol_dict.get(grid_id, 0)
         thresholds = stage_dict.get(grid_id, [])
-        
         fill_color = '#F0F0F0' 
         
         if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
@@ -135,11 +136,12 @@ def generate_backend_map(df_results, zone_grouped):
     plt.savefig(tmp_img.name, bbox_inches='tight', dpi=150)
     fig.clf()
     plt.close('all')
-    import gc
     gc.collect()
     return tmp_img.name
 
 def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone_grouped, period_label="本日"):
+    from fpdf import FPDF
+    
     pdf = FPDF()
     pdf.add_page()
     
@@ -159,7 +161,6 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
         pdf.set_font("Helvetica", size=12)
         
     start_y = pdf.get_y()
-
     pdf.set_xy(15, start_y)
     for line in report_text_left.split('\n'):
         if line.strip():
@@ -242,6 +243,10 @@ def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone
     return tmp_file.name
 
 def generate_delivery_pdf(df_target, scope_label):
+    from fpdf import FPDF
+    import base64
+    import gc
+    
     pdf = FPDF()
     pdf.add_page()
     
@@ -251,7 +256,7 @@ def generate_delivery_pdf(df_target, scope_label):
     else:
         pdf.set_font("Helvetica", size=16)
         
-    pdf.cell(0, 10, text=f"聯單交付紀錄報表 ({scope_label})", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, text=f"聯單交付簽收歷史報表 ({scope_label})", align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
     if os.path.exists("font.ttf"):
@@ -266,11 +271,33 @@ def generate_delivery_pdf(df_target, scope_label):
             
         info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {int(row['發放張數'])}  起始序號: {curr_serial}  簽收人: {row['簽收人姓名']}"
         pdf.cell(0, 8, text=info_text, new_x="LMARGIN", new_y="NEXT")
+        
+        if pd.notnull(row.get('簽名資料')) and str(row['簽名資料']).strip() != "":
+            try:
+                img_bytes = base64.b64decode(row['簽名資料'])
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                    tmp_img.write(img_bytes)
+                    tmp_img_path = tmp_img.name
+                
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+                    
+                pdf.cell(25, 15, text="簽名影像: ")
+                pdf.image(tmp_img_path, x=35, w=40, h=15)
+                pdf.ln(16)
+                os.unlink(tmp_img_path)
+            except Exception as e:
+                pdf.cell(0, 6, text=f"(簽名影像解碼失敗: {e})", new_x="LMARGIN", new_y="NEXT")
+        else:
+            pdf.cell(0, 6, text="簽名影像: 無簽名資料", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+            
         pdf.cell(0, 4, text="==========================================================================================", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2)
         
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(tmp_file.name)
+    gc.collect()
     return tmp_file.name
 
 e_ext = 3.25
@@ -313,15 +340,12 @@ try:
             v3 = vols[2] if len(vols) > 2 else 0
             v4 = vols[3] if len(vols) > 3 else 0
             results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
     
     for j in range(len(dy2)):
@@ -337,15 +361,12 @@ try:
             v3 = vols[2] if len(vols) > 2 else 0
             v4 = vols[3] if len(vols) > 3 else 0
             results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
     
     bc_x = [-2764.56, -2758.41, -2749.46]
@@ -366,15 +387,12 @@ try:
             v3 = vols[2] if len(vols) > 2 else 0
             v4 = vols[3] if len(vols) > 3 else 0
             results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_l += 1
 
@@ -394,15 +412,12 @@ try:
             v3 = vols[2] if len(vols) > 2 else 0
             v4 = vols[3] if len(vols) > 3 else 0
             results.append({
-                "分區代號": grid_id, 
-                "區域面積(㎡)": round(poly.area, 0),
-                "第1挖方量(m³)": round(v1, 0),
-                "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0),
-                "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), 
-                "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
+                "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
+                "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_r += 1
 
@@ -410,7 +425,9 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-tab_grid, tab_vehicle, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs(["🗺️ 圖資與方量基準", "🚛 車籍資料庫管理", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"])
+tab_grid, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs([
+    "🗺️ 圖資與方量基準", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"
+])
 
 with tab_grid:
     export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
@@ -437,41 +454,6 @@ with tab_grid:
             fig.add_annotation(x=row['x_center'], y=row['y_center'], text=row['分區代號'], showarrow=False, font=dict(color="red", size=12))
         fig.update_layout(dragmode='pan', xaxis_title="X (m)", yaxis_title="Y (m)", yaxis=dict(scaleanchor="x", scaleratio=1), height=700, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
-
-with tab_vehicle:
-    st.write("### 📂 車籍資料庫管理")
-    df_drivers = load_sheet_data("drivers")
-    if df_drivers.empty:
-        df_drivers = pd.DataFrame(columns=["姓名", "身分證", "車頭車號", "車斗車號"])
-
-    uploaded_file = st.file_uploader("📥 匯入 Excel/CSV 檔案 (將覆蓋現有資料)", type=["csv", "xlsx", "xls"])
-    if uploaded_file:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                new_df = pd.read_csv(uploaded_file)
-            else:
-                new_df = pd.read_excel(uploaded_file)
-            new_df.columns = new_df.columns.str.replace(r'\s+', '', regex=True)
-            
-            new_df['車頭車號'] = new_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-            if new_df['車頭車號'].duplicated().any():
-                st.error("匯入失敗：偵測到重複的車頭車號，請修正後重新匯入。")
-            else:
-                if save_sheet_data("drivers", new_df):
-                    st.success("資料庫已成功上傳覆蓋！請重新整理網頁。")
-        except Exception as e:
-            st.error(f"檔案讀取失敗：{e}")
-            
-    edited_drivers = st.data_editor(df_drivers, num_rows="dynamic", use_container_width=True, height=400)
-    if st.button("💾 將變更儲存至雲端"):
-        clean_df = edited_drivers.dropna(subset=["車頭車號"]).copy()
-        clean_df['車頭車號'] = clean_df['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-        
-        if clean_df['車頭車號'].duplicated().any():
-            st.error("❌ 儲存失敗：表格內包含重複的「車頭車號」，請修正後再行儲存。")
-        else:
-            if save_sheet_data("drivers", clean_df):
-                st.success("車籍資料已同步更新！")
 
 with tab_stats:
     st.write("### 📊 雲端出土統計儀表板")
@@ -510,22 +492,6 @@ with tab_stats:
         
         if not valid_logs.empty and '時間' in valid_logs.columns:
             valid_logs = valid_logs.sort_values(['車頭車號', '日期', '時間'])
-            valid_logs['FullDateTime'] = pd.to_datetime(valid_logs['日期'].astype(str) + ' ' + valid_logs['時間'].astype(str), errors='coerce')
-            valid_logs['TimeDiff'] = valid_logs.groupby(['車頭車號', '日期'])['FullDateTime'].diff().dt.total_seconds()
-            
-            daily_counts = valid_logs.groupby(['車頭車號', '日期']).size().reset_index(name='DailyTripCount')
-            valid_logs = valid_logs.merge(daily_counts, on=['車頭車號', '日期'], how='left')
-            
-            def flag_anomalies(row):
-                flags = []
-                if pd.notnull(row['TimeDiff']) and row['TimeDiff'] < 180:
-                    flags.append("⚠️車次過於密集(小於3分鐘)")
-                if pd.notnull(row['DailyTripCount']) and row['DailyTripCount'] > 20:
-                    flags.append("⚠️單日出土超量(大於20趟)")
-                existing_note = str(row['備註']) if pd.notnull(row['備註']) and str(row['備註']) != 'nan' else ''
-                return " | ".join(flags) if flags else existing_note
-            
-            valid_logs['備註'] = valid_logs.apply(flag_anomalies, axis=1)
 
         range_logs = valid_logs[(valid_logs['ParsedDate'] >= start_date) & (valid_logs['ParsedDate'] <= end_date)]
         cumul_logs = valid_logs[valid_logs['ParsedDate'] <= end_date].copy()
@@ -713,7 +679,7 @@ with tab_stats:
         if not display_df.empty:
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
-        with st.expander("📂 檢視所有歷史紀錄 (包含系統自動偵測異常旗標)"):
+        with st.expander("📂 檢視所有歷史紀錄"):
             clean_show_logs = df_logs.copy()
             if 'orig_index' in clean_show_logs.columns:
                 clean_show_logs = clean_show_logs.drop(columns=['orig_index'])
@@ -942,18 +908,20 @@ with tab_manifest:
         st.success("✅ 目前所有類型的聯單現場庫存皆十分充足，或已全數列印完畢。")
 
 with tab_delivery:
-    st.write("### ✍️ 現場廠商交付簽收管理 (無畫布版)")
+    st.write("### ✍️ 現場廠商交付簽收管理")
     
     df_delivery = load_sheet_data("manifest_delivery")
     if df_delivery.empty:
-        df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名"])
+        df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名", "簽名資料"])
 
     if not df_delivery.empty:
-        st.markdown("#### 📋 歷史交付對帳看板")
+        st.markdown("#### 📋 歷史交付簽收對帳看板")
+        
         record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}-{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數']) if pd.notnull(r['發放張數']) else 0}張)" for idx, r in df_delivery.iterrows()]
         selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
         
         chosen_row = df_delivery.iloc[selected_record_idx]
+        
         clean_history_serial = str(chosen_row['起始序號']).strip()
         if clean_history_serial.endswith('.0'):
             clean_history_serial = clean_history_serial[:-2]
@@ -964,9 +932,13 @@ with tab_delivery:
 * 聯單規格： `{chosen_row['聯單類型']}`
 * 發放張數： `{int(chosen_row['發放張數']) if pd.notnull(chosen_row['發放張數']) else 0} 張`
 * 起始序號： `{clean_history_serial}`
-* 現場簽收人： `{chosen_row['簽收人姓名']}`""")
+* 現場簽收人： `{chosen_row['簽收人姓名']}`
+
+*(簽名影像已隱藏，請匯出 PDF 檢視)*""")
         
-        st.markdown("#### 📄 導出交付紀錄 PDF 報表")
+        st.divider()
+        
+        st.markdown("#### 📄 導出交付簽收 PDF 報表")
         col_pdf1, col_pdf2 = st.columns([2, 1])
         with col_pdf1:
             pdf_scope = st.selectbox("選擇要匯出的聯單範圍：", options=["全部聯單類型", "B1", "B2-3", "B4", "B5"], key="pdf_scope_select")
@@ -987,7 +959,7 @@ with tab_delivery:
                             delivery_pdf_path = generate_delivery_pdf(df_pdf_target, pdf_scope)
                             with open(delivery_pdf_path, "rb") as pdf_file:
                                 st.download_button(
-                                    label=f"✅ 點此儲存 {pdf_scope} 紀錄報表",
+                                    label=f"✅ 點此儲存 {pdf_scope} 簽收報表 (含影像)",
                                     data=pdf_file,
                                     file_name=f"delivery_report_{pdf_scope}_{datetime.now().strftime('%Y%m%d')}.pdf",
                                     mime="application/pdf",
@@ -995,6 +967,7 @@ with tab_delivery:
                                 )
                         except Exception as ex:
                             st.error(f"PDF 導出失敗：{ex}")
+        st.divider()
 
     st.markdown("#### 📥 新增聯單現場發放")
     
@@ -1052,31 +1025,62 @@ with tab_delivery:
         input_serial = st.text_input("聯單起始序號 (可根據現場實物修改)", value=auto_serial)
         input_name = st.text_input("廠商簽收人姓名", value="")
         
-    if st.button("確認交付並永久儲存紀錄", use_container_width=True):
-        if not input_serial.strip():
-            st.error("請填寫聯單起始序號")
-        elif not input_name.strip():
-            st.error("請填寫廠商簽收人姓名")
-        elif int(input_count) > available_stock:
-            st.error(f"❌ 拒絕紀錄：庫存量不足！目前庫存僅剩 {available_stock} 張，無法超量發放 {int(input_count)} 張。")
-        else:
-            clean_input_serial = input_serial.strip()
-            if clean_input_serial.endswith('.0'):
-                clean_input_serial = clean_input_serial[:-2]
+    sign_active = st.checkbox("✍️ 填寫完畢後，點此展開簽名板")
+    
+    base64_sign = ""
+    if sign_active:
+        from streamlit_drawable_canvas import st_canvas
+        from PIL import Image
+        import io
+        import base64
+        
+        canvas_sign = st_canvas(
+            fill_color="rgba(255, 255, 255, 1)",
+            stroke_width=3,
+            stroke_color="#000000",
+            background_color="#EEEEEE",
+            height=200,
+            width=340,
+            drawing_mode="freedraw",
+            update_streamlit=True,
+            key=f"canvas_delivery_form_{st.session_state['canvas_key_counter']}",
+        )
+        
+        if st.button("確認交付並永久儲存簽收紀錄", use_container_width=True):
+            if not input_serial.strip():
+                st.error("請填寫聯單起始序號")
+            elif not input_name.strip():
+                st.error("請填寫廠商簽收人姓名")
+            elif canvas_sign.image_data is None or np.sum(canvas_sign.image_data[:, :, 3]) == 0:
+                st.error("請完成手寫簽名後再提交")
+            elif int(input_count) > available_stock:
+                st.error(f"❌ 拒絕紀錄：庫存量不足！目前庫存僅剩 {available_stock} 張，無法超量發放 {int(input_count)} 張。")
+            else:
+                img_array = canvas_sign.image_data.astype('uint8')
+                img = Image.fromarray(img_array, 'RGBA')
+                buffered = io.BytesIO()
+                img.save(buffered, format="PNG")
+                base64_sign = base64.b64encode(buffered.getvalue()).decode()
                 
-            now_tw = datetime.utcnow() + timedelta(hours=8)
-            new_record = {
-                "交付日期": now_tw.strftime("%Y-%m-%d"),
-                "交付時間": now_tw.strftime("%H:%M:%S"),
-                "廠商名稱": input_vendor.strip(),
-                "聯單類型": input_type,
-                "起始序號": clean_input_serial,
-                "發放張數": int(input_count),
-                "簽收人姓名": input_name.strip()
-            }
-            
-            df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
-            
-            if save_sheet_data("manifest_delivery", df_delivery):
-                st.success("✅ 聯單現場交付成功！紀錄已即時寫入雲端。")
-                st.rerun()
+                clean_input_serial = input_serial.strip()
+                if clean_input_serial.endswith('.0'):
+                    clean_input_serial = clean_input_serial[:-2]
+                    
+                now_tw = datetime.utcnow() + timedelta(hours=8)
+                new_record = {
+                    "交付日期": now_tw.strftime("%Y-%m-%d"),
+                    "交付時間": now_tw.strftime("%H:%M:%S"),
+                    "廠商名稱": input_vendor.strip(),
+                    "聯單類型": input_type,
+                    "起始序號": clean_input_serial,
+                    "發放張數": int(input_count),
+                    "簽收人姓名": input_name.strip(),
+                    "簽名資料": base64_sign
+                }
+                
+                df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
+                
+                if save_sheet_data("manifest_delivery", df_delivery):
+                    st.session_state['canvas_key_counter'] += 1
+                    st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
+                    st.rerun()
