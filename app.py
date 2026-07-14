@@ -10,7 +10,7 @@ from streamlit_gsheets import GSheetsConnection
 import re
 
 st.set_page_config(page_title="後台管理端", layout="wide")
-st.title("🚧 CDC土方管理系統 ")
+st.title("🚧 CDC土方管理系統 (高效瘦身版)")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
@@ -510,10 +510,10 @@ with tab_stats:
         st.markdown(f"#### 📊 {period_label}統計結果 ({start_date} 至 {end_date})")
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric(f"{period_label}出車車頭數", f"{range_trucks} 輛")
-        m2.metric(f"{period_label}總車次", f"{range_trips} 趟")
+        m2.metric(f"{period_label}總車次", f"{range_trips} 台")
         m3.metric(f"{period_label}實挖方量", f"{range_vol:,.0f} m³")
-        m4.metric(f"{period_label}出土功率", f"{period_rate} 趟/天")
-        m5.metric("總出土功率", f"{total_rate} 趟/天")
+        m4.metric(f"{period_label}出土功率", f"{period_rate} 台/天")
+        m5.metric("總出土功率", f"{total_rate} 台/天")
         st.divider()
 
         zone_grouped = pd.DataFrame()
@@ -556,7 +556,7 @@ with tab_stats:
                 mask = range_serials.str.contains(m_type.upper(), regex=False)
                 m_trips = mask.sum()
                 m_vol = range_vols[mask].sum()
-                breakdown_lines.append(f"* {m_type} 聯單： {m_trips} 趟 / {m_vol:,.0f} m³")
+                breakdown_lines.append(f"* {m_type} 聯單： {m_trips} 台 / {m_vol:,.0f} m³")
             manifest_breakdown_str = "\n".join(breakdown_lines)
 
         manifest_total = 79692.0
@@ -566,11 +566,11 @@ with tab_stats:
         report_text_left = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}出土天數： {period_days} 天
 {period_label}車次： {range_trips} 台
-{period_label}出土功率： {period_rate} 趟/天
+{period_label}出土功率： {period_rate} 台/天
 {period_label}出土方量： {range_vol:,.0f} m³
 累計總天數： {total_days} 天
 累計總車次： {total_all_trips} 台
-總出土功率： {total_rate} 趟/天
+總出土功率： {total_rate} 台/天
 累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
 聯單預估總出土： {manifest_total:,.0f} m³
 總體開挖進度： {overall_rate}%"""
@@ -751,13 +751,13 @@ with tab_sync:
                         sync_sys_df = pd.DataFrame(columns=['正規化車號', 'FullTime'])
 
                     off_counts = sync_off_df['正規化車號'].value_counts().reset_index()
-                    off_counts.columns = ['車頭車號', '官方趟數']
+                    off_counts.columns = ['車頭車號', '官方台數']
 
                     sys_counts = sync_sys_df['正規化車號'].value_counts().reset_index()
-                    sys_counts.columns = ['車頭車號', '系統趟數']
+                    sys_counts.columns = ['車頭車號', '系統台數']
 
                     merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
-                    merged['差異 (多按或漏按)'] = merged['系統趟數'] - merged['官方趟數']
+                    merged['差異 (多按或漏按)'] = merged['系統台數'] - merged['官方台數']
                     
                     st.session_state['sync_data_summary'] = merged
                     st.session_state['sync_date'] = sync_date
