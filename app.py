@@ -10,7 +10,7 @@ from streamlit_gsheets import GSheetsConnection
 import re
 
 st.set_page_config(page_title="後台管理端", layout="wide")
-st.title("🚧 CDC土方管理系統 (高效瘦身版)")
+st.title("🚧 CDC土方管理系統 ")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
@@ -500,11 +500,15 @@ with tab_stats:
         range_trips = len(range_logs)
         range_vol = pd.to_numeric(range_logs['載運方量(m³)'], errors='coerce').sum() if '載運方量(m³)' in range_logs.columns else 0
         
+        excavation_days = range_logs['ParsedDate'].nunique() if not range_logs.empty and 'ParsedDate' in range_logs.columns else 0
+        excavation_rate = round(range_trips / excavation_days, 1) if excavation_days > 0 else 0
+        
         st.markdown(f"#### 📊 {period_label}統計結果 ({start_date} 至 {end_date})")
-        m1, m2, m3 = st.columns(3)
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric(f"{period_label}出車車頭數", f"{range_trucks} 輛")
         m2.metric(f"{period_label}總車次", f"{range_trips} 趟")
         m3.metric(f"{period_label}實挖方量", f"{range_vol:,.0f} m³")
+        m4.metric("出土功率", f"{excavation_rate} 趟/天")
         st.divider()
 
         zone_grouped = pd.DataFrame()
@@ -556,7 +560,9 @@ with tab_stats:
         overall_rate = round((combined_excavated / manifest_total * 100), 1)
         
         report_text_left = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
+{period_label}出土天數： {excavation_days} 天
 {period_label}車次： {range_trips} 台
+出土功率： {excavation_rate} 趟/天
 {period_label}出土方量： {range_vol:,.0f} m³
 累計總車次： {total_all_trips} 台
 累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
