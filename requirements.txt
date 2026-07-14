@@ -6,3 +6,5 @@ shapely
 st-gsheets-connection==0.1.0
 fpdf2==2.7.9
 matplotlib
+streamlit-drawable-canvas==0.9.3
+Pillow==10.3.0
