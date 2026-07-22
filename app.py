@@ -244,6 +244,64 @@ def generate_pdf(stage_info, daily_df, df_stats, df_results, zone_grouped, perio
     pdf.output(tmp_file.name)
     return tmp_file.name
 
+def generate_delivery_pdf(df_target, scope_label):
+    from fpdf import FPDF
+    import base64
+    import gc
+    
+    pdf = FPDF()
+    pdf.add_page()
+    
+    if os.path.exists("font.ttf"):
+        pdf.add_font("CustomFont", fname="font.ttf")
+        pdf.set_font("CustomFont", size=16)
+    else:
+        pdf.set_font("Helvetica", size=16)
+        
+    pdf.cell(0, 10, text=f"聯單交付簽收歷史報表 ({scope_label})", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=10)
+    else:
+        pdf.set_font("Helvetica", size=10)
+        
+    for idx, row in df_target.iterrows():
+        curr_serial = str(row['起始序號']).strip()
+        if curr_serial.endswith('.0'):
+            curr_serial = curr_serial[:-2]
+            
+        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {int(row['發放張數'])}  起始序號: {curr_serial}  簽收人: {row['簽收人姓名']}"
+        pdf.cell(0, 8, text=info_text, new_x="LMARGIN", new_y="NEXT")
+        
+        if pd.notnull(row.get('簽名資料')) and str(row['簽名資料']).strip() != "":
+            try:
+                img_bytes = base64.b64decode(row['簽名資料'])
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                    tmp_img.write(img_bytes)
+                    tmp_img_path = tmp_img.name
+                
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+                    
+                pdf.cell(25, 15, text="簽名影像: ")
+                pdf.image(tmp_img_path, x=35, w=40, h=15)
+                pdf.ln(16)
+                os.unlink(tmp_img_path)
+            except Exception as e:
+                pdf.cell(0, 6, text=f"(簽名影像解碼失敗: {e})", new_x="LMARGIN", new_y="NEXT")
+        else:
+            pdf.cell(0, 6, text="簽名影像: 無簽名資料", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+            
+        pdf.cell(0, 4, text="==========================================================================================", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+        
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(tmp_file.name)
+    gc.collect()
+    return tmp_file.name
+
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
@@ -408,7 +466,6 @@ with tab_stats:
         
     tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
     
-    # 新增：階段管控參數設定
     st.markdown("#### 🎯 階段管控設定")
     c_stage1, c_stage2, c_stage3 = st.columns(3)
     stage_choice = c_stage1.selectbox("選擇管控階段", ["第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)"])
@@ -478,7 +535,7 @@ with tab_stats:
             daily_grouped = range_logs.groupby('日期')
             for d, group in daily_grouped:
                 day_trips = len(group)
-                day_vol = pd.to_numeric(group['載運方量(m³)', ], errors='coerce').sum()
+                day_vol = pd.to_numeric(group['載運方量(m³)'], errors='coerce').sum()
                 note = " | ".join(group['備註'].dropna().unique())
                 daily_summary.append({
                     "日期": d,
@@ -488,7 +545,6 @@ with tab_stats:
                 })
         daily_df = pd.DataFrame(daily_summary)
 
-        # 推算 PDF 紫色總表相關欄位
         actual_start_date = range_logs['ParsedDate'].min() if not range_logs.empty else tw_today
         current_work_days = (tw_today - actual_start_date).days + 1 if actual_start_date <= tw_today else 0
         expected_end_date = expected_start + timedelta(days=expected_duration)
