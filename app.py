@@ -10,7 +10,7 @@ from streamlit_gsheets import GSheetsConnection
 import re
 
 st.set_page_config(page_title="後台管理端", layout="wide")
-st.title("🚧 CDC土方管理系統 (高效瘦身版)")
+st.title("🚧 CDC土方管理系統 ")
 
 st.sidebar.markdown("### 🔒 系統權限")
 pwd = st.sidebar.text_input("輸入管理員密碼解鎖編輯模式", type="password")
