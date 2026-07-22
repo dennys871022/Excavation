@@ -10,7 +10,19 @@ from streamlit_gsheets import GSheetsConnection
 import re
 
 st.set_page_config(page_title="後台管理端", layout="wide")
-st.title("🚧 CDC土方管理系統 ")
+st.title("🚧 CDC土方管理系統 (高效瘦身版)")
+
+st.sidebar.markdown("### 🔒 系統權限")
+pwd = st.sidebar.text_input("輸入管理員密碼解鎖編輯模式", type="password")
+if pwd == "34561297":
+    demo_mode = False
+    st.sidebar.success("🔓 已解鎖管理員模式")
+else:
+    demo_mode = True
+    if pwd:
+        st.sidebar.error("❌ 密碼錯誤")
+    else:
+        st.sidebar.caption("👀 目前為訪客模式 (唯讀沙盒)")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
@@ -46,6 +58,11 @@ def load_sheet_data(sheet_name):
         return pd.DataFrame()
 
 def save_sheet_data(sheet_name, df):
+    if demo_mode:
+        st.session_state[f"cache_{sheet_name}"] = df.copy()
+        st.toast(f"👀 訪客模式：已模擬儲存【{sheet_name}】至網頁暫存，雲端資料庫未變動。")
+        return True
+        
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
         st.cache_data.clear()
@@ -929,7 +946,7 @@ with tab_delivery:
     if not df_delivery.empty:
         st.markdown("#### 📋 歷史交付簽收對帳看板")
         
-        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']}-{r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數']) if pd.notnull(r['發放張數']) else 0}張)" for idx, r in df_delivery.iterrows()]
+        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']} {r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數']) if pd.notnull(r['發放張數']) else 0}張)" for idx, r in df_delivery.iterrows()]
         selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
         
         chosen_row = df_delivery.iloc[selected_record_idx]
