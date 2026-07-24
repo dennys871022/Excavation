@@ -395,7 +395,7 @@ with tab_stats:
                     columns={'累計實挖方量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
                 )
 
-        st.markdown(f"#### 📱 {period_label}回報與報表匯出")
+        st.markdown(f"#### 📱 {period_label}回報")
         
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
@@ -629,7 +629,10 @@ with tab_stage:
     df_daily_notes = load_sheet_data("stage_daily_notes")
     if df_daily_notes.empty:
         df_daily_notes = pd.DataFrame(columns=['階段名稱', '日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '備註'])
-        
+    else:
+        if '階段名稱' not in df_daily_notes.columns:
+            df_daily_notes.insert(0, '階段名稱', stage_choice)
+            
     curr_notes = df_daily_notes[df_daily_notes['階段名稱'] == stage_choice].copy() if not df_daily_notes.empty else pd.DataFrame()
 
     # 產生階段對應的連續日期區間
