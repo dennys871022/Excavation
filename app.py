@@ -73,7 +73,7 @@ def save_sheet_data(sheet_name, df):
         return False
 
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
-    for sheet in ["grid_zones", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
+    for sheet in ["grid_zones", "dispatch_logs", "manifest_settings", "manifest_delivery", "stage_settings", "stage_daily_notes"]:
         if f"cache_{sheet}" in st.session_state:
             del st.session_state[f"cache_{sheet}"]
     st.cache_data.clear()
@@ -442,8 +442,8 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-tab_grid, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs([
-    "🗺️ 圖資與方量基準", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"
+tab_grid, tab_stats, tab_stage, tab_sync, tab_manifest, tab_delivery = st.tabs([
+    "🗺️ 圖資與方量基準", "📊 出土統計儀表板", "📈 階段開挖管控", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"
 ])
 
 with tab_grid:
@@ -723,6 +723,181 @@ with tab_stats:
                     st.rerun()
     else:
         st.info("尚無出土紀錄。")
+
+with tab_stage:
+    st.write("### 📈 開挖階段管控")
+    st.info("此分頁用於單一開挖階段的進度追蹤。上方設定目標參數，下方將自動比對每日聯單實際出車數，並可填寫備註。")
+    
+    df_stage_set = load_sheet_data("stage_settings")
+    tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
+    
+    if df_stage_set.empty:
+        df_stage_set = pd.DataFrame([{
+            "階段名稱": "第二階段土方開挖(GL-6.3)",
+            "預計開始時間": (tw_today - timedelta(days=10)).strftime("%Y-%m-%d"),
+            "預計施作工期": 18,
+            "預估土方量(鬆方)": 19862.7,
+            "單車預設實方": 12.0
+        }])
+        
+    st.markdown("#### ⚙️ 階段參數設定")
+    edited_stage_set = st.data_editor(df_stage_set, num_rows="dynamic", hide_index=True, use_container_width=True)
+    if st.button("💾 儲存階段設定"):
+        save_sheet_data("stage_settings", edited_stage_set)
+        st.rerun()
+        
+    if not edited_stage_set.empty:
+        s_row = edited_stage_set.iloc[0]
+        stage_name = s_row.get("階段名稱", "")
+        est_start_str = s_row.get("預計開始時間", str(tw_today))
+        est_days = pd.to_numeric(s_row.get("預計施作工期", 1), errors='coerce')
+        est_vol = pd.to_numeric(s_row.get("預估土方量(鬆方)", 0), errors='coerce')
+        vol_per_truck = pd.to_numeric(s_row.get("單車預設實方", 12.0), errors='coerce')
+        
+        try:
+            est_start = pd.to_datetime(est_start_str).date()
+        except:
+            est_start = tw_today
+            
+        est_end = est_start + timedelta(days=int(est_days))
+        est_daily_vol = est_vol / est_days if est_days > 0 else 0
+        
+        df_logs = load_sheet_data("dispatch_logs")
+        daily_stats = pd.DataFrame()
+        if not df_logs.empty and "日期" in df_logs.columns:
+            valid_logs = df_logs.copy()
+            valid_logs['載運方量(m³)'] = pd.to_numeric(valid_logs.get('載運方量(m³)', vol_per_truck), errors='coerce').fillna(vol_per_truck)
+            
+            daily_stats = valid_logs.groupby('日期').agg(
+                實際車次=('車頭車號', 'count'),
+                當日運棄量=('載運方量(m³)', 'sum')
+            ).reset_index()
+            daily_stats = daily_stats.sort_values('日期')
+            daily_stats['累計車次'] = daily_stats['實際車次'].cumsum()
+            daily_stats['累計運棄量'] = daily_stats['當日運棄量'].cumsum()
+        else:
+            daily_stats = pd.DataFrame(columns=['日期', '實際車次', '當日運棄量', '累計車次', '累計運棄量'])
+            
+        df_daily_notes = load_sheet_data("stage_daily_notes")
+        if df_daily_notes.empty:
+            df_daily_notes = pd.DataFrame(columns=['日期', '內控預計車次', '備註'])
+            
+        if not daily_stats.empty:
+            merged_daily = pd.merge(daily_stats, df_daily_notes, on='日期', how='left')
+        else:
+            merged_daily = df_daily_notes.copy()
+            for col in ['實際車次', '當日運棄量', '累計車次', '累計運棄量']:
+                if col not in merged_daily.columns:
+                    merged_daily[col] = 0
+        
+        default_daily_trips = round((est_vol / vol_per_truck) / est_days) if est_days > 0 and vol_per_truck > 0 else 0
+        merged_daily['內控預計車次'] = pd.to_numeric(merged_daily['內控預計車次'], errors='coerce').fillna(default_daily_trips)
+        merged_daily['差異'] = merged_daily['實際車次'] - merged_daily['內控預計車次']
+        merged_daily['備註'] = merged_daily['備註'].fillna("")
+        
+        if not merged_daily.empty:
+            actual_start = pd.to_datetime(merged_daily['日期'].min()).date()
+        else:
+            actual_start = tw_today
+            
+        current_work_days = (tw_today - actual_start).days + 1 if actual_start <= tw_today else 0
+        
+        today_str = tw_today.strftime("%Y-%m-%d")
+        today_row = merged_daily[merged_daily['日期'] == today_str]
+        today_vol = today_row['當日運棄量'].sum() if not today_row.empty else 0
+        
+        cum_vol = merged_daily['當日運棄量'].sum()
+        avg_vol_per_day = cum_vol / current_work_days if current_work_days > 0 else 0
+        remain_vol = max(0, est_vol - cum_vol)
+        remain_days = round(remain_vol / avg_vol_per_day) if avg_vol_per_day > 0 else 0
+        est_completion_date = tw_today + timedelta(days=remain_days)
+        diff_days = (est_completion_date - est_end).days
+        percent_done = round((cum_vol / est_vol) * 100) if est_vol > 0 else 0
+        
+        st.markdown(f"#### 🟣 {stage_name}")
+        
+        html_table = f"""
+        <table style="width: 100%; border-collapse: collapse; font-family: sans-serif; text-align: right;">
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">今天日期</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{tw_today}</td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">目前作業工期</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{current_work_days}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計開始時間</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{est_start}</td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">實際開始時間</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{actual_start}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計施作工期</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{est_days}</td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估剩餘天數</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{remain_days}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計完成日期</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{est_end}</td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估完成日期</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{est_completion_date}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px;"></td>
+                <td style="border: 1px solid #ccc; padding: 8px;"></td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">差異 (天)</td>
+                <td style="border: 1px solid #ccc; padding: 8px; background-color: #f39c12; color: white;">{diff_days}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估土方量(鬆方)</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{est_vol:,.1f}</td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">本日出土量(m³)</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{today_vol:,.1f}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估每日出土量(m³)</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{est_daily_vol:,.1f}</td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">累積出土數量(m³)</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{cum_vol:,.1f}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(m³/天)</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{avg_vol_per_day:,.1f}</td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">剩餘土方量(m³)</td>
+                <td style="border: 1px solid #ccc; padding: 8px;">{remain_vol:,.1f}</td>
+            </tr>
+            <tr>
+                <td style="border: 1px solid #ccc; padding: 8px;"></td>
+                <td style="border: 1px solid #ccc; padding: 8px;"></td>
+                <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">完成百分比</td>
+                <td style="border: 1px solid #ccc; padding: 8px; background-color: #8e44ad; color: white;">{percent_done}%</td>
+            </tr>
+        </table>
+        """
+        st.markdown(html_table, unsafe_allow_html=True)
+        
+        st.divider()
+        st.markdown("#### 📅 每日出土管控明細")
+        
+        display_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '備註']
+        edited_daily = st.data_editor(
+            merged_daily[display_cols],
+            column_config={
+                "內控預計車次": st.column_config.NumberColumn(required=True),
+                "實際車次": st.column_config.NumberColumn(disabled=True),
+                "差異": st.column_config.NumberColumn(disabled=True),
+                "當日運棄量": st.column_config.NumberColumn(disabled=True),
+                "累計運棄量": st.column_config.NumberColumn(disabled=True),
+                "備註": st.column_config.TextColumn()
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        if st.button("💾 儲存每日車次目標與備註 (寫入雲端)"):
+            save_df = edited_daily[['日期', '內控預計車次', '備註']].copy()
+            save_sheet_data("stage_daily_notes", save_df)
+            st.rerun()
 
 with tab_sync:
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
