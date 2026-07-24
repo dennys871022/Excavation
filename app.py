@@ -73,7 +73,7 @@ def save_sheet_data(sheet_name, df):
         return False
 
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
-    for sheet in ["grid_zones", "dispatch_logs", "manifest_settings", "manifest_delivery", "stage_settings", "stage_daily_notes"]:
+    for sheet in ["grid_zones", "dispatch_logs", "manifest_settings", "manifest_delivery"]:
         if f"cache_{sheet}" in st.session_state:
             del st.session_state[f"cache_{sheet}"]
     st.cache_data.clear()
@@ -155,6 +155,167 @@ def generate_backend_map(df_results, zone_grouped):
     plt.close('all')
     gc.collect()
     return tmp_img.name
+
+def generate_pdf(report_text_left, report_text_right, df_stats, df_results, zone_grouped, period_label="本日"):
+    from fpdf import FPDF
+    
+    pdf = FPDF()
+    pdf.add_page()
+    
+    if os.path.exists("font.ttf"):
+        pdf.add_font("CustomFont", fname="font.ttf")
+        pdf.set_font("CustomFont", size=18)
+    else:
+        pdf.set_font("Helvetica", size=18)
+        
+    title_text = f"CDC土方{period_label}回報"
+    pdf.cell(0, 10, text=title_text, align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=12)
+    else:
+        pdf.set_font("Helvetica", size=12)
+        
+    start_y = pdf.get_y()
+    pdf.set_xy(15, start_y)
+    for line in report_text_left.split('\n'):
+        if line.strip():
+            pdf.set_x(15)
+            pdf.cell(90, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
+    left_end_y = pdf.get_y()
+
+    pdf.set_xy(110, start_y + 8) 
+    for line in report_text_right.split('\n'):
+        if line.strip():
+            pdf.set_x(110)
+            pdf.cell(85, 8, text=line.strip().replace('•', '*'), new_x="LMARGIN", new_y="NEXT")
+    right_end_y = pdf.get_y()
+
+    pdf.set_y(max(left_end_y, right_end_y) + 5)
+    
+    try:
+        img_path = generate_backend_map(df_results, zone_grouped)
+        pdf.image(img_path, x=15, w=180)
+        os.unlink(img_path) 
+    except Exception as e:
+        if os.path.exists("font.ttf"):
+            pdf.set_font("CustomFont", size=10)
+        else:
+            pdf.set_font("Helvetica", size=10)
+        pdf.cell(0, 10, text=f"(地圖生成失敗: {e})", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.ln(5)
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=10)
+    else:
+        pdf.set_font("Helvetica", size=10)
+        
+    pdf.cell(0, 6, text="進度圖例說明：", new_x="LMARGIN", new_y="NEXT")
+    
+    legend_items = [
+        ("尚未開挖", 240, 240, 240),
+        ("1挖進行中", 241, 196, 15),
+        ("1挖完成/2挖中", 230, 126, 34),
+        ("2挖完成/3挖中", 52, 152, 219),
+        ("3挖完成/4挖中", 155, 89, 182),
+        ("開挖完成", 46, 204, 113)
+    ]
+    
+    for i, (label, r, g, b) in enumerate(legend_items):
+        pdf.set_fill_color(r, g, b)
+        pdf.cell(4, 4, text="", border=1, fill=True)
+        pdf.cell(2, 4, text="")
+        pdf.cell(32, 4, text=label)
+        if i == 2:
+            pdf.ln(6)
+    pdf.ln(6)
+    
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=14)
+    else:
+        pdf.set_font("Helvetica", size=14)
+        
+    pdf.cell(0, 10, text="各分區挖掘進度總表", new_x="LMARGIN", new_y="NEXT")
+    
+    if not df_stats.empty:
+        if os.path.exists("font.ttf"):
+            pdf.set_font("CustomFont", size=9)
+        else:
+            pdf.set_font("Helvetica", size=9)
+        col_widths = [45, 45, 45, 45]
+        headers = df_stats.columns.tolist()
+        
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], 8, text=str(header), border=1, align='C')
+        pdf.ln()
+        
+        for idx, row in df_stats.iterrows():
+            for i, col in enumerate(headers):
+                pdf.cell(col_widths[i], 8, text=str(row[col]), border=1, align='C')
+            pdf.ln()
+            
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(tmp_file.name)
+    return tmp_file.name
+
+def generate_delivery_pdf(df_target, scope_label):
+    from fpdf import FPDF
+    import base64
+    import gc
+    
+    pdf = FPDF()
+    pdf.add_page()
+    
+    if os.path.exists("font.ttf"):
+        pdf.add_font("CustomFont", fname="font.ttf")
+        pdf.set_font("CustomFont", size=16)
+    else:
+        pdf.set_font("Helvetica", size=16)
+        
+    pdf.cell(0, 10, text=f"聯單交付簽收歷史報表 ({scope_label})", align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    if os.path.exists("font.ttf"):
+        pdf.set_font("CustomFont", size=10)
+    else:
+        pdf.set_font("Helvetica", size=10)
+        
+    for idx, row in df_target.iterrows():
+        curr_serial = str(row['起始序號']).strip()
+        if curr_serial.endswith('.0'):
+            curr_serial = curr_serial[:-2]
+            
+        info_text = f"日期: {row['交付日期']}  時間: {row['交付時間']}  廠商: {row['廠商名稱']}  類型: {row['聯單類型']}  張數: {int(row['發放張數'])}  起始序號: {curr_serial}  簽收人: {row['簽收人姓名']}"
+        pdf.cell(0, 8, text=info_text, new_x="LMARGIN", new_y="NEXT")
+        
+        if pd.notnull(row.get('簽名資料')) and str(row['簽名資料']).strip() != "":
+            try:
+                img_bytes = base64.b64decode(row['簽名資料'])
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                    tmp_img.write(img_bytes)
+                    tmp_img_path = tmp_img.name
+                
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+                    
+                pdf.cell(25, 15, text="簽名影像: ")
+                pdf.image(tmp_img_path, x=35, w=40, h=15)
+                pdf.ln(16)
+                os.unlink(tmp_img_path)
+            except Exception as e:
+                pdf.cell(0, 6, text=f"(簽名影像解碼失敗: {e})", new_x="LMARGIN", new_y="NEXT")
+        else:
+            pdf.cell(0, 6, text="簽名影像: 無簽名資料", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+            
+        pdf.cell(0, 4, text="==========================================================================================", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+        
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(tmp_file.name)
+    gc.collect()
+    return tmp_file.name
 
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
@@ -281,8 +442,8 @@ try:
 except Exception as e:
     st.sidebar.error(f"圖資運算錯誤: {e}")
 
-tab_grid, tab_stats, tab_stage, tab_sync, tab_manifest, tab_delivery = st.tabs([
-    "🗺️ 圖資與方量基準", "📊 出土統計儀表板", "📈 階段開挖管控", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"
+tab_grid, tab_stats, tab_sync, tab_manifest, tab_delivery = st.tabs([
+    "🗺️ 圖資與方量基準", "📊 出土統計儀表板", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"
 ])
 
 with tab_grid:
@@ -373,6 +534,7 @@ with tab_stats:
         st.divider()
 
         zone_grouped = pd.DataFrame()
+        total_est = df_results['預估總土方'].sum() if not df_results.empty else 0
         
         display_df = pd.DataFrame()
         if '出土分區' in cumul_logs.columns and '載運方量(m³)' in cumul_logs.columns:
@@ -437,6 +599,25 @@ with tab_stats:
         with col_txt:
             st.info(ui_display_text.replace("\n", "\n\n"))
             
+            st.markdown("#### 📄 匯出 PDF 報表")
+            if os.path.exists("font.ttf"):
+                if st.button("📥 下載完整 PDF 報表 (點擊後產生，需稍候)"):
+                    with st.spinner("正在繪製地圖與生成報表，這需要一些時間..."):
+                        try:
+                            pdf_path = generate_pdf(report_text_left, report_text_right, display_df, df_results, zone_grouped, period_label)
+                            with open(pdf_path, "rb") as f:
+                                st.download_button(
+                                    label="✅ 點此儲存 PDF 檔案",
+                                    data=f,
+                                    file_name=f"excavation_report_{start_date}_{end_date}.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
+                        except Exception as e:
+                            st.error(f"PDF 產生失敗：{e}")
+            else:
+                st.warning("⚠️ 找不到字型檔 `font.ttf`，無法產生 PDF。請先將檔案上傳至專案根目錄。")
+
         with col_fig:
             st.markdown("**進度圖例說明：**")
             st.markdown("⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
@@ -542,247 +723,6 @@ with tab_stats:
                     st.rerun()
     else:
         st.info("尚無出土紀錄。")
-
-with tab_stage:
-    st.write("### 📈 階段開挖管控")
-    st.info("此分頁用於單一開挖階段的進度追蹤。切換不同階段，系統將自動載入專屬的設定參數、每日明細，並動態繪製地圖。")
-    
-    tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
-    
-    stage_choice = st.selectbox("選擇管控階段", ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)"])
-    
-    # 決定基準欄位名稱，並準備地圖所需資料
-    df_stage_map = df_results.copy()
-    if "第1挖" in stage_choice: 
-        target_col = '第1挖方量(m³)'
-    elif "第2挖" in stage_choice: 
-        target_col = '第2挖方量(m³)'
-    elif "第3挖" in stage_choice: 
-        target_col = '第3挖方量(m³)'
-        df_stage_map = df_stage_map[~df_stage_map['分區代號'].str.contains("滯")]
-    elif "第4挖" in stage_choice: 
-        target_col = '第4挖方量(m³)'
-        df_stage_map = df_stage_map[~df_stage_map['分區代號'].str.contains("滯")]
-    else: 
-        target_col = None
-
-    default_est_vol = df_stage_map[target_col].sum() if target_col and not df_stage_map.empty else 0
-
-    # 讀取並過濾對應階段的設定
-    df_stage_set = load_sheet_data("stage_settings")
-    if df_stage_set.empty or "階段名稱" not in df_stage_set.columns:
-        df_stage_set = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計施作工期", "預估土方量(鬆方)", "單車預設實方"])
-        
-    current_set = df_stage_set[df_stage_set["階段名稱"] == stage_choice]
-    
-    if current_set.empty:
-        new_row = pd.DataFrame([{
-            "階段名稱": stage_choice,
-            "預計開始時間": tw_today.strftime("%Y-%m-%d"),
-            "預計施作工期": 20,
-            "預估土方量(鬆方)": default_est_vol,
-            "單車預設實方": 12.0
-        }])
-        display_stage_set = new_row
-    else:
-        display_stage_set = current_set.copy()
-        
-    st.markdown(f"#### ⚙️ 【{stage_choice}】參數設定")
-    edited_stage_set = st.data_editor(display_stage_set, hide_index=True, use_container_width=True)
-    
-    if st.button("💾 儲存本階段設定"):
-        other_sets = df_stage_set[df_stage_set["階段名稱"] != stage_choice]
-        final_sets = pd.concat([other_sets, edited_stage_set], ignore_index=True)
-        save_sheet_data("stage_settings", final_sets)
-        st.rerun()
-
-    # 提取當前階段參數供計算
-    s_row = edited_stage_set.iloc[0]
-    est_start_str = s_row.get("預計開始時間", str(tw_today))
-    est_days = pd.to_numeric(s_row.get("預計施作工期", 1), errors='coerce')
-    est_vol = pd.to_numeric(s_row.get("預估土方量(鬆方)", 0), errors='coerce')
-    vol_per_truck = pd.to_numeric(s_row.get("單車預設實方", 12.0), errors='coerce')
-    
-    try:
-        est_start = pd.to_datetime(est_start_str).date()
-    except:
-        est_start = tw_today
-        
-    est_end = est_start + timedelta(days=int(est_days))
-    est_daily_vol = est_vol / est_days if est_days > 0 else 0
-
-    # 處理每日紀錄與寫入全欄位邏輯
-    df_logs = load_sheet_data("dispatch_logs")
-    daily_stats = pd.DataFrame()
-    if not df_logs.empty and "日期" in df_logs.columns:
-        valid_logs = df_logs.copy()
-        valid_logs['載運方量(m³)'] = pd.to_numeric(valid_logs.get('載運方量(m³)', vol_per_truck), errors='coerce').fillna(vol_per_truck)
-        
-        daily_stats = valid_logs.groupby('日期').agg(
-            實際車次=('車頭車號', 'count'),
-            當日運棄量=('載運方量(m³)', 'sum')
-        ).reset_index()
-        daily_stats = daily_stats.sort_values('日期')
-    else:
-        daily_stats = pd.DataFrame(columns=['日期', '實際車次', '當日運棄量'])
-
-    df_daily_notes = load_sheet_data("stage_daily_notes")
-    if df_daily_notes.empty:
-        df_daily_notes = pd.DataFrame(columns=['階段名稱', '日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '備註'])
-        
-    curr_notes = df_daily_notes[df_daily_notes['階段名稱'] == stage_choice].copy() if not df_daily_notes.empty else pd.DataFrame()
-
-    # 產生階段對應的連續日期區間
-    max_log_date = pd.to_datetime(daily_stats['日期'].max()).date() if not daily_stats.empty else tw_today
-    end_date_for_range = max(tw_today, max_log_date)
-    date_range = [d.strftime("%Y-%m-%d") for d in pd.date_range(est_start, end_date_for_range)]
-    df_range = pd.DataFrame({"日期": date_range})
-
-    # 合併實際聯單車次資料
-    if not daily_stats.empty:
-        df_range = pd.merge(df_range, daily_stats, on="日期", how="left").fillna({"實際車次": 0, "當日運棄量": 0})
-    else:
-        df_range['實際車次'] = 0
-        df_range['當日運棄量'] = 0
-
-    df_range['累計車次'] = df_range['實際車次'].cumsum()
-    df_range['累計運棄量'] = df_range['當日運棄量'].cumsum()
-
-    # 合併之前存下的內控資料與備註
-    if not curr_notes.empty and '備註' in curr_notes.columns:
-        merge_notes = curr_notes[['日期', '內控預計車次', '備註']].drop_duplicates('日期')
-        df_range = pd.merge(df_range, merge_notes, on="日期", how="left")
-    else:
-        df_range['內控預計車次'] = np.nan
-        df_range['備註'] = ""
-
-    default_daily_trips = round((est_vol / vol_per_truck) / est_days) if est_days > 0 and vol_per_truck > 0 else 0
-    df_range['內控預計車次'] = pd.to_numeric(df_range['內控預計車次'], errors='coerce').fillna(default_daily_trips)
-    df_range['差異'] = df_range['實際車次'] - df_range['內控預計車次']
-    df_range['備註'] = df_range['備註'].fillna("")
-
-    actual_start_date = est_start
-    current_work_days = (tw_today - actual_start_date).days + 1 if actual_start_date <= tw_today else 0
-    
-    today_str = tw_today.strftime("%Y-%m-%d")
-    today_row = df_range[df_range['日期'] == today_str]
-    today_vol = today_row['當日運棄量'].sum() if not today_row.empty else 0
-    
-    cum_vol = df_range['當日運棄量'].sum()
-    avg_vol_per_day = cum_vol / current_work_days if current_work_days > 0 else 0
-    remain_vol = max(0, est_vol - cum_vol)
-    remain_days = round(remain_vol / avg_vol_per_day) if avg_vol_per_day > 0 else 0
-    est_completion_date = tw_today + timedelta(days=remain_days)
-    diff_days = (est_completion_date - est_end).days
-    percent_done = round((cum_vol / est_vol) * 100) if est_vol > 0 else 0
-    
-    st.markdown(f"#### 🟣 【{stage_choice}】總覽")
-    
-    html_table = f"""
-    <table style="width: 100%; border-collapse: collapse; font-family: sans-serif; text-align: right;">
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">今天日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{tw_today}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">目前作業工期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{current_work_days}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計開始時間</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_start}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">實際開始時間</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{actual_start_date}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計施作工期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_days}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估剩餘天數</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{remain_days}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計完成日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_end}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估完成日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_completion_date}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">差異 (天)</td>
-            <td style="border: 1px solid #ccc; padding: 8px; background-color: #f39c12; color: white;">{diff_days}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估土方量(鬆方)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_vol:,.1f}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">本日出土量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{today_vol:,.1f}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估每日出土量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_daily_vol:,.1f}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">累積出土數量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{cum_vol:,.1f}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(m³/天)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{avg_vol_per_day:,.1f}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">剩餘土方量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{remain_vol:,.1f}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">完成百分比</td>
-            <td style="border: 1px solid #ccc; padding: 8px; background-color: #8e44ad; color: white;">{percent_done}%</td>
-        </tr>
-    </table>
-    """
-    st.markdown(html_table, unsafe_allow_html=True)
-    
-    st.divider()
-    st.markdown("#### 📅 每日出土管控明細")
-    
-    display_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '備註']
-    edited_daily = st.data_editor(
-        df_range[display_cols],
-        column_config={
-            "內控預計車次": st.column_config.NumberColumn(required=True),
-            "實際車次": st.column_config.NumberColumn(disabled=True),
-            "差異": st.column_config.NumberColumn(disabled=True),
-            "當日運棄量": st.column_config.NumberColumn(disabled=True),
-            "累計運棄量": st.column_config.NumberColumn(disabled=True),
-            "備註": st.column_config.TextColumn()
-        },
-        hide_index=True,
-        use_container_width=True
-    )
-    
-    if st.button("💾 儲存每日車次目標與備註 (全欄位寫入雲端)"):
-        save_df = edited_daily.copy()
-        save_df['階段名稱'] = stage_choice
-        other_notes = df_daily_notes[df_daily_notes['階段名稱'] != stage_choice]
-        final_notes = pd.concat([other_notes, save_df], ignore_index=True)
-        save_sheet_data("stage_daily_notes", final_notes)
-        st.rerun()
-
-    st.divider()
-    st.markdown(f"#### 🗺️ 【{stage_choice}】 方量基準地圖")
-    fig_stage = go.Figure()
-    
-    for idx, row in df_stage_map.iterrows():
-        grid_id = row['分區代號']
-        t_vol = row[target_col] if target_col else 0
-        
-        fig_stage.add_trace(go.Scatter(
-            x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
-            y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
-            mode='lines', line=dict(color='blue', width=1),
-            fill='toself', fillcolor='rgba(0, 100, 255, 0.1)', showlegend=False, hoverinfo='text',
-            text=f"{grid_id}<br>階段基準方量: {t_vol:,.0f} m³"
-        ))
-        fig_stage.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
-        
-    fig_stage.update_layout(dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig_stage, use_container_width=True, config={'displayModeBar': False})
 
 with tab_sync:
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
