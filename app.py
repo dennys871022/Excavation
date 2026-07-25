@@ -62,7 +62,7 @@ def save_sheet_data(sheet_name, df):
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         st.toast(f"👀 訪客模式：已模擬儲存【{sheet_name}】至網頁暫存，雲端資料庫未變動。")
         return True
-        
+
     try:
         conn.update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
         st.cache_data.clear()
@@ -109,46 +109,46 @@ def generate_backend_map(df_results, zone_grouped):
     import matplotlib.patches as patches
     from matplotlib.font_manager import FontProperties
     import gc
-    
+
     fig, ax = plt.subplots(figsize=(10, 6))
     font_path = "font.ttf"
     my_font = FontProperties(fname=font_path) if os.path.exists(font_path) else None
-    
+
     vol_dict = {}
     if not zone_grouped.empty:
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
-    
+
     for idx, row in df_results.iterrows():
         grid_id = row['分區代號']
         current_vol = vol_dict.get(grid_id, 0)
         thresholds = stage_dict.get(grid_id, [])
-        fill_color = '#F0F0F0' 
-        
+        fill_color = '#F0F0F0'
+
         if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
             if current_vol >= thresholds[-1] * 0.98:
-                fill_color = '#2ECC71' 
+                fill_color = '#2ECC71'
             else:
                 colors = ['#F1C40F', '#E67E22', '#3498DB', '#9B59B6']
                 for s_idx, t_vol in enumerate(thresholds):
                     if current_vol < t_vol * 0.98:
                         fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
                         break
-                        
-        xy = [[row['x_min'], row['y_min']], [row['x_max'], row['y_min']], 
+
+        xy = [[row['x_min'], row['y_min']], [row['x_max'], row['y_min']],
               [row['x_max'], row['y_max']], [row['x_min'], row['y_max']]]
         poly = patches.Polygon(xy, closed=True, facecolor=fill_color, edgecolor='gray', alpha=0.8)
         ax.add_patch(poly)
-        
+
         if my_font:
             ax.text(row['x_center'], row['y_center'], grid_id, ha='center', va='center', fontsize=8, color='black', fontproperties=my_font)
         else:
             ax.text(row['x_center'], row['y_center'], grid_id, ha='center', va='center', fontsize=8, color='black')
-        
+
     ax.autoscale_view()
     ax.set_aspect('equal')
     plt.axis('off')
-    
+
     tmp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     plt.savefig(tmp_img.name, bbox_inches='tight', dpi=150)
     fig.clf()
@@ -156,12 +156,216 @@ def generate_backend_map(df_results, zone_grouped):
     gc.collect()
     return tmp_img.name
 
+
+# ============================================================================
+# 新增：每日出土 PDF 報表產出（原本遺失的功能）
+# ============================================================================
+def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_path,
+                               period_label, start_date, end_date):
+    """
+    產出每日/區間出土統計 PDF 報表：
+      - 文字回報 (report_text)
+      - 聯單分類出土明細 (breakdown_text)
+      - 各分區進度表格 (display_df)
+      - 各區開挖階段狀態地圖 (map_img_path, 來自 generate_backend_map)
+    回傳暫存 PDF 檔案路徑。
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font_path = "font.ttf"
+    font_name = "CustomFont"
+    if os.path.exists(font_path):
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+        except Exception:
+            font_name = "Helvetica"
+    else:
+        font_name = "Helvetica"
+
+    tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    c = canvas.Canvas(tmp_pdf.name, pagesize=A4)
+    width, height = A4
+    margin = 18 * mm
+    y = height - margin
+
+    def new_page():
+        nonlocal y
+        c.showPage()
+        c.setFont(font_name, 10)
+        y = height - margin
+
+    # 標題
+    c.setFont(font_name, 16)
+    c.drawString(margin, y, f"CDC土方開挖{period_label}回報")
+    y -= 8 * mm
+    c.setFont(font_name, 10)
+    c.drawString(margin, y, f"統計區間：{start_date} 至 {end_date}　　產出時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    y -= 10 * mm
+
+    # 文字回報內容（逐行輸出，超出頁面自動換頁）
+    c.setFont(font_name, 10)
+    for line in str(report_text).split("\n"):
+        if y < margin + 10 * mm:
+            new_page()
+        c.drawString(margin, y, line)
+        y -= 5.5 * mm
+
+    y -= 4 * mm
+    if y < margin + 20 * mm:
+        new_page()
+    c.setFont(font_name, 11)
+    c.drawString(margin, y, "聯單分類出土：")
+    y -= 6 * mm
+    c.setFont(font_name, 10)
+    for line in str(breakdown_text).split("\n"):
+        if line.strip() == "":
+            continue
+        if y < margin + 10 * mm:
+            new_page()
+        c.drawString(margin, y, line)
+        y -= 5.5 * mm
+
+    # 各分區進度表格
+    y -= 6 * mm
+    if y < margin + 30 * mm:
+        new_page()
+    c.setFont(font_name, 11)
+    c.drawString(margin, y, "各分區挖掘進度總表：")
+    y -= 7 * mm
+
+    if display_df is not None and not display_df.empty:
+        col_names = list(display_df.columns)
+        col_width = (width - 2 * margin) / max(len(col_names), 1)
+        c.setFont(font_name, 9)
+        for i, col in enumerate(col_names):
+            c.drawString(margin + i * col_width, y, str(col))
+        y -= 2 * mm
+        c.line(margin, y, width - margin, y)
+        y -= 5 * mm
+
+        for _, row in display_df.iterrows():
+            if y < margin + 12 * mm:
+                new_page()
+                c.setFont(font_name, 9)
+                for i, col in enumerate(col_names):
+                    c.drawString(margin + i * col_width, y, str(col))
+                y -= 2 * mm
+                c.line(margin, y, width - margin, y)
+                y -= 5 * mm
+            for i, col in enumerate(col_names):
+                c.drawString(margin + i * col_width, y, str(row[col]))
+            y -= 5.5 * mm
+    else:
+        c.setFont(font_name, 10)
+        c.drawString(margin, y, "（尚無分區資料）")
+        y -= 6 * mm
+
+    # 各區開挖階段狀態地圖
+    if map_img_path and os.path.exists(map_img_path):
+        if y < margin + 90 * mm:
+            new_page()
+        else:
+            y -= 6 * mm
+        c.setFont(font_name, 11)
+        c.drawString(margin, y, "各區開挖階段狀態圖：")
+        y -= 5 * mm
+        img_w = width - 2 * margin
+        img_h = img_w * 0.6
+        if y - img_h < margin:
+            new_page()
+        c.drawImage(map_img_path, margin, y - img_h, width=img_w, height=img_h, preserveAspectRatio=True, mask='auto')
+        y -= (img_h + 5 * mm)
+
+    c.save()
+    return tmp_pdf.name
+
+
+# ============================================================================
+# 補充：聯單交付簽收 PDF 報表（tab_delivery 原本也缺少此函式定義）
+# ============================================================================
+def generate_delivery_pdf(df, scope):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import base64
+    import io
+
+    font_path = "font.ttf"
+    font_name = "CustomFont"
+    if os.path.exists(font_path):
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+        except Exception:
+            font_name = "Helvetica"
+    else:
+        font_name = "Helvetica"
+
+    tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    c = canvas.Canvas(tmp_pdf.name, pagesize=A4)
+    width, height = A4
+    margin = 18 * mm
+
+    c.setFont(font_name, 16)
+    c.drawString(margin, height - margin, f"CDC土方聯單交付簽收報表 - {scope}")
+    c.setFont(font_name, 9)
+    c.drawString(margin, height - margin - 7 * mm, f"匯出時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    y = height - margin - 20 * mm
+    row_block_h = 55 * mm
+
+    for _, row in df.iterrows():
+        if y < row_block_h:
+            c.showPage()
+            c.setFont(font_name, 9)
+            y = height - margin
+
+        c.setFont(font_name, 10)
+        text_lines = [
+            f"交付日期時間: {row.get('交付日期','')} {row.get('交付時間','')}",
+            f"廠商名稱: {row.get('廠商名稱','')}",
+            f"聯單類型: {row.get('聯單類型','')}",
+            f"起始序號: {row.get('起始序號','')}",
+            f"發放張數: {row.get('發放張數','')}",
+            f"簽收人姓名: {row.get('簽收人姓名','')}",
+        ]
+        ty = y
+        for line in text_lines:
+            c.drawString(margin, ty, line)
+            ty -= 5 * mm
+
+        sign_data = row.get('簽名資料', '')
+        if isinstance(sign_data, str) and sign_data:
+            try:
+                img_bytes = base64.b64decode(sign_data)
+                tmp_sign = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                with open(tmp_sign.name, "wb") as sf:
+                    sf.write(img_bytes)
+                c.drawImage(tmp_sign.name, 120 * mm, y - 30 * mm, width=60 * mm, height=35 * mm,
+                            preserveAspectRatio=True, mask='auto')
+            except Exception:
+                c.drawString(120 * mm, y - 15 * mm, "(簽名載入失敗)")
+        else:
+            c.drawString(120 * mm, y - 15 * mm, "(無簽名資料)")
+
+        c.line(margin, y - 38 * mm, width - margin, y - 38 * mm)
+        y -= row_block_h
+
+    c.save()
+    return tmp_pdf.name
+
+
 e_ext = 3.25
 dx1 = [8.7, 8.7, 8.7, 8.7, 8.7, 10.2]
 dy1 = [-9.6, -8.4, -7.5, -7.5, -7.5]
 y_labels1 = ["A", "B", "C", "D", "E"]
 dx2 = [6.9, 9.0, 9.0, 9.3, 9.3, 9.3, 9.3, 9.0, 9.0, 6.0]
-dy2 = [-11.25, -9.0, -9.3, -9.3, -9.3, -7.5] 
+dy2 = [-11.25, -9.0, -9.3, -9.3, -9.3, -7.5]
 y_labels2 = ["A", "B'", "C'", "D'", "E'", "F'"]
 
 df_results = pd.DataFrame()
@@ -180,10 +384,10 @@ try:
     depths_a = get_thickness_from_gl(gl_a_input, current_gl)
 
     results = []
-    
+
     for j in range(len(dy1)):
         for i in range(len(dx1)):
-            if j >= 2 and i >= 3: continue 
+            if j >= 2 and i >= 3: continue
             grid_id = f"{y_labels1[j]}{i+1}"
             x_min, x_max = x_coords1[i], x_coords1[i+1]
             y_max, y_min = y_coords1[j], y_coords1[j+1]
@@ -199,14 +403,14 @@ try:
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                 "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
-    
+
     for j in range(len(dy2)):
         for i in range(len(dx2)):
-            grid_id = f"{y_labels2[j]}{i+7}" 
+            grid_id = f"{y_labels2[j]}{i+7}"
             x_min, x_max = x_coords2[i], x_coords2[i+1]
             y_max, y_min = y_coords2[j], y_coords2[j+1]
             poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
@@ -220,11 +424,11 @@ try:
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                 "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
-    
+
     bc_x = [-2764.56, -2758.41, -2749.46]
     bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
     idx_l = 1
@@ -246,8 +450,8 @@ try:
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                 "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_l += 1
@@ -271,8 +475,8 @@ try:
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                 "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
-                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, 
-                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max, 
+                "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_r += 1
@@ -290,13 +494,13 @@ with tab_grid:
     if st.button("🚀 推送分區資料至雲端試算表"):
         if save_sheet_data("grid_zones", df_results[export_columns]):
             st.success("分區基準已成功上傳！")
-            
+
     col1, col2 = st.columns([3, 2])
     with col2:
         st.write("### 基準方量總表")
         st.dataframe(df_results[export_columns], height=600)
         st.success(f"全區預估總土方量： **{df_results['預估總土方'].sum():,.0f} m³**")
-        
+
     with col1:
         st.write("### 精準網格地圖")
         fig = go.Figure()
@@ -313,15 +517,15 @@ with tab_grid:
 
 with tab_stats:
     st.write("### 📊 雲端出土統計儀表板")
-    
+
     df_logs = load_sheet_data("dispatch_logs")
     if not df_logs.empty:
         df_logs['orig_index'] = df_logs.index
-        
+
     tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
     st.markdown("#### 📅 篩選統計時間區間")
     date_selection = st.date_input("選擇區間 (單選一日或拖曳選擇範圍)：", value=(tw_today, tw_today))
-    
+
     if isinstance(date_selection, tuple) and len(date_selection) == 2:
         start_date, end_date = date_selection
     elif isinstance(date_selection, tuple) and len(date_selection) == 1:
@@ -339,30 +543,35 @@ with tab_stats:
     else:
         period_label = "本區間"
 
+    # PDF 產出用暫存變數
+    pdf_report_text = ""
+    pdf_breakdown_text = ""
+    pdf_display_df = pd.DataFrame()
+
     if not df_logs.empty and "日期" in df_logs.columns:
         if "聯單序號" not in df_logs.columns:
             df_logs["聯單序號"] = ""
-            
+
         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
         valid_logs = df_logs.copy()
-        
+
         if not valid_logs.empty and '時間' in valid_logs.columns:
             valid_logs = valid_logs.sort_values(['車頭車號', '日期', '時間'])
 
         range_logs = valid_logs[(valid_logs['ParsedDate'] >= start_date) & (valid_logs['ParsedDate'] <= end_date)]
         cumul_logs = valid_logs[valid_logs['ParsedDate'] <= end_date].copy()
-        
+
         range_trucks = range_logs['車頭車號'].nunique() if '車頭車號' in range_logs.columns else 0
         range_trips = len(range_logs)
         range_vol = pd.to_numeric(range_logs['載運方量(m³)'], errors='coerce').sum() if '載運方量(m³)' in range_logs.columns else 0
         total_all_trips = len(cumul_logs)
-        
+
         period_days = range_logs['ParsedDate'].nunique() if not range_logs.empty and 'ParsedDate' in range_logs.columns else 0
         period_rate = round(range_trips / period_days, 1) if period_days > 0 else 0
-        
+
         total_days = cumul_logs['ParsedDate'].nunique() if not cumul_logs.empty and 'ParsedDate' in cumul_logs.columns else 0
         total_rate = round(total_all_trips / total_days, 1) if total_days > 0 else 0
-        
+
         st.markdown(f"#### 📊 {period_label}統計結果 ({start_date} 至 {end_date})")
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric(f"{period_label}出車車頭數", f"{range_trucks} 輛")
@@ -373,7 +582,7 @@ with tab_stats:
         st.divider()
 
         zone_grouped = pd.DataFrame()
-        
+
         display_df = pd.DataFrame()
         if '出土分區' in cumul_logs.columns and '載運方量(m³)' in cumul_logs.columns:
             df_assigned = cumul_logs[cumul_logs['出土分區'] != '未指定'].copy()
@@ -381,30 +590,30 @@ with tab_stats:
                 df_assigned['載運方量(m³)'] = pd.to_numeric(df_assigned['載運方量(m³)'], errors='coerce')
                 zone_grouped = df_assigned.groupby('出土分區')['載運方量(m³)'].sum().reset_index()
                 zone_grouped.rename(columns={'載運方量(m³)': '累計實挖方量'}, inplace=True)
-                
+
                 baseline_dict = df_results.set_index('分區代號')['預估總土方'].to_dict() if not df_results.empty else {}
                 zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
                 zone_grouped['完成率數值'] = (zone_grouped['累計實挖方量'] / zone_grouped['預估基準方量'] * 100).round(1)
-                
+
                 zone_grouped['累計實挖方量_顯示'] = zone_grouped['累計實挖方量'].apply(lambda x: f"{x:,.0f}")
                 zone_grouped['預估基準方量_顯示'] = zone_grouped['預估基準方量'].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else '無基準量')
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率數值'].fillna('不適用').astype(str)
                 zone_grouped['完成率_顯示'] = zone_grouped['完成率_顯示'].apply(lambda x: f"{x}%" if x != '不適用' else x)
-                
+
                 display_df = zone_grouped[['出土分區', '累計實挖方量_顯示', '預估基準方量_顯示', '完成率_顯示']].rename(
                     columns={'累計實挖方量_顯示': '累計實挖方量', '預估基準方量_顯示': '預估基準方量', '完成率_顯示': '完成率(%)'}
                 )
 
         st.markdown(f"#### 📱 {period_label}回報")
-        
+
         total_excavated = zone_grouped[zone_grouped['出土分區'] != '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty else 0
         pre_excavated = zone_grouped[zone_grouped['出土分區'] == '開挖前土方']['累計實挖方量'].sum() if not zone_grouped.empty and '開挖前土方' in zone_grouped['出土分區'].values else 0
-        
+
         manifest_breakdown_str = ""
         if '聯單序號' in range_logs.columns and '載運方量(m³)' in range_logs.columns:
             range_serials = range_logs['聯單序號'].fillna('').astype(str).str.strip().str.upper()
             range_vols = pd.to_numeric(range_logs['載運方量(m³)'], errors='coerce').fillna(0)
-            
+
             m_types = ["B1", "B2-3", "B4", "B5"]
             breakdown_lines = []
             for m_type in m_types:
@@ -417,7 +626,7 @@ with tab_stats:
         manifest_total = 79692.0
         combined_excavated = total_excavated + pre_excavated
         overall_rate = round((combined_excavated / manifest_total * 100), 1)
-        
+
         report_text_left = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}出土天數： {period_days} 天
 {period_label}車次： {range_trips} 台
@@ -432,11 +641,16 @@ with tab_stats:
 
         report_text_right = f"區間聯單分類出土：\n{manifest_breakdown_str}"
         ui_display_text = f"{report_text_left}\n\n{report_text_right}"
-        
+
+        # 保留給 PDF 匯出使用
+        pdf_report_text = report_text_left
+        pdf_breakdown_text = manifest_breakdown_str
+        pdf_display_df = display_df
+
         col_txt, col_fig = st.columns([1, 2])
         with col_txt:
             st.info(ui_display_text.replace("\n", "\n\n"))
-            
+
         with col_fig:
             st.markdown("**進度圖例說明：**")
             st.markdown("⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
@@ -445,21 +659,21 @@ with tab_stats:
                 vol_dict = {}
                 if not zone_grouped.empty:
                     vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
-                
+
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
-                
+
                 for idx, row in df_results.iterrows():
                     grid_id = row['分區代號']
                     current_vol = vol_dict.get(grid_id, 0)
                     thresholds = stage_dict.get(grid_id, [])
-                    
+
                     stage_text = "尚未開挖"
-                    fill_color = 'rgba(240, 240, 240, 0.5)' 
-                    
+                    fill_color = 'rgba(240, 240, 240, 0.5)'
+
                     if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
                         if current_vol >= thresholds[-1] * 0.98:
                             stage_text = "開挖完成"
-                            fill_color = 'rgba(46, 204, 113, 0.8)' 
+                            fill_color = 'rgba(46, 204, 113, 0.8)'
                         else:
                             colors = ['rgba(241, 196, 15, 0.7)', 'rgba(230, 126, 34, 0.7)', 'rgba(52, 152, 219, 0.7)', 'rgba(155, 89, 182, 0.7)']
                             for s_idx, t_vol in enumerate(thresholds):
@@ -470,7 +684,7 @@ with tab_stats:
                                         stage_text = f"{s_idx}挖完成 / {s_idx+1}挖進行中"
                                     fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
                                     break
-                    
+
                     fig_map.add_trace(go.Scatter(
                         x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
                         y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
@@ -479,22 +693,52 @@ with tab_stats:
                         text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
                     ))
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
-                
+
                 fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
-        
+
+        st.divider()
+
+        # ====================================================================
+        # 新增：每日出土 PDF 報表匯出按鍵
+        # ====================================================================
+        st.markdown("#### 📄 匯出每日出土 PDF 報表")
+        if st.button("📥 一鍵產出PDF報表", key="btn_daily_pdf", use_container_width=True):
+            try:
+                with st.spinner("PDF 產生中，請稍候..."):
+                    map_img_path = generate_backend_map(df_results, zone_grouped) if not df_results.empty else None
+                    pdf_path = generate_daily_report_pdf(
+                        report_text=pdf_report_text,
+                        breakdown_text=pdf_breakdown_text,
+                        display_df=pdf_display_df,
+                        map_img_path=map_img_path,
+                        period_label=period_label,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                with open(pdf_path, "rb") as f:
+                    st.download_button(
+                        label=f"✅ 點此下載 {period_label}出土報表 ({start_date}~{end_date}).pdf",
+                        data=f,
+                        file_name=f"daily_excavation_report_{start_date}_{end_date}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+            except Exception as ex:
+                st.error(f"PDF 匯出失敗：{ex}")
+
         st.divider()
 
         st.markdown("#### ⚙️ 批量設定出土分區")
         df_unassigned = valid_logs[valid_logs['出土分區'] == '未指定'].copy()
         if not df_unassigned.empty:
             st.info(f"尚有 {len(df_unassigned)} 筆有效紀錄未指定分區，請勾選並套用。")
-            
+
             select_all = st.checkbox("☑️ 一鍵全選所有未指定紀錄", value=False)
             df_unassigned.insert(0, '勾選', select_all)
-            
+
             edited_unassigned = st.data_editor(df_unassigned, hide_index=True, column_config={"勾選": st.column_config.CheckboxColumn(required=True)})
-            
+
             zone_list = df_results["分區代號"].tolist() if not df_results.empty else []
             col_z1, col_z2 = st.columns([2, 1])
             with col_z1:
@@ -508,12 +752,12 @@ with tab_stats:
                         if len(checked_rows) > 0:
                             original_indices = checked_rows['orig_index'].tolist()
                             df_logs.loc[original_indices, '出土分區'] = selected_zone
-                            
+
                             if 'orig_index' in df_logs.columns:
                                 df_logs = df_logs.drop(columns=['orig_index'])
                             if 'ParsedDate' in df_logs.columns:
                                 df_logs = df_logs.drop(columns=['ParsedDate'])
-                                
+
                             if save_sheet_data("dispatch_logs", df_logs):
                                 st.success(f"成功更新 {len(checked_rows)} 筆紀錄！")
                                 st.rerun()
@@ -526,14 +770,14 @@ with tab_stats:
         st.markdown("#### 📍 各分區挖掘進度總表")
         if not display_df.empty:
             st.dataframe(display_df, use_container_width=True, hide_index=True)
-            
+
         with st.expander("📂 檢視所有歷史紀錄"):
             clean_show_logs = df_logs.copy()
             if 'orig_index' in clean_show_logs.columns:
                 clean_show_logs = clean_show_logs.drop(columns=['orig_index'])
             if 'ParsedDate' in clean_show_logs.columns:
                 clean_show_logs = clean_show_logs.drop(columns=['ParsedDate'])
-                
+
             show_logs = clean_show_logs.sort_values(['日期', '時間'], ascending=[False, False])
             edited_all = st.data_editor(show_logs, use_container_width=True)
             if st.button("💾 儲存歷史紀錄修改"):
@@ -546,35 +790,33 @@ with tab_stats:
 with tab_stage:
     st.write("### 📈 階段開挖管控")
     st.info("此分頁用於單一開挖階段的進度追蹤。切換不同階段，系統將自動載入專屬的設定參數、每日明細，並動態繪製地圖。")
-    
+
     tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
-    
+
     stage_choice = st.selectbox("選擇管控階段", ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)"])
-    
-    # 決定基準欄位名稱，並準備地圖所需資料
+
     df_stage_map = df_results.copy()
-    if "第1挖" in stage_choice: 
+    if "第1挖" in stage_choice:
         target_col = '第1挖方量(m³)'
-    elif "第2挖" in stage_choice: 
+    elif "第2挖" in stage_choice:
         target_col = '第2挖方量(m³)'
-    elif "第3挖" in stage_choice: 
+    elif "第3挖" in stage_choice:
         target_col = '第3挖方量(m³)'
         df_stage_map = df_stage_map[~df_stage_map['分區代號'].str.contains("滯")]
-    elif "第4挖" in stage_choice: 
+    elif "第4挖" in stage_choice:
         target_col = '第4挖方量(m³)'
         df_stage_map = df_stage_map[~df_stage_map['分區代號'].str.contains("滯")]
-    else: 
+    else:
         target_col = None
 
     default_est_vol = df_stage_map[target_col].sum() if target_col and not df_stage_map.empty else 0
 
-    # 讀取並過濾對應階段的設定
     df_stage_set = load_sheet_data("stage_settings")
     if df_stage_set.empty or "階段名稱" not in df_stage_set.columns:
         df_stage_set = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計施作工期", "預估土方量(鬆方)", "單車預設實方"])
-        
+
     current_set = df_stage_set[df_stage_set["階段名稱"] == stage_choice]
-    
+
     if current_set.empty:
         new_row = pd.DataFrame([{
             "階段名稱": stage_choice,
@@ -586,38 +828,36 @@ with tab_stage:
         display_stage_set = new_row
     else:
         display_stage_set = current_set.copy()
-        
+
     st.markdown(f"#### ⚙️ 【{stage_choice}】參數設定")
     edited_stage_set = st.data_editor(display_stage_set, hide_index=True, use_container_width=True)
-    
+
     if st.button("💾 儲存本階段設定"):
         other_sets = df_stage_set[df_stage_set["階段名稱"] != stage_choice]
         final_sets = pd.concat([other_sets, edited_stage_set], ignore_index=True)
         save_sheet_data("stage_settings", final_sets)
         st.rerun()
 
-    # 提取當前階段參數供計算
     s_row = edited_stage_set.iloc[0]
     est_start_str = s_row.get("預計開始時間", str(tw_today))
     est_days = pd.to_numeric(s_row.get("預計施作工期", 1), errors='coerce')
     est_vol = pd.to_numeric(s_row.get("預估土方量(鬆方)", 0), errors='coerce')
     vol_per_truck = pd.to_numeric(s_row.get("單車預設實方", 12.0), errors='coerce')
-    
+
     try:
         est_start = pd.to_datetime(est_start_str).date()
     except:
         est_start = tw_today
-        
+
     est_end = est_start + timedelta(days=int(est_days))
     est_daily_vol = est_vol / est_days if est_days > 0 else 0
 
-    # 處理每日紀錄與寫入全欄位邏輯
     df_logs = load_sheet_data("dispatch_logs")
     daily_stats = pd.DataFrame()
     if not df_logs.empty and "日期" in df_logs.columns:
         valid_logs = df_logs.copy()
         valid_logs['載運方量(m³)'] = pd.to_numeric(valid_logs.get('載運方量(m³)', vol_per_truck), errors='coerce').fillna(vol_per_truck)
-        
+
         daily_stats = valid_logs.groupby('日期').agg(
             實際車次=('車頭車號', 'count'),
             當日運棄量=('載運方量(m³)', 'sum')
@@ -632,16 +872,14 @@ with tab_stage:
     else:
         if '階段名稱' not in df_daily_notes.columns:
             df_daily_notes.insert(0, '階段名稱', stage_choice)
-            
+
     curr_notes = df_daily_notes[df_daily_notes['階段名稱'] == stage_choice].copy() if not df_daily_notes.empty else pd.DataFrame()
 
-    # 產生階段對應的連續日期區間
     max_log_date = pd.to_datetime(daily_stats['日期'].max()).date() if not daily_stats.empty else tw_today
     end_date_for_range = max(tw_today, max_log_date)
     date_range = [d.strftime("%Y-%m-%d") for d in pd.date_range(est_start, end_date_for_range)]
     df_range = pd.DataFrame({"日期": date_range})
 
-    # 合併實際聯單車次資料
     if not daily_stats.empty:
         df_range = pd.merge(df_range, daily_stats, on="日期", how="left").fillna({"實際車次": 0, "當日運棄量": 0})
     else:
@@ -651,7 +889,6 @@ with tab_stage:
     df_range['累計車次'] = df_range['實際車次'].cumsum()
     df_range['累計運棄量'] = df_range['當日運棄量'].cumsum()
 
-    # 合併之前存下的內控資料與備註
     if not curr_notes.empty and '備註' in curr_notes.columns:
         merge_notes = curr_notes[['日期', '內控預計車次', '備註']].drop_duplicates('日期')
         df_range = pd.merge(df_range, merge_notes, on="日期", how="left")
@@ -666,11 +903,11 @@ with tab_stage:
 
     actual_start_date = est_start
     current_work_days = (tw_today - actual_start_date).days + 1 if actual_start_date <= tw_today else 0
-    
+
     today_str = tw_today.strftime("%Y-%m-%d")
     today_row = df_range[df_range['日期'] == today_str]
     today_vol = today_row['當日運棄量'].sum() if not today_row.empty else 0
-    
+
     cum_vol = df_range['當日運棄量'].sum()
     avg_vol_per_day = cum_vol / current_work_days if current_work_days > 0 else 0
     remain_vol = max(0, est_vol - cum_vol)
@@ -678,9 +915,9 @@ with tab_stage:
     est_completion_date = tw_today + timedelta(days=remain_days)
     diff_days = (est_completion_date - est_end).days
     percent_done = round((cum_vol / est_vol) * 100) if est_vol > 0 else 0
-    
+
     st.markdown(f"#### 🟣 【{stage_choice}】總覽")
-    
+
     html_table = f"""
     <table style="width: 100%; border-collapse: collapse; font-family: sans-serif; text-align: right;">
         <tr>
@@ -740,10 +977,10 @@ with tab_stage:
     </table>
     """
     st.markdown(html_table, unsafe_allow_html=True)
-    
+
     st.divider()
     st.markdown("#### 📅 每日出土管控明細")
-    
+
     display_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '備註']
     edited_daily = st.data_editor(
         df_range[display_cols],
@@ -758,7 +995,7 @@ with tab_stage:
         hide_index=True,
         use_container_width=True
     )
-    
+
     if st.button("💾 儲存每日車次目標與備註 (全欄位寫入雲端)"):
         save_df = edited_daily.copy()
         save_df['階段名稱'] = stage_choice
@@ -770,11 +1007,11 @@ with tab_stage:
     st.divider()
     st.markdown(f"#### 🗺️ 【{stage_choice}】 方量基準地圖")
     fig_stage = go.Figure()
-    
+
     for idx, row in df_stage_map.iterrows():
         grid_id = row['分區代號']
         t_vol = row[target_col] if target_col else 0
-        
+
         fig_stage.add_trace(go.Scatter(
             x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
             y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
@@ -783,18 +1020,18 @@ with tab_stage:
             text=f"{grid_id}<br>階段基準方量: {t_vol:,.0f} m³"
         ))
         fig_stage.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
-        
+
     fig_stage.update_layout(dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig_stage, use_container_width=True, config={'displayModeBar': False})
 
 with tab_sync:
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
     st.info("💡 演算法說明：系統會自動尋找時間最接近的紀錄綁定並寫入聯單序號（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。")
-    
+
     sync_date = st.date_input("選擇對帳日期：", value=(datetime.utcnow() + timedelta(hours=8)).date())
 
     uploaded_csv = st.file_uploader("上傳官方電子聯單 CSV 檔案", type=["csv"])
-    
+
     if uploaded_csv:
         try:
             try:
@@ -808,7 +1045,7 @@ with tab_sync:
             serial_col = "聯單序號"
 
             missing_cols = [c for c in [plate_col, datetime_col, serial_col] if c not in official_df.columns]
-            
+
             if missing_cols:
                 st.error(f"⚠️ CSV 檔案格式不符！缺少必要欄位：{', '.join(missing_cols)}。請確認官方匯出的檔案是否包含這些欄位。")
             else:
@@ -816,7 +1053,7 @@ with tab_sync:
                     official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
                     official_df['ParsedDate'] = official_df['FullTime'].dt.date
                     official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-                    
+
                     sync_off_df = official_df[official_df['ParsedDate'] == sync_date].copy()
 
                     df_logs_sync = load_sheet_data("dispatch_logs")
@@ -838,7 +1075,7 @@ with tab_sync:
 
                     merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
                     merged['差異 (多按或漏按)'] = merged['系統台數'] - merged['官方台數']
-                    
+
                     st.session_state['sync_data_summary'] = merged
                     st.session_state['sync_date'] = sync_date
                     st.session_state['official_ready_df'] = sync_off_df
@@ -850,9 +1087,9 @@ with tab_sync:
     if st.session_state.get('sync_data_summary') is not None and st.session_state.get('sync_date') == sync_date:
         merged_data = st.session_state['sync_data_summary']
         st.dataframe(merged_data, use_container_width=True)
-        
+
         st.warning("點擊下方按鈕，系統將依照官方時序重新整理資料庫，並將 CSV 的「聯單序號」永久寫入雲端紀錄中。")
-        
+
         if st.button("以官方聯單時間軸為主，執行精準覆蓋與寫入序號", use_container_width=True):
             df_logs = load_sheet_data("dispatch_logs")
             if df_logs.empty:
@@ -886,7 +1123,7 @@ with tab_sync:
                     o_t = o_row['FullTime']
                     o_plate_raw = o_row[plate_col]
                     o_serial_raw = str(o_row[serial_col])
-                    
+
                     best_s_idx = None
                     best_diff = float('inf')
 
@@ -940,7 +1177,7 @@ with tab_sync:
 
 with tab_manifest:
     st.write("### 🎫 聯單庫存與發放管理")
-    
+
     df_manifest = load_sheet_data("manifest_settings")
     if df_manifest.empty:
         df_manifest = pd.DataFrame({
@@ -948,14 +1185,14 @@ with tab_manifest:
             "總配額": [1000, 2790, 2821, 30],
             "已列印數量": [0, 0, 0, 0]
         })
-    
+
     df_logs = load_sheet_data("dispatch_logs")
-    
+
     used_counts = {t: 0 for t in df_manifest["聯單類型"]}
     if not df_logs.empty and "聯單序號" in df_logs.columns:
         valid_serials = df_logs["聯單序號"].dropna().astype(str).str.strip().str.upper()
         valid_serials = valid_serials[(valid_serials != "") & (valid_serials != "NAN") & (valid_serials != "NONE")]
-        
+
         for m_type in df_manifest["聯單類型"]:
             count = valid_serials.str.contains(m_type.upper(), regex=False).sum()
             used_counts[m_type] = count
@@ -966,10 +1203,10 @@ with tab_manifest:
     df_manifest["已使用數量"] = df_manifest["聯單類型"].map(used_counts).fillna(0).astype(int)
     df_manifest["現場剩餘可用"] = df_manifest["已列印數量"] - df_manifest["已使用數量"]
     df_manifest["雲端未列印配額"] = df_manifest["總配額"] - df_manifest["已列印數量"]
-    
+
     st.info("請於下方表格直接修改「已列印數量」，系統會根據對帳結果自動計算現場剩餘的可用張數。")
     edited_manifest = st.data_editor(
-        df_manifest, 
+        df_manifest,
         column_config={
             "總配額": st.column_config.NumberColumn(format="%d"),
             "已列印數量": st.column_config.NumberColumn(format="%d", min_value=0),
@@ -981,44 +1218,45 @@ with tab_manifest:
         hide_index=True,
         use_container_width=True
     )
-    
+
     if st.button("💾 儲存列印數量更新"):
         if save_sheet_data("manifest_settings", edited_manifest[['聯單類型', '總配額', '已列印數量']]):
             st.success("已更新列印數量！")
             st.rerun()
 
     st.markdown("#### 🚨 現場庫存狀態警報")
-    
+
     alert_triggered = False
     for idx, row in df_manifest.iterrows():
         if pd.notnull(row["現場剩餘可用"]) and pd.notnull(row["雲端未列印配額"]):
             if row["現場剩餘可用"] < 100 and row["雲端未列印配額"] > 0:
                 st.error(f"⚠️ **【警告】{row['聯單類型']}** 聯單現場僅剩 **{int(row['現場剩餘可用'])}** 張！請盡速列印補充備用。 (尚有雲端配額 {int(row['雲端未列印配額'])} 張)")
                 alert_triggered = True
-            
+
     if not alert_triggered:
         st.success("✅ 目前所有類型的聯單現場庫存皆十分充足，或已全數列印完畢。")
 
 with tab_delivery:
     st.write("### ✍️ 現場廠商交付簽收管理")
-    
+
     df_delivery = load_sheet_data("manifest_delivery")
     if df_delivery.empty:
         df_delivery = pd.DataFrame(columns=["交付日期", "交付時間", "廠商名稱", "聯單類型", "起始序號", "發放張數", "簽收人姓名", "簽名資料"])
 
     if not df_delivery.empty:
-        st.markdown("#### 📋 歷史交付簽收對帳看板")
-        
-        record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']} {r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數']) if pd.notnull(r['發放張數']) else 0}張)" for idx, r in df_delivery.iterrows()]
-        selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
-        
-        chosen_row = df_delivery.iloc[selected_record_idx]
-        
-        clean_history_serial = str(chosen_row['起始序號']).strip()
-        if clean_history_serial.endswith('.0'):
-            clean_history_serial = clean_history_serial[:-2]
-            
-        st.info(f"""**詳細交付核對資訊：**
+        try:
+            st.markdown("#### 📋 歷史交付簽收對帳看板")
+
+            record_options = [f"[{r['交付日期']} {r['交付時間']}] {r['廠商名稱']} {r['簽收人姓名']} ({r['聯單類型']} 聯單 / {int(r['發放張數']) if pd.notnull(r['發放張數']) else 0}張)" for idx, r in df_delivery.iterrows()]
+            selected_record_idx = st.selectbox("🔍 選擇一筆歷史紀錄：", options=range(len(record_options)), format_func=lambda x: record_options[x], key="select_history_delivery")
+
+            chosen_row = df_delivery.iloc[selected_record_idx]
+
+            clean_history_serial = str(chosen_row['起始序號']).strip()
+            if clean_history_serial.endswith('.0'):
+                clean_history_serial = clean_history_serial[:-2]
+
+            st.info(f"""**詳細交付核對資訊：**
 * 交付時間： `{chosen_row['交付日期']} {chosen_row['交付時間']}`
 * 簽收廠商： `{chosen_row['廠商名稱']}`
 * 聯單規格： `{chosen_row['聯單類型']}`
@@ -1027,47 +1265,49 @@ with tab_delivery:
 * 現場簽收人： `{chosen_row['簽收人姓名']}`
 
 *(簽名影像已隱藏，請匯出 PDF 檢視)*""")
-        
-        st.divider()
-        
-        st.markdown("#### 📄 導出交付簽收 PDF 報表")
-        col_pdf1, col_pdf2 = st.columns([2, 1])
-        with col_pdf1:
-            pdf_scope = st.selectbox("選擇要匯出的聯單範圍：", options=["全部聯單類型", "B1", "B2-3", "B4", "B5"], key="pdf_scope_select")
-        with col_pdf2:
-            st.write("")
-            st.write("")
-            if pdf_scope == "全部聯單類型":
-                df_pdf_target = df_delivery.copy()
-            else:
-                df_pdf_target = df_delivery[df_delivery["聯單類型"] == pdf_scope].copy()
-                
-            if df_pdf_target.empty:
-                st.warning("⚠️ 該範圍內無任何交付紀錄，無法產生報表。")
-            else:
-                if st.button("📥 下載 PDF 報表", key="btn_download_delivery_pdf"):
-                    with st.spinner("產生中..."):
-                        try:
-                            delivery_pdf_path = generate_delivery_pdf(df_pdf_target, pdf_scope)
-                            with open(delivery_pdf_path, "rb") as pdf_file:
-                                st.download_button(
-                                    label=f"✅ 點此儲存 {pdf_scope} 簽收報表 (含影像)",
-                                    data=pdf_file,
-                                    file_name=f"delivery_report_{pdf_scope}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                                    mime="application/pdf",
-                                    use_container_width=True
-                                )
-                        except Exception as ex:
-                            st.error(f"PDF 導出失敗：{ex}")
-        st.divider()
+
+            st.divider()
+
+            st.markdown("#### 📄 導出交付簽收 PDF 報表")
+            col_pdf1, col_pdf2 = st.columns([2, 1])
+            with col_pdf1:
+                pdf_scope = st.selectbox("選擇要匯出的聯單範圍：", options=["全部聯單類型", "B1", "B2-3", "B4", "B5"], key="pdf_scope_select")
+            with col_pdf2:
+                st.write("")
+                st.write("")
+                if pdf_scope == "全部聯單類型":
+                    df_pdf_target = df_delivery.copy()
+                else:
+                    df_pdf_target = df_delivery[df_delivery["聯單類型"] == pdf_scope].copy()
+
+                if df_pdf_target.empty:
+                    st.warning("⚠️ 該範圍內無任何交付紀錄，無法產生報表。")
+                else:
+                    if st.button("📥 下載 PDF 報表", key="btn_download_delivery_pdf"):
+                        with st.spinner("產生中..."):
+                            try:
+                                delivery_pdf_path = generate_delivery_pdf(df_pdf_target, pdf_scope)
+                                with open(delivery_pdf_path, "rb") as pdf_file:
+                                    st.download_button(
+                                        label=f"✅ 點此儲存 {pdf_scope} 簽收報表 (含影像)",
+                                        data=pdf_file,
+                                        file_name=f"delivery_report_{pdf_scope}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                        mime="application/pdf",
+                                        use_container_width=True
+                                    )
+                            except Exception as ex:
+                                st.error(f"PDF 導出失敗：{ex}")
+            st.divider()
+        except Exception as e:
+            st.error(f"⚠️ 歷史交付看板渲染發生錯誤（已略過，其餘功能不受影響）：{e}")
 
     st.markdown("#### 📥 新增聯單現場發放")
-    
+
     input_type = st.selectbox("選擇本次發放的聯單類型", options=["B1", "B2-3", "B4", "B5"], key="delivery_type_select")
-    
+
     df_manifest_check = load_sheet_data("manifest_settings")
     df_logs_check = load_sheet_data("dispatch_logs")
-    
+
     available_stock = 0
     if not df_manifest_check.empty and "聯單類型" in df_manifest_check.columns:
         col_target = "聯單數量_已列印" if "聯單數量_已列印" in df_manifest_check.columns else "已列印數量"
@@ -1079,16 +1319,16 @@ with tab_delivery:
                 for m_type in df_manifest_check["聯單類型"]:
                     count = valid_serials_check.str.contains(m_type.upper(), regex=False).sum()
                     used_counts_check[m_type] = count
-            
+
             df_manifest_check["已使用數量"] = df_manifest_check["聯單類型"].map(used_counts_check).fillna(0).astype(int)
             df_manifest_check["現場剩餘可用"] = pd.to_numeric(df_manifest_check[col_target], errors='coerce').fillna(0).astype(int) - df_manifest_check["已使用數量"]
-            
+
             match_stock_row = df_manifest_check[df_manifest_check["聯單類型"] == input_type]
             if not match_stock_row.empty and "現場剩餘可用" in match_stock_row.columns:
                 available_stock = int(match_stock_row.iloc[0]["現場剩餘可用"])
 
     st.write(f"📊 該類型聯單目前雲端剩餘可交付數量： **{available_stock}** 張")
-    
+
     auto_serial = ""
     if not df_delivery.empty and "聯單類型" in df_delivery.columns and "起始序號" in df_delivery.columns and "發放張數" in df_delivery.columns:
         df_type_last = df_delivery[df_delivery["聯單類型"] == input_type]
@@ -1116,16 +1356,16 @@ with tab_delivery:
     with col_d2:
         input_serial = st.text_input("聯單起始序號 (可根據現場實物修改)", value=auto_serial)
         input_name = st.text_input("廠商簽收人姓名", value="")
-        
+
     sign_active = st.checkbox("✍️ 填寫完畢後，點此展開簽名板")
-    
+
     base64_sign = ""
     if sign_active:
         from streamlit_drawable_canvas import st_canvas
         from PIL import Image
         import io
         import base64
-        
+
         canvas_sign = st_canvas(
             fill_color="rgba(255, 255, 255, 1)",
             stroke_width=3,
@@ -1137,7 +1377,7 @@ with tab_delivery:
             update_streamlit=True,
             key=f"canvas_delivery_form_{st.session_state['canvas_key_counter']}",
         )
-        
+
         if st.button("確認交付並永久儲存簽收紀錄", use_container_width=True):
             if not input_serial.strip():
                 st.error("請填寫聯單起始序號")
@@ -1153,11 +1393,11 @@ with tab_delivery:
                 buffered = io.BytesIO()
                 img.save(buffered, format="PNG")
                 base64_sign = base64.b64encode(buffered.getvalue()).decode()
-                
+
                 clean_input_serial = input_serial.strip()
                 if clean_input_serial.endswith('.0'):
                     clean_input_serial = clean_input_serial[:-2]
-                    
+
                 now_tw = datetime.utcnow() + timedelta(hours=8)
                 new_record = {
                     "交付日期": now_tw.strftime("%Y-%m-%d"),
@@ -1169,9 +1409,9 @@ with tab_delivery:
                     "簽收人姓名": input_name.strip(),
                     "簽名資料": base64_sign
                 }
-                
+
                 df_delivery = pd.concat([df_delivery, pd.DataFrame([new_record])], ignore_index=True)
-                
+
                 if save_sheet_data("manifest_delivery", df_delivery):
                     st.session_state['canvas_key_counter'] += 1
                     st.success("✅ 聯單現場交付成功！紀錄與簽名已即時寫入雲端。")
