@@ -79,6 +79,16 @@ if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=
     st.cache_data.clear()
     st.rerun()
 
+st.sidebar.markdown("### 🎯 目前作業階段")
+STAGE_OPTIONS = ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)"]
+if "global_stage_choice" not in st.session_state:
+    st.session_state["global_stage_choice"] = STAGE_OPTIONS[0]
+global_stage_choice = st.sidebar.selectbox(
+    "影響：階段管控頁 / 出土儀表板PDF / 單階段地圖",
+    STAGE_OPTIONS,
+    key="global_stage_choice",
+)
+
 st.sidebar.markdown("### 各區開挖 GL 高程設定")
 base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, format="%.2f")
 base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
@@ -103,6 +113,199 @@ def get_thickness_from_gl(gl_str, gl_offset):
         return thickness
     except Exception:
         return []
+
+# ============================================================================
+# 新增：階段總覽計算（原本寫死在 tab_stage 裡，現在抽出來讓 PDF 報表也能共用）
+# ============================================================================
+def compute_stage_overview(stage_choice, df_results, override_settings_row=None):
+    """
+    計算單一階段（開挖前土方 / 第1~4挖）的總覽數據，回傳 dict。
+    給 tab_stage（畫面顯示）與 tab_stats 的 PDF 匯出共用，確保兩邊數字一致。
+    override_settings_row: 若提供（例如畫面上尚未儲存的 data_editor 編輯值），
+    優先使用它來計算，取代從雲端讀回的已儲存設定，維持「編輯即時預覽」的效果。
+    """
+    tw_today_ = (datetime.utcnow() + timedelta(hours=8)).date()
+
+    df_stage_map_ = df_results.copy() if df_results is not None and not df_results.empty else pd.DataFrame()
+    if "第1挖" in stage_choice:
+        target_col_ = '第1挖方量(m³)'
+    elif "第2挖" in stage_choice:
+        target_col_ = '第2挖方量(m³)'
+    elif "第3挖" in stage_choice:
+        target_col_ = '第3挖方量(m³)'
+        if not df_stage_map_.empty:
+            df_stage_map_ = df_stage_map_[~df_stage_map_['分區代號'].str.contains("滯")]
+    elif "第4挖" in stage_choice:
+        target_col_ = '第4挖方量(m³)'
+        if not df_stage_map_.empty:
+            df_stage_map_ = df_stage_map_[~df_stage_map_['分區代號'].str.contains("滯")]
+    else:
+        target_col_ = None
+
+    default_est_vol_ = df_stage_map_[target_col_].sum() if target_col_ and not df_stage_map_.empty else 0
+
+    df_stage_set_ = load_sheet_data("stage_settings")
+    if df_stage_set_.empty or "階段名稱" not in df_stage_set_.columns:
+        df_stage_set_ = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計施作工期", "預估土方量(鬆方)", "單車預設實方"])
+
+    current_set_ = df_stage_set_[df_stage_set_["階段名稱"] == stage_choice]
+    if override_settings_row is not None:
+        s_row_ = override_settings_row
+    elif current_set_.empty:
+        s_row_ = pd.Series({
+            "階段名稱": stage_choice,
+            "預計開始時間": tw_today_.strftime("%Y-%m-%d"),
+            "預計施作工期": 20,
+            "預估土方量(鬆方)": default_est_vol_,
+            "單車預設實方": 12.0
+        })
+    else:
+        s_row_ = current_set_.iloc[0]
+
+    est_start_str_ = s_row_.get("預計開始時間", str(tw_today_))
+    est_days_ = pd.to_numeric(s_row_.get("預計施作工期", 1), errors='coerce')
+    est_vol_ = pd.to_numeric(s_row_.get("預估土方量(鬆方)", 0), errors='coerce')
+    vol_per_truck_ = pd.to_numeric(s_row_.get("單車預設實方", 12.0), errors='coerce')
+
+    try:
+        est_start_ = pd.to_datetime(est_start_str_).date()
+    except Exception:
+        est_start_ = tw_today_
+
+    est_end_ = est_start_ + timedelta(days=int(est_days_))
+    est_daily_vol_ = est_vol_ / est_days_ if est_days_ > 0 else 0
+
+    df_logs_ = load_sheet_data("dispatch_logs")
+    if not df_logs_.empty and "日期" in df_logs_.columns:
+        valid_logs_ = df_logs_.copy()
+        valid_logs_['載運方量(m³)'] = pd.to_numeric(valid_logs_.get('載運方量(m³)', vol_per_truck_), errors='coerce').fillna(vol_per_truck_)
+        daily_stats_ = valid_logs_.groupby('日期').agg(
+            實際車次=('車頭車號', 'count'),
+            當日運棄量=('載運方量(m³)', 'sum')
+        ).reset_index()
+        daily_stats_ = daily_stats_.sort_values('日期')
+    else:
+        daily_stats_ = pd.DataFrame(columns=['日期', '實際車次', '當日運棄量'])
+
+    df_daily_notes_ = load_sheet_data("stage_daily_notes")
+    if df_daily_notes_.empty:
+        df_daily_notes_ = pd.DataFrame(columns=['階段名稱', '日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註'])
+    else:
+        if '階段名稱' not in df_daily_notes_.columns:
+            df_daily_notes_.insert(0, '階段名稱', stage_choice)
+        if '剩餘土方量' not in df_daily_notes_.columns:
+            df_daily_notes_['剩餘土方量'] = np.nan
+
+    curr_notes_ = df_daily_notes_[df_daily_notes_['階段名稱'] == stage_choice].copy() if not df_daily_notes_.empty else pd.DataFrame()
+
+    max_log_date_ = pd.to_datetime(daily_stats_['日期'].max()).date() if not daily_stats_.empty else tw_today_
+    end_date_for_range_ = max(tw_today_, max_log_date_)
+    date_range_ = [d.strftime("%Y-%m-%d") for d in pd.date_range(est_start_, end_date_for_range_)]
+    df_range_ = pd.DataFrame({"日期": date_range_})
+
+    if not daily_stats_.empty:
+        df_range_ = pd.merge(df_range_, daily_stats_, on="日期", how="left").fillna({"實際車次": 0, "當日運棄量": 0})
+    else:
+        df_range_['實際車次'] = 0
+        df_range_['當日運棄量'] = 0
+
+    df_range_['累計車次'] = df_range_['實際車次'].cumsum()
+    df_range_['累計運棄量'] = df_range_['當日運棄量'].cumsum()
+
+    if not curr_notes_.empty and '備註' in curr_notes_.columns:
+        merge_notes_ = curr_notes_[['日期', '內控預計車次', '備註']].drop_duplicates('日期')
+        df_range_ = pd.merge(df_range_, merge_notes_, on="日期", how="left")
+    else:
+        df_range_['內控預計車次'] = np.nan
+        df_range_['備註'] = ""
+
+    default_daily_trips_ = round((est_vol_ / vol_per_truck_) / est_days_) if est_days_ > 0 and vol_per_truck_ > 0 else 0
+    df_range_['內控預計車次'] = pd.to_numeric(df_range_['內控預計車次'], errors='coerce').fillna(default_daily_trips_)
+    df_range_['差異'] = df_range_['實際車次'] - df_range_['內控預計車次']
+    df_range_['備註'] = df_range_['備註'].fillna("")
+    df_range_['剩餘土方量'] = (est_vol_ - df_range_['累計運棄量']).clip(lower=0)
+
+    actual_start_date_ = est_start_
+    current_work_days_ = (tw_today_ - actual_start_date_).days + 1 if actual_start_date_ <= tw_today_ else 0
+
+    today_str_ = tw_today_.strftime("%Y-%m-%d")
+    today_row_ = df_range_[df_range_['日期'] == today_str_]
+    today_vol_ = today_row_['當日運棄量'].sum() if not today_row_.empty else 0
+
+    cum_vol_ = df_range_['當日運棄量'].sum()
+    avg_vol_per_day_ = cum_vol_ / current_work_days_ if current_work_days_ > 0 else 0
+    remain_vol_ = max(0, est_vol_ - cum_vol_)
+    remain_days_ = round(remain_vol_ / avg_vol_per_day_) if avg_vol_per_day_ > 0 else 0
+    est_completion_date_ = tw_today_ + timedelta(days=remain_days_)
+    diff_days_ = (est_completion_date_ - est_end_).days
+    percent_done_ = round((cum_vol_ / est_vol_) * 100) if est_vol_ > 0 else 0
+
+    return {
+        "stage_choice": stage_choice,
+        "today": tw_today_,
+        "current_work_days": current_work_days_,
+        "est_start": est_start_,
+        "actual_start_date": actual_start_date_,
+        "est_days": est_days_,
+        "remain_days": remain_days_,
+        "est_end": est_end_,
+        "est_completion_date": est_completion_date_,
+        "diff_days": diff_days_,
+        "est_vol": est_vol_,
+        "today_vol": today_vol_,
+        "est_daily_vol": est_daily_vol_,
+        "cum_vol": cum_vol_,
+        "avg_vol_per_day": avg_vol_per_day_,
+        "remain_vol": remain_vol_,
+        "percent_done": percent_done_,
+        "df_range": df_range_,
+        "df_daily_notes": df_daily_notes_,
+        "df_stage_map": df_stage_map_,
+        "target_col": target_col_,
+        "vol_per_truck": vol_per_truck_,
+        "est_vol_default": default_est_vol_,
+    }
+
+
+def get_stage_index(stage_choice):
+    """回傳 0~3 代表第1~4挖；開挖前土方回傳 None（因為它不是以分區門檻定義的階段）。"""
+    if "第1挖" in stage_choice:
+        return 0
+    if "第2挖" in stage_choice:
+        return 1
+    if "第3挖" in stage_choice:
+        return 2
+    if "第4挖" in stage_choice:
+        return 3
+    return None
+
+
+def sync_stage_daily_log(stage_choice, df_results):
+    """
+    把「目前作業階段」今天這一列的統計數字，即時 upsert 寫入 stage_daily_notes 雲端分頁。
+    設計給「批量設定出土分區」按下去之後自動呼叫，不需要使用者再手動去階段管控頁按儲存。
+    """
+    overview = compute_stage_overview(stage_choice, df_results)
+    df_range = overview["df_range"]
+    df_daily_notes = overview["df_daily_notes"]
+
+    today_str = overview["today"].strftime("%Y-%m-%d")
+    today_rows = df_range[df_range['日期'] == today_str]
+    if today_rows.empty:
+        return False
+
+    row = today_rows.iloc[0].to_dict()
+    keep_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
+    new_row = {k: row.get(k, "") for k in keep_cols}
+    new_row['階段名稱'] = stage_choice
+
+    new_row_df = pd.DataFrame([new_row])
+    mask = (df_daily_notes['階段名稱'] == stage_choice) & (df_daily_notes['日期'].astype(str) == today_str)
+    other_rows = df_daily_notes[~mask]
+    final_notes = pd.concat([other_rows, new_row_df], ignore_index=True)
+
+    return save_sheet_data("stage_daily_notes", final_notes)
+
 
 def generate_backend_map(df_results, zone_grouped):
     import matplotlib.pyplot as plt
@@ -161,13 +364,14 @@ def generate_backend_map(df_results, zone_grouped):
 # 新增：每日出土 PDF 報表產出（原本遺失的功能）
 # ============================================================================
 def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_path,
-                               period_label, start_date, end_date):
+                               period_label, start_date, end_date, stage_overview=None):
     """
     產出每日/區間出土統計 PDF 報表：
       - 文字回報 (report_text)
       - 聯單分類出土明細 (breakdown_text)
       - 各分區進度表格 (display_df)
       - 各區開挖階段狀態地圖 (map_img_path, 來自 generate_backend_map)
+      - 階段總覽表格 (stage_overview, 來自 compute_stage_overview，對應圖1紫色表格)
     回傳暫存 PDF 檔案路徑。
     """
     from reportlab.lib.pagesizes import A4
@@ -263,6 +467,38 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
         c.setFont(font_name, 10)
         c.drawString(margin, y, "（尚無分區資料）")
         y -= 6 * mm
+
+    # 階段總覽表格（對應圖1紫色表格，只顯示目前作業階段）
+    if stage_overview is not None:
+        y -= 6 * mm
+        if y < margin + 65 * mm:
+            new_page()
+        so = stage_overview
+        c.setFont(font_name, 13)
+        c.drawString(margin, y, f"【{so['stage_choice']}】階段總覽")
+        y -= 8 * mm
+
+        col2_x = margin + (width - 2 * margin) / 2
+        pairs = [
+            ("今天日期", str(so['today']), "目前作業工期", f"{so['current_work_days']}"),
+            ("預計開始時間", str(so['est_start']), "實際開始時間", str(so['actual_start_date'])),
+            ("預計施作工期", f"{so['est_days']}", "推估剩餘天數", f"{so['remain_days']}"),
+            ("預計完成日期", str(so['est_end']), "推估完成日期", str(so['est_completion_date'])),
+            ("", "", "差異 (天)", f"{so['diff_days']}"),
+            ("預估土方量(鬆方)", f"{so['est_vol']:,.1f}", "本日出土量(m³)", f"{so['today_vol']:,.1f}"),
+            ("預估每日出土量(m³)", f"{so['est_daily_vol']:,.1f}", "累積出土數量(m³)", f"{so['cum_vol']:,.1f}"),
+            ("平均出土功率(m³/天)", f"{so['avg_vol_per_day']:,.1f}", "剩餘土方量(m³)", f"{so['remain_vol']:,.1f}"),
+            ("", "", "完成百分比", f"{so['percent_done']}%"),
+        ]
+        c.setFont(font_name, 10)
+        for left_label, left_val, right_label, right_val in pairs:
+            if y < margin + 10 * mm:
+                new_page()
+            if left_label:
+                c.drawString(margin, y, f"{left_label}：{left_val}")
+            c.drawString(col2_x, y, f"{right_label}：{right_val}")
+            y -= 6 * mm
+        y -= 2 * mm
 
     # 各區開挖階段狀態地圖
     if map_img_path and os.path.exists(map_img_path):
@@ -702,11 +938,12 @@ with tab_stats:
         # ====================================================================
         # 新增：每日出土 PDF 報表匯出按鍵
         # ====================================================================
-        st.markdown("#### 📄 匯出每日出土 PDF 報表")
+        st.markdown(f"#### 📄 匯出每日出土 PDF 報表　（目前作業階段：**{global_stage_choice}**，可於左側側邊欄切換）")
         if st.button("📥 一鍵產出PDF報表", key="btn_daily_pdf", use_container_width=True):
             try:
                 with st.spinner("PDF 產生中，請稍候..."):
                     map_img_path = generate_backend_map(df_results, zone_grouped) if not df_results.empty else None
+                    stage_overview_for_pdf = compute_stage_overview(global_stage_choice, df_results)
                     pdf_path = generate_daily_report_pdf(
                         report_text=pdf_report_text,
                         breakdown_text=pdf_breakdown_text,
@@ -715,6 +952,7 @@ with tab_stats:
                         period_label=period_label,
                         start_date=start_date,
                         end_date=end_date,
+                        stage_overview=stage_overview_for_pdf,
                     )
                 with open(pdf_path, "rb") as f:
                     st.download_button(
@@ -759,7 +997,8 @@ with tab_stats:
                                 df_logs = df_logs.drop(columns=['ParsedDate'])
 
                             if save_sheet_data("dispatch_logs", df_logs):
-                                st.success(f"成功更新 {len(checked_rows)} 筆紀錄！")
+                                sync_stage_daily_log(global_stage_choice, df_results)
+                                st.success(f"成功更新 {len(checked_rows)} 筆紀錄！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
                                 st.rerun()
                         else:
                             st.warning("⚠️ 請至少勾選一筆要套用的紀錄。")
@@ -789,40 +1028,26 @@ with tab_stats:
 
 with tab_stage:
     st.write("### 📈 階段開挖管控")
-    st.info("此分頁用於單一開挖階段的進度追蹤。切換不同階段，系統將自動載入專屬的設定參數、每日明細，並動態繪製地圖。")
+    st.info("此分頁用於單一開挖階段的進度追蹤。左側側邊欄切換「目前作業階段」，此頁與出土儀表板的PDF報表會同步套用該階段。")
 
-    tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
-
-    stage_choice = st.selectbox("選擇管控階段", ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)"])
-
-    df_stage_map = df_results.copy()
-    if "第1挖" in stage_choice:
-        target_col = '第1挖方量(m³)'
-    elif "第2挖" in stage_choice:
-        target_col = '第2挖方量(m³)'
-    elif "第3挖" in stage_choice:
-        target_col = '第3挖方量(m³)'
-        df_stage_map = df_stage_map[~df_stage_map['分區代號'].str.contains("滯")]
-    elif "第4挖" in stage_choice:
-        target_col = '第4挖方量(m³)'
-        df_stage_map = df_stage_map[~df_stage_map['分區代號'].str.contains("滯")]
-    else:
-        target_col = None
-
-    default_est_vol = df_stage_map[target_col].sum() if target_col and not df_stage_map.empty else 0
+    stage_choice = global_stage_choice
+    st.markdown(f"目前檢視階段：**{stage_choice}**　（可至左側側邊欄「🎯 目前作業階段」切換）")
 
     df_stage_set = load_sheet_data("stage_settings")
     if df_stage_set.empty or "階段名稱" not in df_stage_set.columns:
         df_stage_set = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計施作工期", "預估土方量(鬆方)", "單車預設實方"])
 
-    current_set = df_stage_set[df_stage_set["階段名稱"] == stage_choice]
+    overview = compute_stage_overview(stage_choice, df_results)
+    target_col = overview["target_col"]
+    df_stage_map = overview["df_stage_map"]
 
+    current_set = df_stage_set[df_stage_set["階段名稱"] == stage_choice]
     if current_set.empty:
         new_row = pd.DataFrame([{
             "階段名稱": stage_choice,
-            "預計開始時間": tw_today.strftime("%Y-%m-%d"),
+            "預計開始時間": overview["today"].strftime("%Y-%m-%d"),
             "預計施作工期": 20,
-            "預估土方量(鬆方)": default_est_vol,
+            "預估土方量(鬆方)": overview["est_vol_default"],
             "單車預設實方": 12.0
         }])
         display_stage_set = new_row
@@ -838,83 +1063,10 @@ with tab_stage:
         save_sheet_data("stage_settings", final_sets)
         st.rerun()
 
-    s_row = edited_stage_set.iloc[0]
-    est_start_str = s_row.get("預計開始時間", str(tw_today))
-    est_days = pd.to_numeric(s_row.get("預計施作工期", 1), errors='coerce')
-    est_vol = pd.to_numeric(s_row.get("預估土方量(鬆方)", 0), errors='coerce')
-    vol_per_truck = pd.to_numeric(s_row.get("單車預設實方", 12.0), errors='coerce')
-
-    try:
-        est_start = pd.to_datetime(est_start_str).date()
-    except:
-        est_start = tw_today
-
-    est_end = est_start + timedelta(days=int(est_days))
-    est_daily_vol = est_vol / est_days if est_days > 0 else 0
-
-    df_logs = load_sheet_data("dispatch_logs")
-    daily_stats = pd.DataFrame()
-    if not df_logs.empty and "日期" in df_logs.columns:
-        valid_logs = df_logs.copy()
-        valid_logs['載運方量(m³)'] = pd.to_numeric(valid_logs.get('載運方量(m³)', vol_per_truck), errors='coerce').fillna(vol_per_truck)
-
-        daily_stats = valid_logs.groupby('日期').agg(
-            實際車次=('車頭車號', 'count'),
-            當日運棄量=('載運方量(m³)', 'sum')
-        ).reset_index()
-        daily_stats = daily_stats.sort_values('日期')
-    else:
-        daily_stats = pd.DataFrame(columns=['日期', '實際車次', '當日運棄量'])
-
-    df_daily_notes = load_sheet_data("stage_daily_notes")
-    if df_daily_notes.empty:
-        df_daily_notes = pd.DataFrame(columns=['階段名稱', '日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '備註'])
-    else:
-        if '階段名稱' not in df_daily_notes.columns:
-            df_daily_notes.insert(0, '階段名稱', stage_choice)
-
-    curr_notes = df_daily_notes[df_daily_notes['階段名稱'] == stage_choice].copy() if not df_daily_notes.empty else pd.DataFrame()
-
-    max_log_date = pd.to_datetime(daily_stats['日期'].max()).date() if not daily_stats.empty else tw_today
-    end_date_for_range = max(tw_today, max_log_date)
-    date_range = [d.strftime("%Y-%m-%d") for d in pd.date_range(est_start, end_date_for_range)]
-    df_range = pd.DataFrame({"日期": date_range})
-
-    if not daily_stats.empty:
-        df_range = pd.merge(df_range, daily_stats, on="日期", how="left").fillna({"實際車次": 0, "當日運棄量": 0})
-    else:
-        df_range['實際車次'] = 0
-        df_range['當日運棄量'] = 0
-
-    df_range['累計車次'] = df_range['實際車次'].cumsum()
-    df_range['累計運棄量'] = df_range['當日運棄量'].cumsum()
-
-    if not curr_notes.empty and '備註' in curr_notes.columns:
-        merge_notes = curr_notes[['日期', '內控預計車次', '備註']].drop_duplicates('日期')
-        df_range = pd.merge(df_range, merge_notes, on="日期", how="left")
-    else:
-        df_range['內控預計車次'] = np.nan
-        df_range['備註'] = ""
-
-    default_daily_trips = round((est_vol / vol_per_truck) / est_days) if est_days > 0 and vol_per_truck > 0 else 0
-    df_range['內控預計車次'] = pd.to_numeric(df_range['內控預計車次'], errors='coerce').fillna(default_daily_trips)
-    df_range['差異'] = df_range['實際車次'] - df_range['內控預計車次']
-    df_range['備註'] = df_range['備註'].fillna("")
-
-    actual_start_date = est_start
-    current_work_days = (tw_today - actual_start_date).days + 1 if actual_start_date <= tw_today else 0
-
-    today_str = tw_today.strftime("%Y-%m-%d")
-    today_row = df_range[df_range['日期'] == today_str]
-    today_vol = today_row['當日運棄量'].sum() if not today_row.empty else 0
-
-    cum_vol = df_range['當日運棄量'].sum()
-    avg_vol_per_day = cum_vol / current_work_days if current_work_days > 0 else 0
-    remain_vol = max(0, est_vol - cum_vol)
-    remain_days = round(remain_vol / avg_vol_per_day) if avg_vol_per_day > 0 else 0
-    est_completion_date = tw_today + timedelta(days=remain_days)
-    diff_days = (est_completion_date - est_end).days
-    percent_done = round((cum_vol / est_vol) * 100) if est_vol > 0 else 0
+    # 使用畫面上剛編輯的（尚未儲存的）參數即時重算總覽，維持「編輯即時預覽」效果
+    overview = compute_stage_overview(stage_choice, df_results, override_settings_row=edited_stage_set.iloc[0])
+    df_range = overview["df_range"]
+    df_daily_notes = overview["df_daily_notes"]
 
     st.markdown(f"#### 🟣 【{stage_choice}】總覽")
 
@@ -922,57 +1074,57 @@ with tab_stage:
     <table style="width: 100%; border-collapse: collapse; font-family: sans-serif; text-align: right;">
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">今天日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{tw_today}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['today']}</td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">目前作業工期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{current_work_days}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['current_work_days']}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計開始時間</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_start}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_start']}</td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">實際開始時間</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{actual_start_date}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['actual_start_date']}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計施作工期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_days}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_days']}</td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估剩餘天數</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{remain_days}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['remain_days']}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計完成日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_end}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_end']}</td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估完成日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_completion_date}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_completion_date']}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px;"></td>
             <td style="border: 1px solid #ccc; padding: 8px;"></td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">差異 (天)</td>
-            <td style="border: 1px solid #ccc; padding: 8px; background-color: #f39c12; color: white;">{diff_days}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; background-color: #f39c12; color: white;">{overview['diff_days']}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估土方量(鬆方)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_vol:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_vol']:,.1f}</td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">本日出土量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{today_vol:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['today_vol']:,.1f}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估每日出土量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{est_daily_vol:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_daily_vol']:,.1f}</td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">累積出土數量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{cum_vol:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['cum_vol']:,.1f}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(m³/天)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{avg_vol_per_day:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['avg_vol_per_day']:,.1f}</td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">剩餘土方量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{remain_vol:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['remain_vol']:,.1f}</td>
         </tr>
         <tr>
             <td style="border: 1px solid #ccc; padding: 8px;"></td>
             <td style="border: 1px solid #ccc; padding: 8px;"></td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">完成百分比</td>
-            <td style="border: 1px solid #ccc; padding: 8px; background-color: #8e44ad; color: white;">{percent_done}%</td>
+            <td style="border: 1px solid #ccc; padding: 8px; background-color: #8e44ad; color: white;">{overview['percent_done']}%</td>
         </tr>
     </table>
     """
@@ -980,8 +1132,9 @@ with tab_stage:
 
     st.divider()
     st.markdown("#### 📅 每日出土管控明細")
+    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港停止收容），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量。")
 
-    display_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '備註']
+    display_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
     edited_daily = st.data_editor(
         df_range[display_cols],
         column_config={
@@ -990,6 +1143,7 @@ with tab_stage:
             "差異": st.column_config.NumberColumn(disabled=True),
             "當日運棄量": st.column_config.NumberColumn(disabled=True),
             "累計運棄量": st.column_config.NumberColumn(disabled=True),
+            "剩餘土方量": st.column_config.NumberColumn(disabled=True),
             "備註": st.column_config.TextColumn()
         },
         hide_index=True,
@@ -1005,23 +1159,57 @@ with tab_stage:
         st.rerun()
 
     st.divider()
-    st.markdown(f"#### 🗺️ 【{stage_choice}】 方量基準地圖")
-    fig_stage = go.Figure()
+    st.markdown(f"#### 🗺️ 【{stage_choice}】單階段專用地圖（僅顯示本階段挖掘進度）")
+    st.markdown("⬜ 尚未開始本階段 🟨 本階段進行中(<30%) 🟧 本階段進行中(30~70%) 🟦 本階段進行中(70~98%) 🟩 本階段已完成")
 
+    df_logs_for_map = load_sheet_data("dispatch_logs")
+    zone_vol_dict = {}
+    if not df_logs_for_map.empty and '出土分區' in df_logs_for_map.columns and '載運方量(m³)' in df_logs_for_map.columns:
+        tmp_map_logs = df_logs_for_map[df_logs_for_map['出土分區'] != '未指定'].copy()
+        tmp_map_logs['載運方量(m³)'] = pd.to_numeric(tmp_map_logs['載運方量(m³)'], errors='coerce')
+        zone_vol_dict = tmp_map_logs.groupby('出土分區')['載運方量(m³)'].sum().to_dict()
+
+    stage_idx = get_stage_index(stage_choice)
+    stage_thresholds_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
+
+    fig_stage = go.Figure()
     for idx, row in df_stage_map.iterrows():
         grid_id = row['分區代號']
+        current_vol = zone_vol_dict.get(grid_id, 0)
+        thresholds = stage_thresholds_dict.get(grid_id, [])
         t_vol = row[target_col] if target_col else 0
+
+        if stage_idx is not None and thresholds and stage_idx < len(thresholds):
+            band_start = thresholds[stage_idx - 1] if stage_idx > 0 else 0
+            band_end = thresholds[stage_idx]
+            band_size = band_end - band_start
+            pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
+
+            if pct >= 98:
+                fill_color = 'rgba(46, 204, 113, 0.8)'
+            elif pct >= 70:
+                fill_color = 'rgba(52, 152, 219, 0.7)'
+            elif pct >= 30:
+                fill_color = 'rgba(230, 126, 34, 0.7)'
+            elif pct > 0:
+                fill_color = 'rgba(241, 196, 15, 0.7)'
+            else:
+                fill_color = 'rgba(240, 240, 240, 0.5)'
+            hover_text = f"{grid_id}<br>本階段目標: {t_vol:,.0f} m³<br>本階段進度: {pct:.0f}%"
+        else:
+            fill_color = 'rgba(0, 100, 255, 0.1)'
+            hover_text = f"{grid_id}<br>階段基準方量: {t_vol:,.0f} m³<br>（開挖前土方無分區進度）"
 
         fig_stage.add_trace(go.Scatter(
             x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
             y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
-            mode='lines', line=dict(color='blue', width=1),
-            fill='toself', fillcolor='rgba(0, 100, 255, 0.1)', showlegend=False, hoverinfo='text',
-            text=f"{grid_id}<br>階段基準方量: {t_vol:,.0f} m³"
+            mode='lines', line=dict(color='gray', width=1),
+            fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
+            text=hover_text
         ))
         fig_stage.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
 
-    fig_stage.update_layout(dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
+    fig_stage.update_layout(title=f"【{stage_choice}】單階段進度地圖", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig_stage, use_container_width=True, config={'displayModeBar': False})
 
 with tab_sync:
