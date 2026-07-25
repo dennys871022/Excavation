@@ -364,7 +364,8 @@ def generate_backend_map(df_results, zone_grouped):
 # 新增：每日出土 PDF 報表產出（原本遺失的功能）
 # ============================================================================
 def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_path,
-                               period_label, start_date, end_date, stage_overview=None):
+                               period_label, start_date, end_date, stage_overview=None,
+                               daily_control_df=None):
     """
     產出每日/區間出土統計 PDF 報表：
       - 文字回報 (report_text)
@@ -372,6 +373,7 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
       - 各分區進度表格 (display_df)
       - 各區開挖階段狀態地圖 (map_img_path, 來自 generate_backend_map)
       - 階段總覽表格 (stage_overview, 來自 compute_stage_overview，對應圖1紫色表格)
+      - 每日出土管控明細 (daily_control_df, 來自 compute_stage_overview 的 df_range，放在PDF最後面)
     回傳暫存 PDF 檔案路徑。
     """
     from reportlab.lib.pagesizes import A4
@@ -515,6 +517,55 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
             new_page()
         c.drawImage(map_img_path, margin, y - img_h, width=img_w, height=img_h, preserveAspectRatio=True, mask='auto')
         y -= (img_h + 5 * mm)
+
+    # 每日出土管控明細（放在PDF最後面，根據目前選擇的階段從雲端資料顯示）
+    if daily_control_df is not None and not daily_control_df.empty:
+        new_page()
+        c.setFont(font_name, 13)
+        stage_label = stage_overview['stage_choice'] if stage_overview else ""
+        c.drawString(margin, y, f"【{stage_label}】每日出土管控明細")
+        y -= 9 * mm
+
+        dc_cols = list(daily_control_df.columns)
+        # 欄位寬度：日期與備註給寬一點，其餘平分
+        wide_cols = {'日期', '備註'}
+        n_wide = sum(1 for col in dc_cols if col in wide_cols)
+        n_narrow = len(dc_cols) - n_wide
+        total_w = width - 2 * margin
+        wide_w = total_w * 0.20
+        narrow_w = (total_w - wide_w * n_wide) / max(n_narrow, 1)
+        col_widths = [wide_w if col in wide_cols else narrow_w for col in dc_cols]
+
+        def draw_dc_header():
+            nonlocal y
+            c.setFont(font_name, 8)
+            x_pos = margin
+            for col, w in zip(dc_cols, col_widths):
+                c.drawString(x_pos, y, str(col))
+                x_pos += w
+            y -= 2 * mm
+            c.line(margin, y, width - margin, y)
+            y -= 4.5 * mm
+
+        draw_dc_header()
+        c.setFont(font_name, 8)
+        for _, row in daily_control_df.iterrows():
+            if y < margin + 10 * mm:
+                new_page()
+                c.setFont(font_name, 13)
+                c.drawString(margin, y, f"【{stage_label}】每日出土管控明細（續）")
+                y -= 9 * mm
+                draw_dc_header()
+            x_pos = margin
+            for col, w in zip(dc_cols, col_widths):
+                val = row[col]
+                if isinstance(val, float):
+                    text_val = f"{val:,.1f}"
+                else:
+                    text_val = str(val)
+                c.drawString(x_pos, y, text_val)
+                x_pos += w
+            y -= 5 * mm
 
     c.save()
     return tmp_pdf.name
@@ -888,8 +939,13 @@ with tab_stats:
             st.info(ui_display_text.replace("\n", "\n\n"))
 
         with col_fig:
-            st.markdown("**進度圖例說明：**")
-            st.markdown("⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
+            _stats_stage_idx = get_stage_index(global_stage_choice)
+            if _stats_stage_idx is not None:
+                st.markdown(f"**進度圖例說明：（依目前作業階段【{global_stage_choice}】上色）**")
+                st.markdown("⬜ 尚未開始本階段 🟨 本階段進行中(<30%) 🟧 本階段進行中(30~70%) 🟦 本階段進行中(70~98%) 🟩 本階段已完成")
+            else:
+                st.markdown("**進度圖例說明：（開挖前土方無分區門檻，顯示總體4階累計完成度）**")
+                st.markdown("⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
             fig_map = go.Figure()
             if not df_results.empty:
                 vol_dict = {}
@@ -903,23 +959,41 @@ with tab_stats:
                     current_vol = vol_dict.get(grid_id, 0)
                     thresholds = stage_dict.get(grid_id, [])
 
-                    stage_text = "尚未開挖"
-                    fill_color = 'rgba(240, 240, 240, 0.5)'
+                    if _stats_stage_idx is not None and thresholds and _stats_stage_idx < len(thresholds):
+                        band_start = thresholds[_stats_stage_idx - 1] if _stats_stage_idx > 0 else 0
+                        band_end = thresholds[_stats_stage_idx]
+                        band_size = band_end - band_start
+                        pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
 
-                    if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
-                        if current_vol >= thresholds[-1] * 0.98:
-                            stage_text = "開挖完成"
+                        if pct >= 98:
                             fill_color = 'rgba(46, 204, 113, 0.8)'
+                        elif pct >= 70:
+                            fill_color = 'rgba(52, 152, 219, 0.7)'
+                        elif pct >= 30:
+                            fill_color = 'rgba(230, 126, 34, 0.7)'
+                        elif pct > 0:
+                            fill_color = 'rgba(241, 196, 15, 0.7)'
                         else:
-                            colors = ['rgba(241, 196, 15, 0.7)', 'rgba(230, 126, 34, 0.7)', 'rgba(52, 152, 219, 0.7)', 'rgba(155, 89, 182, 0.7)']
-                            for s_idx, t_vol in enumerate(thresholds):
-                                if current_vol < t_vol * 0.98:
-                                    if s_idx == 0:
-                                        stage_text = "1挖進行中"
-                                    else:
-                                        stage_text = f"{s_idx}挖完成 / {s_idx+1}挖進行中"
-                                    fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
-                                    break
+                            fill_color = 'rgba(240, 240, 240, 0.5)'
+                        stage_text = f"{global_stage_choice} 進度: {pct:.0f}%"
+                    else:
+                        stage_text = "尚未開挖"
+                        fill_color = 'rgba(240, 240, 240, 0.5)'
+
+                        if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
+                            if current_vol >= thresholds[-1] * 0.98:
+                                stage_text = "開挖完成"
+                                fill_color = 'rgba(46, 204, 113, 0.8)'
+                            else:
+                                colors = ['rgba(241, 196, 15, 0.7)', 'rgba(230, 126, 34, 0.7)', 'rgba(52, 152, 219, 0.7)', 'rgba(155, 89, 182, 0.7)']
+                                for s_idx, t_vol in enumerate(thresholds):
+                                    if current_vol < t_vol * 0.98:
+                                        if s_idx == 0:
+                                            stage_text = "1挖進行中"
+                                        else:
+                                            stage_text = f"{s_idx}挖完成 / {s_idx+1}挖進行中"
+                                        fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
+                                        break
 
                     fig_map.add_trace(go.Scatter(
                         x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
@@ -930,7 +1004,7 @@ with tab_stats:
                     ))
                     fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
 
-                fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
+                fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})　【{global_stage_choice}】", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
 
         st.divider()
@@ -944,6 +1018,8 @@ with tab_stats:
                 with st.spinner("PDF 產生中，請稍候..."):
                     map_img_path = generate_backend_map(df_results, zone_grouped) if not df_results.empty else None
                     stage_overview_for_pdf = compute_stage_overview(global_stage_choice, df_results)
+                    daily_control_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
+                    daily_control_for_pdf = stage_overview_for_pdf["df_range"][daily_control_cols].copy()
                     pdf_path = generate_daily_report_pdf(
                         report_text=pdf_report_text,
                         breakdown_text=pdf_breakdown_text,
@@ -953,6 +1029,7 @@ with tab_stats:
                         start_date=start_date,
                         end_date=end_date,
                         stage_overview=stage_overview_for_pdf,
+                        daily_control_df=daily_control_for_pdf,
                     )
                 with open(pdf_path, "rb") as f:
                     st.download_button(
@@ -1055,6 +1132,7 @@ with tab_stage:
         display_stage_set = current_set.copy()
 
     st.markdown(f"#### ⚙️ 【{stage_choice}】參數設定")
+    st.caption("💡 下方「每日出土管控明細」表格中的「內控預計車次」預設值 = 預估土方量(鬆方) ÷ 單車預設實方 ÷ 預計施作工期，所有日期會統一帶入這個算出來的數字；若某一天要單獨調整，直接在該列的「內控預計車次」欄位改掉，按下方「💾 儲存」後，那一天就會變成你手動輸入的數字，不會再被自動預設值覆蓋（其餘沒改過的日期則繼續套用預設值）。")
     edited_stage_set = st.data_editor(display_stage_set, hide_index=True, use_container_width=True)
 
     if st.button("💾 儲存本階段設定"):
