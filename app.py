@@ -307,7 +307,14 @@ def sync_stage_daily_log(stage_choice, df_results):
     return save_sheet_data("stage_daily_notes", final_notes)
 
 
-def generate_backend_map(df_results, zone_grouped):
+def generate_backend_map(df_results, zone_grouped, stage_choice=None):
+    """
+    產出後端地圖圖片（給PDF報表嵌入用）。
+    stage_choice 若給定且為第1~4挖，會跟畫面上的單階段地圖一致：
+      - 第3、4挖自動排除滯洪池分區（滯洪池只有到第2挖）
+      - 套用三色進度（尚未開始/進行中/已完成），只反映該階段自己的進度
+    stage_choice 為 None 或「開挖前土方」時，維持原本總體4階累計完成度上色。
+    """
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
     from matplotlib.font_manager import FontProperties
@@ -322,21 +329,39 @@ def generate_backend_map(df_results, zone_grouped):
         vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
 
-    for idx, row in df_results.iterrows():
+    stage_idx = get_stage_index(stage_choice) if stage_choice else None
+
+    plot_df = df_results
+    if stage_idx in (2, 3):
+        plot_df = df_results[~df_results['分區代號'].str.contains("滯")]
+
+    for idx, row in plot_df.iterrows():
         grid_id = row['分區代號']
         current_vol = vol_dict.get(grid_id, 0)
         thresholds = stage_dict.get(grid_id, [])
         fill_color = '#F0F0F0'
 
-        if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
-            if current_vol >= thresholds[-1] * 0.98:
+        if stage_idx is not None and thresholds and stage_idx < len(thresholds):
+            band_start = thresholds[stage_idx - 1] if stage_idx > 0 else 0
+            band_end = thresholds[stage_idx]
+            band_size = band_end - band_start
+            pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
+            if pct >= 98:
                 fill_color = '#2ECC71'
+            elif pct > 0:
+                fill_color = '#E67E22'
             else:
-                colors = ['#F1C40F', '#E67E22', '#3498DB', '#9B59B6']
-                for s_idx, t_vol in enumerate(thresholds):
-                    if current_vol < t_vol * 0.98:
-                        fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
-                        break
+                fill_color = '#F0F0F0'
+        elif stage_idx is None:
+            if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
+                if current_vol >= thresholds[-1] * 0.98:
+                    fill_color = '#2ECC71'
+                else:
+                    colors = ['#F1C40F', '#E67E22', '#3498DB', '#9B59B6']
+                    for s_idx, t_vol in enumerate(thresholds):
+                        if current_vol < t_vol * 0.98:
+                            fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
+                            break
 
         xy = [[row['x_min'], row['y_min']], [row['x_max'], row['y_min']],
               [row['x_max'], row['y_max']], [row['x_min'], row['y_max']]]
@@ -365,15 +390,14 @@ def generate_backend_map(df_results, zone_grouped):
 # ============================================================================
 def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_path,
                                period_label, start_date, end_date, stage_overview=None,
-                               daily_control_df=None):
+                               daily_control_df=None, map_legend_text=None, stage_label=None):
     """
     產出每日/區間出土統計 PDF 報表：
-      - 文字回報 (report_text)
-      - 聯單分類出土明細 (breakdown_text)
+      - 文字回報 (report_text，左欄) / 聯單分類出土明細 (breakdown_text，右欄)
       - 各分區進度表格 (display_df)
-      - 各區開挖階段狀態地圖 (map_img_path, 來自 generate_backend_map)
-      - 階段總覽表格 (stage_overview, 來自 compute_stage_overview，對應圖1紫色表格)
-      - 每日出土管控明細 (daily_control_df, 來自 compute_stage_overview 的 df_range，放在PDF最後面)
+      - 圖例 (map_legend_text) + 各區開挖階段狀態地圖 (map_img_path, 來自 generate_backend_map)
+      - 階段總覽表格 (stage_overview，可選，對應圖1紫色表格；預設不帶入則不顯示)
+      - 每日出土管控明細 (daily_control_df, 放在PDF最後面；標題用 stage_label)
     回傳暫存 PDF 檔案路徑。
     """
     from reportlab.lib.pagesizes import A4
@@ -412,28 +436,33 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
     c.drawString(margin, y, f"統計區間：{start_date} 至 {end_date}　　產出時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     y -= 10 * mm
 
-    # 文字回報內容（逐行輸出，超出頁面自動換頁）
-    c.setFont(font_name, 10)
-    for line in str(report_text).split("\n"):
-        if y < margin + 10 * mm:
-            new_page()
-        c.drawString(margin, y, line)
-        y -= 5.5 * mm
+    # 文字回報內容（左欄）+ 聯單分類出土（右欄，右上，跟左欄並排）
+    col2_x_top = margin + (width - 2 * margin) * 0.58
+    y_left_start = y
+    y_right_start = y
 
-    y -= 4 * mm
-    if y < margin + 20 * mm:
-        new_page()
+    c.setFont(font_name, 10)
+    y_left = y_left_start
+    for line in str(report_text).split("\n"):
+        if y_left < margin + 10 * mm:
+            break  # 左欄內容較長時，理論上不會超頁，統計文字本身不多
+        c.drawString(margin, y_left, line)
+        y_left -= 5.5 * mm
+
     c.setFont(font_name, 11)
-    c.drawString(margin, y, "聯單分類出土：")
-    y -= 6 * mm
+    y_right = y_right_start
+    c.drawString(col2_x_top, y_right, "聯單分類出土：")
+    y_right -= 6 * mm
     c.setFont(font_name, 10)
     for line in str(breakdown_text).split("\n"):
         if line.strip() == "":
             continue
-        if y < margin + 10 * mm:
-            new_page()
-        c.drawString(margin, y, line)
-        y -= 5.5 * mm
+        c.drawString(col2_x_top, y_right, line)
+        y_right -= 5.5 * mm
+
+    y = min(y_left, y_right) - 4 * mm
+    if y < margin + 20 * mm:
+        new_page()
 
     # 各分區進度表格
     y -= 6 * mm
@@ -504,13 +533,16 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
 
     # 各區開挖階段狀態地圖
     if map_img_path and os.path.exists(map_img_path):
-        if y < margin + 90 * mm:
+        if y < margin + 95 * mm:
             new_page()
         else:
             y -= 6 * mm
         c.setFont(font_name, 11)
         c.drawString(margin, y, "各區開挖階段狀態圖：")
-        y -= 5 * mm
+        y -= 6 * mm
+        c.setFont(font_name, 9)
+        c.drawString(margin, y, str(map_legend_text) if map_legend_text else "⬜ 尚未開始　🟧 進行中　🟩 已完成")
+        y -= 6 * mm
         img_w = width - 2 * margin
         img_h = img_w * 0.6
         if y - img_h < margin:
@@ -522,8 +554,8 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
     if daily_control_df is not None and not daily_control_df.empty:
         new_page()
         c.setFont(font_name, 13)
-        stage_label = stage_overview['stage_choice'] if stage_overview else ""
-        c.drawString(margin, y, f"【{stage_label}】每日出土管控明細")
+        stage_label_for_table = stage_label or (stage_overview['stage_choice'] if stage_overview else "")
+        c.drawString(margin, y, f"【{stage_label_for_table}】每日出土管控明細")
         y -= 9 * mm
 
         dc_cols = list(daily_control_df.columns)
@@ -553,7 +585,7 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
             if y < margin + 10 * mm:
                 new_page()
                 c.setFont(font_name, 13)
-                c.drawString(margin, y, f"【{stage_label}】每日出土管控明細（續）")
+                c.drawString(margin, y, f"【{stage_label_for_table}】每日出土管控明細（續）")
                 y -= 9 * mm
                 draw_dc_header()
             x_pos = margin
@@ -1019,10 +1051,16 @@ with tab_stats:
         if st.button("📥 一鍵產出PDF報表", key="btn_daily_pdf", use_container_width=True):
             try:
                 with st.spinner("PDF 產生中，請稍候..."):
-                    map_img_path = generate_backend_map(df_results, zone_grouped) if not df_results.empty else None
+                    map_img_path = generate_backend_map(df_results, zone_grouped, stage_choice=global_stage_choice) if not df_results.empty else None
                     stage_overview_for_pdf = compute_stage_overview(global_stage_choice, df_results)
                     daily_control_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
                     daily_control_for_pdf = stage_overview_for_pdf["df_range"][daily_control_cols].copy()
+
+                    if get_stage_index(global_stage_choice) is not None:
+                        pdf_legend_text = "⬜ 尚未開始　🟧 進行中　🟩 已完成"
+                    else:
+                        pdf_legend_text = "⬜ 尚未開挖　🟨 1挖進行中　🟧 1挖完成/2挖進行中　🟦 2挖完成/3挖進行中　🟪 3挖完成/4挖進行中　🟩 開挖完成"
+
                     pdf_path = generate_daily_report_pdf(
                         report_text=pdf_report_text,
                         breakdown_text=pdf_breakdown_text,
@@ -1031,8 +1069,10 @@ with tab_stats:
                         period_label=period_label,
                         start_date=start_date,
                         end_date=end_date,
-                        stage_overview=stage_overview_for_pdf,
+                        stage_overview=None,
                         daily_control_df=daily_control_for_pdf,
+                        map_legend_text=pdf_legend_text,
+                        stage_label=global_stage_choice,
                     )
                 with open(pdf_path, "rb") as f:
                     st.download_button(
