@@ -390,18 +390,20 @@ def generate_backend_map(df_results, zone_grouped, stage_choice=None):
 # ============================================================================
 def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_path,
                                period_label, start_date, end_date, stage_overview=None,
-                               daily_control_df=None, map_legend_text=None, stage_label=None):
+                               daily_control_df=None, map_legend_items=None, stage_label=None):
     """
     產出每日/區間出土統計 PDF 報表：
+      - 標題（置中）
       - 文字回報 (report_text，左欄) / 聯單分類出土明細 (breakdown_text，右欄)
-      - 各分區進度表格 (display_df)
-      - 圖例 (map_legend_text) + 各區開挖階段狀態地圖 (map_img_path, 來自 generate_backend_map)
+      - 圖例（真正的顏色色塊，map_legend_items = [(label, hex_color), ...]） + 各區開挖階段狀態地圖
+      - 各分區挖掘進度總表（放在地圖後面，避免分區數增加時把地圖往下擠）
       - 階段總覽表格 (stage_overview，可選，對應圖1紫色表格；預設不帶入則不顯示)
       - 每日出土管控明細 (daily_control_df, 放在PDF最後面；標題用 stage_label)
     回傳暫存 PDF 檔案路徑。
     """
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
+    from reportlab.lib.colors import HexColor
     from reportlab.pdfgen import canvas
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -428,13 +430,10 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
         c.setFont(font_name, 10)
         y = height - margin
 
-    # 標題
+    # 標題（置中）
     c.setFont(font_name, 16)
-    c.drawString(margin, y, f"CDC土方開挖{period_label}回報")
-    y -= 8 * mm
-    c.setFont(font_name, 10)
-    c.drawString(margin, y, f"統計區間：{start_date} 至 {end_date}　　產出時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    y -= 10 * mm
+    c.drawCentredString(width / 2, y, f"CDC土方開挖{period_label}回報")
+    y -= 12 * mm
 
     # 文字回報內容（左欄）+ 聯單分類出土（右欄，右上，跟左欄並排）
     col2_x_top = margin + (width - 2 * margin) * 0.58
@@ -464,8 +463,48 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
     if y < margin + 20 * mm:
         new_page()
 
+    def draw_legend(legend_items, start_y):
+        """畫真正的顏色色塊圖例（不是emoji文字，避免字型不支援顯示成方框），超出頁寬會自動換行。"""
+        nonlocal y
+        box_size = 3.5 * mm
+        gap = 5 * mm
+        line_h = 6 * mm
+        x_pos = margin
+        cur_y = start_y
+        c.setFont(font_name, 9)
+        for label, hex_color in legend_items:
+            text_w = c.stringWidth(label, font_name, 9)
+            item_w = box_size + 1.5 * mm + text_w
+            if x_pos + item_w > width - margin and x_pos > margin:
+                x_pos = margin
+                cur_y -= line_h
+            c.setFillColor(HexColor(hex_color))
+            c.rect(x_pos, cur_y - box_size + 1, box_size, box_size, fill=1, stroke=0)
+            c.setFillColor(HexColor("#000000"))
+            c.drawString(x_pos + box_size + 1.5 * mm, cur_y - box_size + 1, label)
+            x_pos += item_w + gap
+        y = cur_y - box_size - 4 * mm
+
+    # 各區開挖階段狀態地圖（放在分區表格前面，避免分區數日後增加時把地圖一直往下擠）
+    if map_img_path and os.path.exists(map_img_path):
+        y -= 4 * mm
+        if y < margin + 95 * mm:
+            new_page()
+        c.setFont(font_name, 11)
+        c.drawString(margin, y, "各區開挖階段狀態圖：")
+        y -= 6 * mm
+        legend_items = map_legend_items if map_legend_items else [
+            ("尚未開始", "#F0F0F0"), ("進行中", "#E67E22"), ("已完成", "#2ECC71"),
+        ]
+        draw_legend(legend_items, y)
+        img_w = width - 2 * margin
+        img_h = img_w * 0.6
+        if y - img_h < margin:
+            new_page()
+        c.drawImage(map_img_path, margin, y - img_h, width=img_w, height=img_h, preserveAspectRatio=True, mask='auto')
+        y -= (img_h + 6 * mm)
+
     # 各分區進度表格
-    y -= 6 * mm
     if y < margin + 30 * mm:
         new_page()
     c.setFont(font_name, 11)
@@ -499,7 +538,7 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
         c.drawString(margin, y, "（尚無分區資料）")
         y -= 6 * mm
 
-    # 階段總覽表格（對應圖1紫色表格，只顯示目前作業階段）
+    # 階段總覽表格（對應圖1紫色表格，只顯示目前作業階段；不帶入 stage_overview 則跳過不顯示）
     if stage_overview is not None:
         y -= 6 * mm
         if y < margin + 65 * mm:
@@ -530,25 +569,6 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
             c.drawString(col2_x, y, f"{right_label}：{right_val}")
             y -= 6 * mm
         y -= 2 * mm
-
-    # 各區開挖階段狀態地圖
-    if map_img_path and os.path.exists(map_img_path):
-        if y < margin + 95 * mm:
-            new_page()
-        else:
-            y -= 6 * mm
-        c.setFont(font_name, 11)
-        c.drawString(margin, y, "各區開挖階段狀態圖：")
-        y -= 6 * mm
-        c.setFont(font_name, 9)
-        c.drawString(margin, y, str(map_legend_text) if map_legend_text else "⬜ 尚未開始　🟧 進行中　🟩 已完成")
-        y -= 6 * mm
-        img_w = width - 2 * margin
-        img_h = img_w * 0.6
-        if y - img_h < margin:
-            new_page()
-        c.drawImage(map_img_path, margin, y - img_h, width=img_w, height=img_h, preserveAspectRatio=True, mask='auto')
-        y -= (img_h + 5 * mm)
 
     # 每日出土管控明細（放在PDF最後面，根據目前選擇的階段從雲端資料顯示）
     if daily_control_df is not None and not daily_control_df.empty:
@@ -1057,9 +1077,20 @@ with tab_stats:
                     daily_control_for_pdf = stage_overview_for_pdf["df_range"][daily_control_cols].copy()
 
                     if get_stage_index(global_stage_choice) is not None:
-                        pdf_legend_text = "⬜ 尚未開始　🟧 進行中　🟩 已完成"
+                        pdf_legend_items = [
+                            ("尚未開始", "#F0F0F0"),
+                            ("進行中", "#E67E22"),
+                            ("已完成", "#2ECC71"),
+                        ]
                     else:
-                        pdf_legend_text = "⬜ 尚未開挖　🟨 1挖進行中　🟧 1挖完成/2挖進行中　🟦 2挖完成/3挖進行中　🟪 3挖完成/4挖進行中　🟩 開挖完成"
+                        pdf_legend_items = [
+                            ("尚未開挖", "#F0F0F0"),
+                            ("1挖進行中", "#F1C40F"),
+                            ("1挖完成/2挖進行中", "#E67E22"),
+                            ("2挖完成/3挖進行中", "#3498DB"),
+                            ("3挖完成/4挖進行中", "#9B59B6"),
+                            ("開挖完成", "#2ECC71"),
+                        ]
 
                     pdf_path = generate_daily_report_pdf(
                         report_text=pdf_report_text,
@@ -1071,7 +1102,7 @@ with tab_stats:
                         end_date=end_date,
                         stage_overview=None,
                         daily_control_df=daily_control_for_pdf,
-                        map_legend_text=pdf_legend_text,
+                        map_legend_items=pdf_legend_items,
                         stage_label=global_stage_choice,
                     )
                 with open(pdf_path, "rb") as f:
