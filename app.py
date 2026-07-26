@@ -394,10 +394,10 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
     """
     產出每日/區間出土統計 PDF 報表：
       - 標題（置中）
-      - 文字回報 (report_text，左欄) / 聯單分類出土明細 (breakdown_text，右欄)
+      - 左欄：階段總覽（stage_overview，對應圖1紫色表格；若為 None 則退回顯示 report_text 本日回報文字）
+      - 右欄：聯單分類出土明細 (breakdown_text)
       - 圖例（真正的顏色色塊，map_legend_items = [(label, hex_color), ...]） + 各區開挖階段狀態地圖
       - 各分區挖掘進度總表（放在地圖後面，避免分區數增加時把地圖往下擠）
-      - 階段總覽表格 (stage_overview，可選，對應圖1紫色表格；預設不帶入則不顯示)
       - 每日出土管控明細 (daily_control_df, 放在PDF最後面；標題用 stage_label)
     回傳暫存 PDF 檔案路徑。
     """
@@ -435,18 +435,46 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
     c.drawCentredString(width / 2, y, f"CDC土方開挖{period_label}回報")
     y -= 12 * mm
 
-    # 文字回報內容（左欄）+ 聯單分類出土（右欄，右上，跟左欄並排）
+    # 左欄：階段總覽（若有帶入 stage_overview，取代原本的本日回報文字）；右欄：聯單分類出土
     col2_x_top = margin + (width - 2 * margin) * 0.58
     y_left_start = y
     y_right_start = y
 
-    c.setFont(font_name, 10)
     y_left = y_left_start
-    for line in str(report_text).split("\n"):
-        if y_left < margin + 10 * mm:
-            break  # 左欄內容較長時，理論上不會超頁，統計文字本身不多
-        c.drawString(margin, y_left, line)
-        y_left -= 5.5 * mm
+    if stage_overview is not None:
+        so = stage_overview
+        c.setFont(font_name, 12)
+        c.drawString(margin, y_left, f"【{so['stage_choice']}】階段總覽")
+        y_left -= 7 * mm
+        c.setFont(font_name, 9.5)
+        overview_lines = [
+            f"今天日期：{so['today']}",
+            f"目前作業工期：{so['current_work_days']} 天",
+            f"預計開始時間：{so['est_start']}　實際開始時間：{so['actual_start_date']}",
+            f"預計施作工期：{so['est_days']} 天　推估剩餘天數：{so['remain_days']} 天",
+            f"預計完成日期：{so['est_end']}",
+            f"推估完成日期：{so['est_completion_date']}　（差異：{so['diff_days']} 天）",
+            f"預估土方量(鬆方)：{so['est_vol']:,.1f} m³",
+            f"本日出土量：{so['today_vol']:,.1f} m³",
+            f"預估每日出土量：{so['est_daily_vol']:,.1f} m³",
+            f"累積出土數量：{so['cum_vol']:,.1f} m³",
+            f"平均出土功率：{so['avg_vol_per_day']:,.1f} m³/天",
+            f"剩餘土方量：{so['remain_vol']:,.1f} m³",
+            f"完成百分比：{so['percent_done']}%",
+        ]
+        for line in overview_lines:
+            if y_left < margin + 10 * mm:
+                break
+            c.drawString(margin, y_left, line)
+            y_left -= 5.5 * mm
+    else:
+        # 未帶入 stage_overview 時，退回顯示原本的本日回報文字（向下相容）
+        c.setFont(font_name, 10)
+        for line in str(report_text).split("\n"):
+            if y_left < margin + 10 * mm:
+                break
+            c.drawString(margin, y_left, line)
+            y_left -= 5.5 * mm
 
     c.setFont(font_name, 11)
     y_right = y_right_start
@@ -537,38 +565,6 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
         c.setFont(font_name, 10)
         c.drawString(margin, y, "（尚無分區資料）")
         y -= 6 * mm
-
-    # 階段總覽表格（對應圖1紫色表格，只顯示目前作業階段；不帶入 stage_overview 則跳過不顯示）
-    if stage_overview is not None:
-        y -= 6 * mm
-        if y < margin + 65 * mm:
-            new_page()
-        so = stage_overview
-        c.setFont(font_name, 13)
-        c.drawString(margin, y, f"【{so['stage_choice']}】階段總覽")
-        y -= 8 * mm
-
-        col2_x = margin + (width - 2 * margin) / 2
-        pairs = [
-            ("今天日期", str(so['today']), "目前作業工期", f"{so['current_work_days']}"),
-            ("預計開始時間", str(so['est_start']), "實際開始時間", str(so['actual_start_date'])),
-            ("預計施作工期", f"{so['est_days']}", "推估剩餘天數", f"{so['remain_days']}"),
-            ("預計完成日期", str(so['est_end']), "推估完成日期", str(so['est_completion_date'])),
-            ("", "", "差異 (天)", f"{so['diff_days']}"),
-            ("預估土方量(鬆方)", f"{so['est_vol']:,.1f}", "本日出土量(m³)", f"{so['today_vol']:,.1f}"),
-            ("預估每日出土量(m³)", f"{so['est_daily_vol']:,.1f}", "累積出土數量(m³)", f"{so['cum_vol']:,.1f}"),
-            ("平均出土功率(m³/天)", f"{so['avg_vol_per_day']:,.1f}", "剩餘土方量(m³)", f"{so['remain_vol']:,.1f}"),
-            ("", "", "完成百分比", f"{so['percent_done']}%"),
-        ]
-        c.setFont(font_name, 10)
-        for left_label, left_val, right_label, right_val in pairs:
-            if y < margin + 10 * mm:
-                new_page()
-            if left_label:
-                c.drawString(margin, y, f"{left_label}：{left_val}")
-            c.drawString(col2_x, y, f"{right_label}：{right_val}")
-            y -= 6 * mm
-        y -= 2 * mm
 
     # 每日出土管控明細（放在PDF最後面，根據目前選擇的階段從雲端資料顯示）
     if daily_control_df is not None and not daily_control_df.empty:
@@ -1100,7 +1096,7 @@ with tab_stats:
                         period_label=period_label,
                         start_date=start_date,
                         end_date=end_date,
-                        stage_overview=None,
+                        stage_overview=stage_overview_for_pdf,
                         daily_control_df=daily_control_for_pdf,
                         map_legend_items=pdf_legend_items,
                         stage_label=global_stage_choice,
