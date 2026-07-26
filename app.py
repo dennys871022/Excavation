@@ -911,8 +911,7 @@ with tab_stats:
             manifest_breakdown_str = "\n".join(breakdown_lines)
 
         manifest_total = 79692.0
-        combined_excavated = total_excavated + pre_excavated
-        overall_rate = round((combined_excavated / manifest_total * 100), 1)
+        overall_rate = round((total_excavated / manifest_total * 100), 1) if manifest_total > 0 else 0
 
         report_text_left = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}出土天數： {period_days} 天
@@ -942,7 +941,7 @@ with tab_stats:
             _stats_stage_idx = get_stage_index(global_stage_choice)
             if _stats_stage_idx is not None:
                 st.markdown(f"**進度圖例說明：（依目前作業階段【{global_stage_choice}】上色）**")
-                st.markdown("⬜ 尚未開始本階段 🟨 本階段進行中(<30%) 🟧 本階段進行中(30~70%) 🟦 本階段進行中(70~98%) 🟩 本階段已完成")
+                st.markdown("⬜ 尚未開始 🟧 進行中 🟩 已完成")
             else:
                 st.markdown("**進度圖例說明：（開挖前土方無分區門檻，顯示總體4階累計完成度）**")
                 st.markdown("⬜ 尚未開挖 🟨 1挖進行中 🟧 1挖完成/2挖進行中 🟦 2挖完成/3挖進行中 🟪 3挖完成/4挖進行中 🟩 開挖完成")
@@ -954,7 +953,13 @@ with tab_stats:
 
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
 
-                for idx, row in df_results.iterrows():
+                # 第3、4挖沒有滯洪池分區（滯洪池只有2挖），地圖上要把這些格子濾掉
+                if _stats_stage_idx in (2, 3):
+                    df_map_zones = df_results[~df_results['分區代號'].str.contains("滯")]
+                else:
+                    df_map_zones = df_results
+
+                for idx, row in df_map_zones.iterrows():
                     grid_id = row['分區代號']
                     current_vol = vol_dict.get(grid_id, 0)
                     thresholds = stage_dict.get(grid_id, [])
@@ -967,15 +972,13 @@ with tab_stats:
 
                         if pct >= 98:
                             fill_color = 'rgba(46, 204, 113, 0.8)'
-                        elif pct >= 70:
-                            fill_color = 'rgba(52, 152, 219, 0.7)'
-                        elif pct >= 30:
-                            fill_color = 'rgba(230, 126, 34, 0.7)'
+                            stage_text = f"{global_stage_choice} 已完成"
                         elif pct > 0:
-                            fill_color = 'rgba(241, 196, 15, 0.7)'
+                            fill_color = 'rgba(230, 126, 34, 0.7)'
+                            stage_text = f"{global_stage_choice} 進行中: {pct:.0f}%"
                         else:
                             fill_color = 'rgba(240, 240, 240, 0.5)'
-                        stage_text = f"{global_stage_choice} 進度: {pct:.0f}%"
+                            stage_text = f"{global_stage_choice} 尚未開始"
                     else:
                         stage_text = "尚未開挖"
                         fill_color = 'rgba(240, 240, 240, 0.5)'
@@ -1238,7 +1241,7 @@ with tab_stage:
 
     st.divider()
     st.markdown(f"#### 🗺️ 【{stage_choice}】單階段專用地圖（僅顯示本階段挖掘進度）")
-    st.markdown("⬜ 尚未開始本階段 🟨 本階段進行中(<30%) 🟧 本階段進行中(30~70%) 🟦 本階段進行中(70~98%) 🟩 本階段已完成")
+    st.markdown("⬜ 尚未開始 🟧 進行中 🟩 已完成")
 
     df_logs_for_map = load_sheet_data("dispatch_logs")
     zone_vol_dict = {}
@@ -1265,15 +1268,14 @@ with tab_stage:
 
             if pct >= 98:
                 fill_color = 'rgba(46, 204, 113, 0.8)'
-            elif pct >= 70:
-                fill_color = 'rgba(52, 152, 219, 0.7)'
-            elif pct >= 30:
-                fill_color = 'rgba(230, 126, 34, 0.7)'
+                status_label = "已完成"
             elif pct > 0:
-                fill_color = 'rgba(241, 196, 15, 0.7)'
+                fill_color = 'rgba(230, 126, 34, 0.7)'
+                status_label = f"進行中 {pct:.0f}%"
             else:
                 fill_color = 'rgba(240, 240, 240, 0.5)'
-            hover_text = f"{grid_id}<br>本階段目標: {t_vol:,.0f} m³<br>本階段進度: {pct:.0f}%"
+                status_label = "尚未開始"
+            hover_text = f"{grid_id}<br>本階段目標: {t_vol:,.0f} m³<br>本階段狀態: {status_label}"
         else:
             fill_color = 'rgba(0, 100, 255, 0.1)'
             hover_text = f"{grid_id}<br>階段基準方量: {t_vol:,.0f} m³<br>（開挖前土方無分區進度）"
