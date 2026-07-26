@@ -146,7 +146,7 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
 
     df_stage_set_ = load_sheet_data("stage_settings")
     if df_stage_set_.empty or "階段名稱" not in df_stage_set_.columns:
-        df_stage_set_ = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計施作工期", "預估土方量(鬆方)", "單車預設實方"])
+        df_stage_set_ = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計結束日期", "預估土方量(鬆方)", "單車預設實方"])
 
     current_set_ = df_stage_set_[df_stage_set_["階段名稱"] == stage_choice]
     if override_settings_row is not None:
@@ -155,7 +155,7 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
         s_row_ = pd.Series({
             "階段名稱": stage_choice,
             "預計開始時間": tw_today_.strftime("%Y-%m-%d"),
-            "預計施作工期": 20,
+            "預計結束日期": (tw_today_ + timedelta(days=20)).strftime("%Y-%m-%d"),
             "預估土方量(鬆方)": default_est_vol_,
             "單車預設實方": 12.0
         })
@@ -163,7 +163,7 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
         s_row_ = current_set_.iloc[0]
 
     est_start_str_ = s_row_.get("預計開始時間", str(tw_today_))
-    est_days_ = pd.to_numeric(s_row_.get("預計施作工期", 1), errors='coerce')
+    est_end_str_ = s_row_.get("預計結束日期", None)
     est_vol_ = pd.to_numeric(s_row_.get("預估土方量(鬆方)", 0), errors='coerce')
     vol_per_truck_ = pd.to_numeric(s_row_.get("單車預設實方", 12.0), errors='coerce')
 
@@ -172,7 +172,13 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
     except Exception:
         est_start_ = tw_today_
 
-    est_end_ = est_start_ + timedelta(days=int(est_days_))
+    try:
+        est_end_ = pd.to_datetime(est_end_str_).date() if est_end_str_ not in (None, "", "NaT") else est_start_ + timedelta(days=20)
+    except Exception:
+        est_end_ = est_start_ + timedelta(days=20)
+
+    # 預計施作工期改由系統自動算：結束日期 - 開始日期（至少算1天，避免除以0）
+    est_days_ = max((est_end_ - est_start_).days, 1)
     est_daily_vol_ = est_vol_ / est_days_ if est_days_ > 0 else 0
 
     df_logs_ = load_sheet_data("dispatch_logs")
@@ -240,6 +246,9 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
     diff_days_ = (est_completion_date_ - est_end_).days
     percent_done_ = round((cum_vol_ / est_vol_) * 100) if est_vol_ > 0 else 0
 
+    cum_trips_ = df_range_['累計車次'].iloc[-1] if not df_range_.empty else 0
+    avg_trips_per_day_ = cum_trips_ / current_work_days_ if current_work_days_ > 0 else 0
+
     return {
         "stage_choice": stage_choice,
         "today": tw_today_,
@@ -256,6 +265,8 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
         "est_daily_vol": est_daily_vol_,
         "cum_vol": cum_vol_,
         "avg_vol_per_day": avg_vol_per_day_,
+        "cum_trips": cum_trips_,
+        "avg_trips_per_day": avg_trips_per_day_,
         "remain_vol": remain_vol_,
         "percent_done": percent_done_,
         "df_range": df_range_,
@@ -284,6 +295,12 @@ def sync_stage_daily_log(stage_choice, df_results):
     """
     把「目前作業階段」今天這一列的統計數字，即時 upsert 寫入 stage_daily_notes 雲端分頁。
     設計給「批量設定出土分區」按下去之後自動呼叫，不需要使用者再手動去階段管控頁按儲存。
+
+    注意：只同步「事實」欄位（實際車次/差異/當日運棄量/累計運棄量/剩餘土方量，這些是從派車
+    紀錄算出來的真實數字）。「內控預計車次」跟「備註」是使用者的排程規劃值，這裡刻意不覆寫，
+    只能透過階段管控頁的「💾 儲存每日車次目標與備註」手動編輯儲存。這樣做是為了讓「內控預計
+    車次」在使用者調整上面的階段參數（開始/結束日期、預估土方量等）時，只要那天沒被手動改過，
+    包含過去日期在內都能持續套用最新算出來的預設值，而不會被自動同步寫入的舊數字卡住。
     """
     overview = compute_stage_overview(stage_choice, df_results)
     df_range = overview["df_range"]
@@ -295,14 +312,23 @@ def sync_stage_daily_log(stage_choice, df_results):
         return False
 
     row = today_rows.iloc[0].to_dict()
-    keep_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
-    new_row = {k: row.get(k, "") for k in keep_cols}
-    new_row['階段名稱'] = stage_choice
+    fact_cols = ['實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量']
 
-    new_row_df = pd.DataFrame([new_row])
     mask = (df_daily_notes['階段名稱'] == stage_choice) & (df_daily_notes['日期'].astype(str) == today_str)
-    other_rows = df_daily_notes[~mask]
-    final_notes = pd.concat([other_rows, new_row_df], ignore_index=True)
+    if mask.any():
+        # 該日已有既存紀錄（可能含使用者手動設定的內控預計車次/備註），只更新事實欄位，不動那兩欄
+        for col in fact_cols:
+            df_daily_notes.loc[mask, col] = row.get(col, "")
+        final_notes = df_daily_notes
+    else:
+        # 該日還沒有任何紀錄，新增一筆；內控預計車次留空，讓它之後持續套用系統預設值，不鎖住
+        new_row = {col: row.get(col, "") for col in fact_cols}
+        new_row['階段名稱'] = stage_choice
+        new_row['日期'] = today_str
+        new_row['內控預計車次'] = np.nan
+        new_row['備註'] = ""
+        new_row_df = pd.DataFrame([new_row])
+        final_notes = pd.concat([df_daily_notes, new_row_df], ignore_index=True)
 
     return save_sheet_data("stage_daily_notes", final_notes)
 
@@ -904,7 +930,13 @@ with tab_stats:
         period_days = range_logs['ParsedDate'].nunique() if not range_logs.empty and 'ParsedDate' in range_logs.columns else 0
         period_rate = round(range_trips / period_days, 1) if period_days > 0 else 0
 
-        total_days = cumul_logs['ParsedDate'].nunique() if not cumul_logs.empty and 'ParsedDate' in cumul_logs.columns else 0
+        # 累計總天數：改用日曆天數（從第一筆出土紀錄那天算到統計結束日，含中間沒出土的日期），
+        # 跟「階段總覽」的「目前作業工期」算法一致，不再只算「有出土紀錄」的天數
+        if not cumul_logs.empty and 'ParsedDate' in cumul_logs.columns:
+            earliest_log_date = cumul_logs['ParsedDate'].min()
+            total_days = (end_date - earliest_log_date).days + 1
+        else:
+            total_days = 0
         total_rate = round(total_all_trips / total_days, 1) if total_days > 0 else 0
 
         st.markdown(f"#### 📊 {period_label}統計結果 ({start_date} 至 {end_date})")
@@ -1096,7 +1128,7 @@ with tab_stats:
                         period_label=period_label,
                         start_date=start_date,
                         end_date=end_date,
-                        stage_overview=stage_overview_for_pdf,
+                        stage_overview=None,
                         daily_control_df=daily_control_for_pdf,
                         map_legend_items=pdf_legend_items,
                         stage_label=global_stage_choice,
@@ -1182,7 +1214,7 @@ with tab_stage:
 
     df_stage_set = load_sheet_data("stage_settings")
     if df_stage_set.empty or "階段名稱" not in df_stage_set.columns:
-        df_stage_set = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計施作工期", "預估土方量(鬆方)", "單車預設實方"])
+        df_stage_set = pd.DataFrame(columns=["階段名稱", "預計開始時間", "預計結束日期", "預估土方量(鬆方)", "單車預設實方"])
 
     overview = compute_stage_overview(stage_choice, df_results)
     target_col = overview["target_col"]
@@ -1193,7 +1225,7 @@ with tab_stage:
         new_row = pd.DataFrame([{
             "階段名稱": stage_choice,
             "預計開始時間": overview["today"].strftime("%Y-%m-%d"),
-            "預計施作工期": 20,
+            "預計結束日期": (overview["today"] + timedelta(days=20)).strftime("%Y-%m-%d"),
             "預估土方量(鬆方)": overview["est_vol_default"],
             "單車預設實方": 12.0
         }])
@@ -1201,18 +1233,39 @@ with tab_stage:
     else:
         display_stage_set = current_set.copy()
 
+    display_stage_set = display_stage_set.copy()
+    display_stage_set["預計開始時間"] = pd.to_datetime(display_stage_set["預計開始時間"], errors='coerce')
+    display_stage_set["預計結束日期"] = pd.to_datetime(display_stage_set["預計結束日期"], errors='coerce')
+
     st.markdown(f"#### ⚙️ 【{stage_choice}】參數設定")
-    st.caption("💡 下方「每日出土管控明細」表格中的「內控預計車次」預設值 = 預估土方量(鬆方) ÷ 單車預設實方 ÷ 預計施作工期，所有日期會統一帶入這個算出來的數字；若某一天要單獨調整，直接在該列的「內控預計車次」欄位改掉，按下方「💾 儲存」後，那一天就會變成你手動輸入的數字，不會再被自動預設值覆蓋（其餘沒改過的日期則繼續套用預設值）。")
-    edited_stage_set = st.data_editor(display_stage_set, hide_index=True, use_container_width=True)
+    st.caption("💡 「預計施作工期」改由系統自動算（= 預計結束日期 − 預計開始時間），你只要設定開始與結束日期即可。下方「每日出土管控明細」表格中的「內控預計車次」預設值 = 預估土方量(鬆方) ÷ 單車預設實方 ÷ 預計施作工期，所有日期會統一帶入這個算出來的數字；若某一天要單獨調整，直接在該列的「內控預計車次」欄位改掉，按下方「💾 儲存」後，那一天就會變成你手動輸入的數字，不會再被自動預設值覆蓋（其餘沒改過的日期則繼續套用預設值）。")
+    edited_stage_set = st.data_editor(
+        display_stage_set,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "預計開始時間": st.column_config.DateColumn(format="YYYY-MM-DD"),
+            "預計結束日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+        },
+    )
+    _preview_start = pd.to_datetime(edited_stage_set.iloc[0]["預計開始時間"]).date()
+    _preview_end = pd.to_datetime(edited_stage_set.iloc[0]["預計結束日期"]).date()
+    st.caption(f"📐 系統自動算出的預計施作工期：**{max((_preview_end - _preview_start).days, 1)} 天**")
 
     if st.button("💾 儲存本階段設定"):
+        save_set = edited_stage_set.copy()
+        save_set["預計開始時間"] = pd.to_datetime(save_set["預計開始時間"]).dt.strftime("%Y-%m-%d")
+        save_set["預計結束日期"] = pd.to_datetime(save_set["預計結束日期"]).dt.strftime("%Y-%m-%d")
         other_sets = df_stage_set[df_stage_set["階段名稱"] != stage_choice]
-        final_sets = pd.concat([other_sets, edited_stage_set], ignore_index=True)
+        final_sets = pd.concat([other_sets, save_set], ignore_index=True)
         save_sheet_data("stage_settings", final_sets)
         st.rerun()
 
     # 使用畫面上剛編輯的（尚未儲存的）參數即時重算總覽，維持「編輯即時預覽」效果
-    overview = compute_stage_overview(stage_choice, df_results, override_settings_row=edited_stage_set.iloc[0])
+    _override_row = edited_stage_set.iloc[0].copy()
+    _override_row["預計開始時間"] = pd.to_datetime(_override_row["預計開始時間"]).strftime("%Y-%m-%d")
+    _override_row["預計結束日期"] = pd.to_datetime(_override_row["預計結束日期"]).strftime("%Y-%m-%d")
+    overview = compute_stage_overview(stage_choice, df_results, override_settings_row=_override_row)
     df_range = overview["df_range"]
     df_daily_notes = overview["df_daily_notes"]
 
@@ -1269,10 +1322,23 @@ with tab_stage:
             <td style="border: 1px solid #ccc; padding: 8px;">{overview['remain_vol']:,.1f}</td>
         </tr>
         <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(台/天)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['avg_trips_per_day']:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+        </tr>
+        <tr>
             <td style="border: 1px solid #ccc; padding: 8px;"></td>
             <td style="border: 1px solid #ccc; padding: 8px;"></td>
             <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">完成百分比</td>
-            <td style="border: 1px solid #ccc; padding: 8px; background-color: #8e44ad; color: white;">{overview['percent_done']}%</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div style="flex: 1; background-color: #e8e0ee; border-radius: 4px; overflow: hidden; height: 14px;">
+                        <div style="width: {min(max(overview['percent_done'], 0), 100)}%; background-color: #8e44ad; height: 100%;"></div>
+                    </div>
+                    <span style="color: #8e44ad; font-weight: bold; white-space: nowrap;">{overview['percent_done']}%</span>
+                </div>
+            </td>
         </tr>
     </table>
     """
@@ -1280,9 +1346,32 @@ with tab_stage:
 
     st.divider()
     st.markdown("#### 📅 每日出土管控明細")
-    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港停止收容），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量。")
+    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港停止收容），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量。「差異」為負數（實際車次落後內控預計車次）時，下方預覽表會以紅色標示。")
 
     display_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
+
+    def _highlight_negative_diff(val):
+        try:
+            return 'color: #e74c3c; font-weight: bold;' if float(val) < 0 else ''
+        except (ValueError, TypeError):
+            return ''
+
+    preview_styler = df_range[display_cols].style.applymap(_highlight_negative_diff, subset=['差異'])
+    st.dataframe(preview_styler, use_container_width=True, hide_index=True)
+
+    col_reset1, col_reset2 = st.columns([3, 1])
+    with col_reset2:
+        if st.button("🔄 重設內控預計車次為系統預設值", use_container_width=True):
+            mask_stage = df_daily_notes['階段名稱'] == stage_choice
+            if '內控預計車次' in df_daily_notes.columns:
+                df_daily_notes.loc[mask_stage, '內控預計車次'] = np.nan
+            save_sheet_data("stage_daily_notes", df_daily_notes)
+            st.success(f"已清空【{stage_choice}】所有日期的內控預計車次，全部改回套用目前參數算出的系統預設值。")
+            st.rerun()
+    with col_reset1:
+        st.caption("⚠️ 若過去曾手動調整過某幾天的內控預計車次，按下這顆按鈕會把「這個階段」所有日期都清空重算，手動設定的數字也會一併被清掉，請注意。")
+
+    st.markdown("##### ✏️ 編輯內控預計車次 / 備註")
     edited_daily = st.data_editor(
         df_range[display_cols],
         column_config={
