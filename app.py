@@ -26,12 +26,6 @@ else:
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1y3Qnlx9qFwV6S6pyFTsT4rlXP_Tb8qd9tNhRBTjBHao/edit"
 
-if 'sync_data_summary' not in st.session_state:
-    st.session_state['sync_data_summary'] = None
-if 'sync_date' not in st.session_state:
-    st.session_state['sync_date'] = None
-if 'official_ready_df' not in st.session_state:
-    st.session_state['official_ready_df'] = None
 if 'canvas_key_counter' not in st.session_state:
     st.session_state['canvas_key_counter'] = 0
 
@@ -117,14 +111,42 @@ def get_thickness_from_gl(gl_str, gl_offset):
 # ============================================================================
 # 新增：階段總覽計算（原本寫死在 tab_stage 裡，現在抽出來讓 PDF 報表也能共用）
 # ============================================================================
-def compute_stage_overview(stage_choice, df_results, override_settings_row=None):
+def _migrate_stage_settings_schema(df):
+    """
+    相容舊版雲端資料：stage_settings 分頁舊欄位是「預計施作工期」（天數），
+    新版改成「預計結束日期」。如果讀到的資料還是舊欄位，這裡自動換算補上新欄位，
+    避免舊資料在新版程式裡直接 KeyError。
+    """
+    df = df.copy()
+    if "預計結束日期" not in df.columns:
+        if "預計施作工期" in df.columns and "預計開始時間" in df.columns:
+            def _calc_end(row):
+                try:
+                    start = pd.to_datetime(row["預計開始時間"])
+                    days = pd.to_numeric(row["預計施作工期"], errors='coerce')
+                    if pd.isna(days):
+                        days = 20
+                    return (start + pd.Timedelta(days=int(days))).strftime("%Y-%m-%d")
+                except Exception:
+                    return None
+            df["預計結束日期"] = df.apply(_calc_end, axis=1)
+        else:
+            df["預計結束日期"] = None
+    return df
+
+
+def compute_stage_overview(stage_choice, df_results, override_settings_row=None, as_of_date=None):
     """
     計算單一階段（開挖前土方 / 第1~4挖）的總覽數據，回傳 dict。
     給 tab_stage（畫面顯示）與 tab_stats 的 PDF 匯出共用，確保兩邊數字一致。
     override_settings_row: 若提供（例如畫面上尚未儲存的 data_editor 編輯值），
     優先使用它來計算，取代從雲端讀回的已儲存設定，維持「編輯即時預覽」的效果。
+    as_of_date: 若提供，代表「查詢過往報表」——把所有「今天」相關的計算都改成以這個日期為準
+    （該日的出土量、累積量、剩餘量、完成百分比等），呈現「截至那一天」的歷史快照。
+    預設為 None，等同今天（維持原本即時總覽的行為）。
     """
     tw_today_ = (datetime.utcnow() + timedelta(hours=8)).date()
+    query_date_ = as_of_date if as_of_date is not None else tw_today_
 
     df_stage_map_ = df_results.copy() if df_results is not None and not df_results.empty else pd.DataFrame()
     if "第1挖" in stage_choice:
@@ -232,26 +254,35 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
     df_range_['剩餘土方量'] = (est_vol_ - df_range_['累計運棄量']).clip(lower=0)
 
     actual_start_date_ = est_start_
-    current_work_days_ = (tw_today_ - actual_start_date_).days + 1 if actual_start_date_ <= tw_today_ else 0
+    current_work_days_ = (query_date_ - actual_start_date_).days + 1 if actual_start_date_ <= query_date_ else 0
 
-    today_str_ = tw_today_.strftime("%Y-%m-%d")
+    today_str_ = query_date_.strftime("%Y-%m-%d")
     today_row_ = df_range_[df_range_['日期'] == today_str_]
     today_vol_ = today_row_['當日運棄量'].sum() if not today_row_.empty else 0
 
-    cum_vol_ = df_range_['當日運棄量'].sum()
+    # cum_vol / cum_trips 用「截至查詢日那一列」已經算好的累計欄位，
+    # 而不是整個 df_range_ 加總，這樣查詢過去日期時才不會把查詢日之後的資料也算進去
+    if not today_row_.empty:
+        cum_vol_ = today_row_['累計運棄量'].iloc[0]
+        cum_trips_ = today_row_['累計車次'].iloc[0]
+    else:
+        past_rows_ = df_range_[df_range_['日期'] <= today_str_]
+        cum_vol_ = past_rows_['當日運棄量'].sum() if not past_rows_.empty else 0
+        cum_trips_ = past_rows_['實際車次'].sum() if not past_rows_.empty else 0
+
     avg_vol_per_day_ = cum_vol_ / current_work_days_ if current_work_days_ > 0 else 0
     remain_vol_ = max(0, est_vol_ - cum_vol_)
     remain_days_ = round(remain_vol_ / avg_vol_per_day_) if avg_vol_per_day_ > 0 else 0
-    est_completion_date_ = tw_today_ + timedelta(days=remain_days_)
+    est_completion_date_ = query_date_ + timedelta(days=remain_days_)
     diff_days_ = (est_completion_date_ - est_end_).days
     percent_done_ = round((cum_vol_ / est_vol_) * 100) if est_vol_ > 0 else 0
 
-    cum_trips_ = df_range_['累計車次'].iloc[-1] if not df_range_.empty else 0
     avg_trips_per_day_ = cum_trips_ / current_work_days_ if current_work_days_ > 0 else 0
 
     return {
         "stage_choice": stage_choice,
-        "today": tw_today_,
+        "today": query_date_,
+        "is_historical": as_of_date is not None,
         "current_work_days": current_work_days_,
         "est_start": est_start_,
         "actual_start_date": actual_start_date_,
@@ -276,6 +307,83 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None)
         "vol_per_truck": vol_per_truck_,
         "est_vol_default": default_est_vol_,
     }
+
+
+def build_stage_overview_html(overview):
+    """把 compute_stage_overview() 回傳的 dict 畫成紫色階段總覽表格的HTML字串（給tab_stage即時總覽與歷史查詢共用）。"""
+    html_table = f"""
+    <table style="width: 100%; border-collapse: collapse; font-family: sans-serif; text-align: right;">
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">今天日期</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['today']}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">目前作業工期</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['current_work_days']}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計開始時間</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_start']}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">實際開始時間</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['actual_start_date']}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計施作工期</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_days']}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估剩餘天數</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['remain_days']}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計完成日期</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_end']}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估完成日期</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_completion_date']}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">差異 (天)</td>
+            <td style="border: 1px solid #ccc; padding: 8px; background-color: #f39c12; color: white;">{overview['diff_days']}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估土方量(鬆方)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_vol']:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">本日出土量(m³)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['today_vol']:,.1f}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估每日出土量(m³)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_daily_vol']:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">累積出土數量(m³)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['cum_vol']:,.1f}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(m³/天)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['avg_vol_per_day']:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">剩餘土方量(m³)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['remain_vol']:,.1f}</td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(台/天)</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">{overview['avg_trips_per_day']:,.1f}</td>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+        </tr>
+        <tr>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+            <td style="border: 1px solid #ccc; padding: 8px;"></td>
+            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">完成百分比</td>
+            <td style="border: 1px solid #ccc; padding: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div style="flex: 1; background-color: #e8e0ee; border-radius: 4px; overflow: hidden; height: 14px;">
+                        <div style="width: {min(max(overview['percent_done'], 0), 100)}%; background-color: #8e44ad; height: 100%;"></div>
+                    </div>
+                    <span style="color: #8e44ad; font-weight: bold; white-space: nowrap;">{overview['percent_done']}%</span>
+                </div>
+            </td>
+        </tr>
+    </table>
+    """
+
+    return html_table
 
 
 def get_stage_index(stage_choice):
@@ -1271,78 +1379,27 @@ with tab_stage:
 
     st.markdown(f"#### 🟣 【{stage_choice}】總覽")
 
-    html_table = f"""
-    <table style="width: 100%; border-collapse: collapse; font-family: sans-serif; text-align: right;">
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">今天日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['today']}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">目前作業工期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['current_work_days']}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計開始時間</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_start']}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">實際開始時間</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['actual_start_date']}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計施作工期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_days']}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估剩餘天數</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['remain_days']}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預計完成日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_end']}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">推估完成日期</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_completion_date']}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">差異 (天)</td>
-            <td style="border: 1px solid #ccc; padding: 8px; background-color: #f39c12; color: white;">{overview['diff_days']}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估土方量(鬆方)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_vol']:,.1f}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">本日出土量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['today_vol']:,.1f}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">預估每日出土量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['est_daily_vol']:,.1f}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">累積出土數量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['cum_vol']:,.1f}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(m³/天)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['avg_vol_per_day']:,.1f}</td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">剩餘土方量(m³)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['remain_vol']:,.1f}</td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">平均出土功率(台/天)</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">{overview['avg_trips_per_day']:,.1f}</td>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-        </tr>
-        <tr>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px;"></td>
-            <td style="border: 1px solid #ccc; padding: 8px; text-align: left; background-color: #f9f9f9;">完成百分比</td>
-            <td style="border: 1px solid #ccc; padding: 8px;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <div style="flex: 1; background-color: #e8e0ee; border-radius: 4px; overflow: hidden; height: 14px;">
-                        <div style="width: {min(max(overview['percent_done'], 0), 100)}%; background-color: #8e44ad; height: 100%;"></div>
-                    </div>
-                    <span style="color: #8e44ad; font-weight: bold; white-space: nowrap;">{overview['percent_done']}%</span>
-                </div>
-            </td>
-        </tr>
-    </table>
-    """
+    html_table = build_stage_overview_html(overview)
     st.markdown(html_table, unsafe_allow_html=True)
+
+    st.divider()
+    st.markdown("#### 📜 查詢過往報表")
+    st.caption("選一個過去的日期，呈現「截至那一天」的歷史快照（該日出土量、累積量、剩餘量、完成百分比等），不影響上面即時總覽或下面的編輯表格。")
+    query_col1, query_col2 = st.columns([1, 3])
+    with query_col1:
+        query_date = st.date_input(
+            "查詢日期",
+            value=overview["today"],
+            min_value=overview["est_start"],
+            max_value=overview["today"],
+            key=f"history_query_date_{stage_choice}",
+        )
+    if query_date != overview["today"]:
+        historical_overview = compute_stage_overview(stage_choice, df_results, as_of_date=query_date)
+        st.markdown(f"##### 🟣 【{stage_choice}】截至 {query_date} 的歷史快照")
+        st.markdown(build_stage_overview_html(historical_overview), unsafe_allow_html=True)
+    else:
+        st.caption("目前選的是今天，跟上面的即時總覽相同；選其他日期即可查詢過往快照。")
 
     st.divider()
     st.markdown("#### 📅 每日出土管控明細")
@@ -1450,7 +1507,7 @@ with tab_stage:
 
 with tab_sync:
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
-    st.info("💡 演算法說明：系統會自動尋找時間最接近的紀錄綁定並寫入聯單序號（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。")
+    st.info("💡 演算法說明：系統會自動尋找時間最接近的紀錄綁定並寫入聯單序號（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。上傳CSV後按一次按鈕即可完成比對並直接寫入雲端，不需要再分兩步驟。")
 
     sync_date = st.date_input("選擇對帳日期：", value=(datetime.utcnow() + timedelta(hours=8)).date())
 
@@ -1473,131 +1530,109 @@ with tab_sync:
             if missing_cols:
                 st.error(f"⚠️ CSV 檔案格式不符！缺少必要欄位：{', '.join(missing_cols)}。請確認官方匯出的檔案是否包含這些欄位。")
             else:
-                if st.button("開始進行時間序列精準比對", use_container_width=True):
-                    official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
-                    official_df['ParsedDate'] = official_df['FullTime'].dt.date
-                    official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                if st.button("🚀 開始比對並直接寫入雲端", use_container_width=True):
+                    with st.spinner("比對中並同步寫入雲端，請稍候..."):
+                        official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
+                        official_df['ParsedDate'] = official_df['FullTime'].dt.date
+                        official_df['正規化車號'] = official_df[plate_col].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
 
-                    sync_off_df = official_df[official_df['ParsedDate'] == sync_date].copy()
+                        sync_off_df = official_df[official_df['ParsedDate'] == sync_date].copy()
 
-                    df_logs_sync = load_sheet_data("dispatch_logs")
-                    if not df_logs_sync.empty and '日期' in df_logs_sync.columns:
-                        if "聯單序號" not in df_logs_sync.columns:
-                            df_logs_sync["聯單序號"] = ""
-                        df_logs_sync['ParsedDate'] = pd.to_datetime(df_logs_sync['日期']).dt.date
-                        df_logs_sync['FullTime'] = pd.to_datetime(df_logs_sync['日期'].astype(str) + ' ' + df_logs_sync['時間'].astype(str), errors='coerce')
-                        df_logs_sync['正規化車號'] = df_logs_sync['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-                        sync_sys_df = df_logs_sync[df_logs_sync['ParsedDate'] == sync_date].copy()
+                        df_logs = load_sheet_data("dispatch_logs")
+                        if df_logs.empty:
+                            df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註", "聯單序號"])
+                        if "聯單序號" not in df_logs.columns:
+                            df_logs["聯單序號"] = ""
+
+                        df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
+                        df_logs['FullTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
+                        df_logs['正規化車號'] = df_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                        sync_sys_df = df_logs[df_logs['ParsedDate'] == sync_date].copy()
+
+                        # 先算出差異摘要，等下比對完一起顯示給你看
+                        off_counts = sync_off_df['正規化車號'].value_counts().reset_index()
+                        off_counts.columns = ['車頭車號', '官方台數']
+                        sys_counts = sync_sys_df['正規化車號'].value_counts().reset_index()
+                        sys_counts.columns = ['車頭車號', '系統台數']
+                        merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
+                        merged['差異 (多按或漏按)'] = merged['系統台數'] - merged['官方台數']
+
+                        # 直接執行時間序列精準比對覆蓋與序號寫入
+                        to_delete_indices = []
+                        to_add_records = []
+                        updates = {}
+
+                        plates = set(sync_off_df['正規化車號']).union(set(sync_sys_df['正規化車號']))
+                        for plate in plates:
+                            o_subset = sync_off_df[sync_off_df['正規化車號'] == plate].sort_values('FullTime')
+                            s_subset = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['正規化車號'] == plate)].sort_values('FullTime')
+
+                            s_indices = s_subset.index.tolist()
+                            used_s = set()
+
+                            for _, o_row in o_subset.iterrows():
+                                o_t = o_row['FullTime']
+                                o_plate_raw = o_row[plate_col]
+                                o_serial_raw = str(o_row[serial_col])
+
+                                best_s_idx = None
+                                best_diff = float('inf')
+
+                                for idx in s_indices:
+                                    if idx in used_s: continue
+                                    st_t = s_subset.loc[idx, 'FullTime']
+                                    if pd.isna(o_t) or pd.isna(st_t): continue
+                                    diff = abs((o_t - st_t).total_seconds())
+                                    if diff < best_diff:
+                                        best_diff = diff
+                                        best_s_idx = idx
+
+                                if best_s_idx is not None and best_diff < 7200:
+                                    used_s.add(best_s_idx)
+                                    updates[best_s_idx] = {
+                                        "時間": o_t.strftime("%H:%M:%S"),
+                                        "聯單序號": o_serial_raw
+                                    }
+                                else:
+                                    to_add_records.append({
+                                        "日期": o_t.strftime("%Y-%m-%d") if pd.notnull(o_t) else sync_date.strftime("%Y-%m-%d"),
+                                        "時間": o_t.strftime("%H:%M:%S") if pd.notnull(o_t) else "00:00:00",
+                                        "車頭車號": o_plate_raw,
+                                        "出土分區": "未指定",
+                                        "載運方量(m³)": 12.0,
+                                        "備註": "官方聯單補登",
+                                        "聯單序號": o_serial_raw
+                                    })
+
+                            for idx in s_indices:
+                                if idx not in used_s:
+                                    to_delete_indices.append(idx)
+
+                        if updates:
+                            for idx, vals in updates.items():
+                                for k, v in vals.items():
+                                    df_logs.loc[idx, k] = v
+
+                        if to_delete_indices:
+                            df_logs = df_logs.drop(index=to_delete_indices)
+
+                        if to_add_records:
+                            df_logs = pd.concat([df_logs, pd.DataFrame(to_add_records)], ignore_index=True)
+
+                        df_logs['SortTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
+                        df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime'])
+
+                        save_ok = save_sheet_data("dispatch_logs", df_logs)
+
+                    if save_ok:
+                        st.success(f"✅ 比對完成並已直接寫入雲端！更新 {len(updates)} 筆、新增 {len(to_add_records)} 筆、剔除 {len(to_delete_indices)} 筆。")
+                        st.markdown("##### 比對差異摘要（僅供參考，資料已寫入雲端）")
+                        st.dataframe(merged, use_container_width=True)
                     else:
-                        sync_sys_df = pd.DataFrame(columns=['正規化車號', 'FullTime'])
-
-                    off_counts = sync_off_df['正規化車號'].value_counts().reset_index()
-                    off_counts.columns = ['車頭車號', '官方台數']
-
-                    sys_counts = sync_sys_df['正規化車號'].value_counts().reset_index()
-                    sys_counts.columns = ['車頭車號', '系統台數']
-
-                    merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
-                    merged['差異 (多按或漏按)'] = merged['系統台數'] - merged['官方台數']
-
-                    st.session_state['sync_data_summary'] = merged
-                    st.session_state['sync_date'] = sync_date
-                    st.session_state['official_ready_df'] = sync_off_df
-                    st.success("時間序列比對運算完成！請檢視下方差異並決定是否同步。")
+                        st.error("寫入雲端失敗，請檢查連線或稍後再試。")
 
         except Exception as e:
             st.error(f"檔案解析或比對失敗：{e}")
-
-    if st.session_state.get('sync_data_summary') is not None and st.session_state.get('sync_date') == sync_date:
-        merged_data = st.session_state['sync_data_summary']
-        st.dataframe(merged_data, use_container_width=True)
-
-        st.warning("點擊下方按鈕，系統將依照官方時序重新整理資料庫，並將 CSV 的「聯單序號」永久寫入雲端紀錄中。")
-
-        if st.button("以官方聯單時間軸為主，執行精準覆蓋與寫入序號", use_container_width=True):
-            df_logs = load_sheet_data("dispatch_logs")
-            if df_logs.empty:
-                 df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註", "聯單序號"])
-            if "聯單序號" not in df_logs.columns:
-                df_logs["聯單序號"] = ""
-
-            df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
-            df_logs['FullTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
-            df_logs['正規化車號'] = df_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-
-            sync_off_df = st.session_state['official_ready_df']
-
-            to_delete_indices = []
-            to_add_records = []
-            updates = {}
-
-            plates = set(sync_off_df['正規化車號']).union(set(df_logs[df_logs['ParsedDate'] == sync_date]['正規化車號']))
-
-            plate_col = "出場車頭車號"
-            serial_col = "聯單序號"
-
-            for plate in plates:
-                o_subset = sync_off_df[sync_off_df['正規化車號'] == plate].sort_values('FullTime')
-                s_subset = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['正規化車號'] == plate)].sort_values('FullTime')
-
-                s_indices = s_subset.index.tolist()
-                used_s = set()
-
-                for _, o_row in o_subset.iterrows():
-                    o_t = o_row['FullTime']
-                    o_plate_raw = o_row[plate_col]
-                    o_serial_raw = str(o_row[serial_col])
-
-                    best_s_idx = None
-                    best_diff = float('inf')
-
-                    for idx in s_indices:
-                        if idx in used_s: continue
-                        st_t = s_subset.loc[idx, 'FullTime']
-                        if pd.isna(o_t) or pd.isna(st_t): continue
-                        diff = abs((o_t - st_t).total_seconds())
-                        if diff < best_diff:
-                            best_diff = diff
-                            best_s_idx = idx
-
-                    if best_s_idx is not None and best_diff < 7200:
-                        used_s.add(best_s_idx)
-                        updates[best_s_idx] = {
-                            "時間": o_t.strftime("%H:%M:%S"),
-                            "聯單序號": o_serial_raw
-                        }
-                    else:
-                        to_add_records.append({
-                            "日期": o_t.strftime("%Y-%m-%d") if pd.notnull(o_t) else sync_date.strftime("%Y-%m-%d"),
-                            "時間": o_t.strftime("%H:%M:%S") if pd.notnull(o_t) else "00:00:00",
-                            "車頭車號": o_plate_raw,
-                            "出土分區": "未指定",
-                            "載運方量(m³)": 12.0,
-                            "備註": "官方聯單補登",
-                            "聯單序號": o_serial_raw
-                        })
-
-                for idx in s_indices:
-                    if idx not in used_s:
-                        to_delete_indices.append(idx)
-
-            if updates:
-                for idx, vals in updates.items():
-                    for k, v in vals.items():
-                        df_logs.loc[idx, k] = v
-
-            if to_delete_indices:
-                df_logs = df_logs.drop(index=to_delete_indices)
-
-            if to_add_records:
-                df_logs = pd.concat([df_logs, pd.DataFrame(to_add_records)], ignore_index=True)
-
-            df_logs['SortTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
-            df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime'])
-
-            if save_sheet_data("dispatch_logs", df_logs):
-                st.success("✅ 同步校正與聯單綁定完成！")
-                st.session_state['sync_data_summary'] = None
 
 with tab_manifest:
     st.write("### 🎫 聯單庫存與發放管理")
