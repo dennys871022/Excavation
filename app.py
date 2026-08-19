@@ -258,7 +258,6 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     default_daily_trips_ = round((est_vol_ / vol_per_truck_) / est_days_) if est_days_ > 0 and vol_per_truck_ > 0 else 0
     df_range_['內控預計車次'] = pd.to_numeric(df_range_['內控預計車次'], errors='coerce').fillna(default_daily_trips_)
     df_range_['差異'] = df_range_['實際車次'] - df_range_['內控預計車次']
-    df_range_['累積差異'] = df_range_['差異'].cumsum()
     df_range_['備註'] = df_range_['備註'].fillna("")
     df_range_['剩餘土方量'] = (est_vol_ - df_range_['累計運棄量']).clip(lower=0)
 
@@ -270,6 +269,10 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     df_range_.loc[_saved_mask, '計入工期'] = df_range_.loc[_saved_mask, '計入工期_saved'].astype(bool)
     df_range_.loc[df_range_['當日運棄量'] > 0, '計入工期'] = True  # 有出土一律算，不受任何手動設定影響
     df_range_ = df_range_.drop(columns=['計入工期_saved'])
+
+    # 累積差異：只累加「有顯示的日期」（計入工期=True）的差異，被隱藏的0出土日不會貢獻差異值，
+    # 這樣畫面上兩個相鄰可見日期之間的累積差異變化，才會等於中間那筆「差異」的值，數字對得起來
+    df_range_['累積差異'] = df_range_['差異'].where(df_range_['計入工期'], 0).cumsum()
 
     actual_start_date_ = est_start_
     # 目前作業工期改用「有計入工期的天數」，不是單純日曆天數，
