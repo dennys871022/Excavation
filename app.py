@@ -217,12 +217,14 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
 
     df_daily_notes_ = load_sheet_data("stage_daily_notes")
     if df_daily_notes_.empty:
-        df_daily_notes_ = pd.DataFrame(columns=['階段名稱', '日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註'])
+        df_daily_notes_ = pd.DataFrame(columns=['階段名稱', '日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註', '計入工期'])
     else:
         if '階段名稱' not in df_daily_notes_.columns:
             df_daily_notes_.insert(0, '階段名稱', stage_choice)
         if '剩餘土方量' not in df_daily_notes_.columns:
             df_daily_notes_['剩餘土方量'] = np.nan
+        if '計入工期' not in df_daily_notes_.columns:
+            df_daily_notes_['計入工期'] = np.nan
 
     curr_notes_ = df_daily_notes_[df_daily_notes_['階段名稱'] == stage_choice].copy() if not df_daily_notes_.empty else pd.DataFrame()
 
@@ -241,22 +243,40 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     df_range_['累計運棄量'] = df_range_['當日運棄量'].cumsum()
 
     if not curr_notes_.empty and '備註' in curr_notes_.columns:
-        merge_notes_ = curr_notes_[['日期', '內控預計車次', '備註']].drop_duplicates('日期')
+        merge_cols_ = ['日期', '內控預計車次', '備註']
+        if '計入工期' in curr_notes_.columns:
+            merge_cols_.append('計入工期')
+        merge_notes_ = curr_notes_[merge_cols_].drop_duplicates('日期')
+        if '計入工期' in merge_notes_.columns:
+            merge_notes_ = merge_notes_.rename(columns={'計入工期': '計入工期_saved'})
         df_range_ = pd.merge(df_range_, merge_notes_, on="日期", how="left")
     else:
         df_range_['內控預計車次'] = np.nan
         df_range_['備註'] = ""
+        df_range_['計入工期_saved'] = np.nan
 
     default_daily_trips_ = round((est_vol_ / vol_per_truck_) / est_days_) if est_days_ > 0 and vol_per_truck_ > 0 else 0
     df_range_['內控預計車次'] = pd.to_numeric(df_range_['內控預計車次'], errors='coerce').fillna(default_daily_trips_)
     df_range_['差異'] = df_range_['實際車次'] - df_range_['內控預計車次']
+    df_range_['累積差異'] = df_range_['差異'].cumsum()
     df_range_['備註'] = df_range_['備註'].fillna("")
     df_range_['剩餘土方量'] = (est_vol_ - df_range_['累計運棄量']).clip(lower=0)
 
-    actual_start_date_ = est_start_
-    current_work_days_ = (query_date_ - actual_start_date_).days + 1 if actual_start_date_ <= query_date_ else 0
+    # 計入工期：有出土(>0)一律算，沒出土(=0)預設不算，除非該日被手動勾選為特例（存在 stage_daily_notes 裡）
+    if '計入工期_saved' not in df_range_.columns:
+        df_range_['計入工期_saved'] = np.nan
+    df_range_['計入工期'] = df_range_['當日運棄量'] > 0
+    _saved_mask = df_range_['計入工期_saved'].notna()
+    df_range_.loc[_saved_mask, '計入工期'] = df_range_.loc[_saved_mask, '計入工期_saved'].astype(bool)
+    df_range_.loc[df_range_['當日運棄量'] > 0, '計入工期'] = True  # 有出土一律算，不受任何手動設定影響
+    df_range_ = df_range_.drop(columns=['計入工期_saved'])
 
+    actual_start_date_ = est_start_
+    # 目前作業工期改用「有計入工期的天數」，不是單純日曆天數，
+    # 這樣沒出土又沒被標記為特例的日期就不會拖累平均出土功率/剩餘天數的計算
     today_str_ = query_date_.strftime("%Y-%m-%d")
+    _work_days_mask = (df_range_['日期'] <= today_str_) & (df_range_['計入工期'] == True)
+    current_work_days_ = int(_work_days_mask.sum())
     today_row_ = df_range_[df_range_['日期'] == today_str_]
     today_vol_ = today_row_['當日運棄量'].sum() if not today_row_.empty else 0
 
@@ -397,6 +417,24 @@ def get_stage_index(stage_choice):
     if "第4挖" in stage_choice:
         return 3
     return None
+
+
+def _upsert_daily_notes_field(df_daily_notes, stage_choice, date_str, field, value):
+    """
+    只更新 stage_daily_notes 裡「某一天、某一個欄位」的值，其餘欄位（包含其他已存的手動設定）
+    完全不動。給「0出土日期管理」跟其他只想改單一欄位的地方用，避免整列/整段覆寫。
+    """
+    df_daily_notes = df_daily_notes.copy()
+    mask = (df_daily_notes['階段名稱'] == stage_choice) & (df_daily_notes['日期'].astype(str) == str(date_str))
+    if mask.any():
+        df_daily_notes.loc[mask, field] = value
+    else:
+        new_row = {c: np.nan for c in df_daily_notes.columns}
+        new_row['階段名稱'] = stage_choice
+        new_row['日期'] = date_str
+        new_row[field] = value
+        df_daily_notes = pd.concat([df_daily_notes, pd.DataFrame([new_row])], ignore_index=True)
+    return df_daily_notes
 
 
 def sync_stage_daily_log(stage_choice, df_results):
@@ -729,6 +767,7 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
             c.line(margin, y, width - margin, y)
             y -= 4.5 * mm
 
+        red_cols = {'差異', '累積差異'}
         draw_dc_header()
         c.setFont(font_name, 8)
         for _, row in daily_control_df.iterrows():
@@ -745,7 +784,15 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
                     text_val = f"{val:,.1f}"
                 else:
                     text_val = str(val)
+                try:
+                    is_negative = col in red_cols and float(val) < 0
+                except (ValueError, TypeError):
+                    is_negative = False
+                if is_negative:
+                    c.setFillColor(HexColor("#e74c3c"))
                 c.drawString(x_pos, y, text_val)
+                if is_negative:
+                    c.setFillColor(HexColor("#000000"))
                 x_pos += w
             y -= 5 * mm
 
@@ -1209,8 +1256,10 @@ with tab_stats:
                 with st.spinner("PDF 產生中，請稍候..."):
                     map_img_path = generate_backend_map(df_results, zone_grouped, stage_choice=global_stage_choice) if not df_results.empty else None
                     stage_overview_for_pdf = compute_stage_overview(global_stage_choice, df_results)
-                    daily_control_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
-                    daily_control_for_pdf = stage_overview_for_pdf["df_range"][daily_control_cols].copy()
+                    daily_control_cols = ['日期', '內控預計車次', '實際車次', '差異', '累積差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
+                    _pdf_df_range = stage_overview_for_pdf["df_range"]
+                    _pdf_df_range_display = _pdf_df_range[(_pdf_df_range['當日運棄量'] > 0) | (_pdf_df_range['計入工期'] == True)]
+                    daily_control_for_pdf = _pdf_df_range_display[daily_control_cols].copy()
 
                     if get_stage_index(global_stage_choice) is not None:
                         pdf_legend_items = [
@@ -1403,9 +1452,35 @@ with tab_stage:
 
     st.divider()
     st.markdown("#### 📅 每日出土管控明細")
-    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港停止收容），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量。「差異」為負數（實際車次落後內控預計車次）時，下方預覽表會以紅色標示。")
+    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港停止收容），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量；「累積差異」為「差異」逐日累加。「差異」與「累積差異」為負數時，下方預覽表會以紅色標示。下方表格只顯示「有出土」或「被標記為特例」的日期；沒出土又沒被標記的日期不會出現、也不算進「目前作業工期」。")
 
-    display_cols = ['日期', '內控預計車次', '實際車次', '差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
+    zero_vol_df = df_range[df_range['當日運棄量'] == 0][['日期', '計入工期']].copy()
+    with st.expander(f"⚙️ 管理沒有出土的日期（共 {len(zero_vol_df)} 天；預設不顯示、不算工期，勾選才會顯示並算入工期）", expanded=False):
+        if zero_vol_df.empty:
+            st.caption("目前沒有出土量為0的日期。")
+        else:
+            edited_zero = st.data_editor(
+                zero_vol_df.rename(columns={'計入工期': '算入工期並顯示'}),
+                column_config={
+                    "日期": st.column_config.TextColumn(disabled=True),
+                    "算入工期並顯示": st.column_config.CheckboxColumn(default=False),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key=f"zero_vol_editor_{stage_choice}",
+            )
+            if st.button("💾 儲存特例設定", key=f"save_zero_vol_{stage_choice}"):
+                updated_notes = df_daily_notes.copy()
+                for _, r in edited_zero.iterrows():
+                    updated_notes = _upsert_daily_notes_field(
+                        updated_notes, stage_choice, r['日期'], '計入工期', bool(r['算入工期並顯示'])
+                    )
+                save_sheet_data("stage_daily_notes", updated_notes)
+                st.success("已儲存特例設定！沒出土但打勾的日期會出現在下方明細表並算入工期。")
+                st.rerun()
+
+    display_cols = ['日期', '內控預計車次', '實際車次', '差異', '累積差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
+    df_range_display = df_range[(df_range['當日運棄量'] > 0) | (df_range['計入工期'] == True)]
 
     def _highlight_negative_diff(val):
         try:
@@ -1413,7 +1488,7 @@ with tab_stage:
         except (ValueError, TypeError):
             return ''
 
-    preview_styler = df_range[display_cols].style.applymap(_highlight_negative_diff, subset=['差異'])
+    preview_styler = df_range_display[display_cols].style.applymap(_highlight_negative_diff, subset=['差異', '累積差異'])
     st.dataframe(preview_styler, use_container_width=True, hide_index=True)
 
     col_reset1, col_reset2 = st.columns([3, 1])
@@ -1430,11 +1505,12 @@ with tab_stage:
 
     st.markdown("##### ✏️ 編輯內控預計車次 / 備註")
     edited_daily = st.data_editor(
-        df_range[display_cols],
+        df_range_display[display_cols],
         column_config={
             "內控預計車次": st.column_config.NumberColumn(required=True),
             "實際車次": st.column_config.NumberColumn(disabled=True),
             "差異": st.column_config.NumberColumn(disabled=True),
+            "累積差異": st.column_config.NumberColumn(disabled=True),
             "當日運棄量": st.column_config.NumberColumn(disabled=True),
             "累計運棄量": st.column_config.NumberColumn(disabled=True),
             "剩餘土方量": st.column_config.NumberColumn(disabled=True),
@@ -1447,7 +1523,10 @@ with tab_stage:
     if st.button("💾 儲存每日車次目標與備註 (全欄位寫入雲端)"):
         save_df = edited_daily.copy()
         save_df['階段名稱'] = stage_choice
-        other_notes = df_daily_notes[df_daily_notes['階段名稱'] != stage_choice]
+        save_df['計入工期'] = True  # 這裡看得到的日期一定是「有出土」或「已標記特例」，都算工期
+        # 只替換「這次編輯到的日期」，其餘（含被隱藏的0出土日期特例設定）完全不動
+        edited_dates = set(save_df['日期'])
+        other_notes = df_daily_notes[~((df_daily_notes['階段名稱'] == stage_choice) & (df_daily_notes['日期'].astype(str).isin(edited_dates)))]
         final_notes = pd.concat([other_notes, save_df], ignore_index=True)
         save_sheet_data("stage_daily_notes", final_notes)
         st.rerun()
