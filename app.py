@@ -440,6 +440,58 @@ def _upsert_daily_notes_field(df_daily_notes, stage_choice, date_str, field, val
     return df_daily_notes
 
 
+def _is_blank_value(v):
+    """判斷一個值是否算「空」：NaN、None，或去除空白後的空字串、或 False。"""
+    if pd.isna(v):
+        return True
+    if isinstance(v, str) and v.strip() == "":
+        return True
+    if isinstance(v, bool) and v is False:
+        return True
+    return False
+
+
+def _row_has_meaningful_override(row):
+    """
+    判斷一列是否還有「值得保留」的手動設定：
+    內控預計車次有填真的數字、備註有寫字、或計入工期被設成True，這三個才算數。
+    差異/當日運棄量/累計運棄量/剩餘土方量/實際車次這些「事實」欄位不列入判斷，
+    因為它們本來就只是同步時的快照，不影響任何計算（計算永遠會重新從派車紀錄算），
+    舊快照留著沒有意義，可以放心清掉。
+    """
+    if not _is_blank_value(row.get('內控預計車次')):
+        return True
+    if not _is_blank_value(row.get('備註')):
+        return True
+    if row.get('計入工期') is True:
+        return True
+    return False
+
+
+def _clear_daily_notes_field_or_drop(df_daily_notes, stage_choice, date_str, field):
+    """
+    把某一天某個欄位清空（設回 NaN，代表恢復系統預設行為）。
+    清空後如果這一列已經沒有任何值得保留的手動設定，就把整列刪掉，避免留下空列造成雲端資料肥大、雜亂。
+    """
+    df_daily_notes = df_daily_notes.copy()
+    mask = (df_daily_notes['階段名稱'] == stage_choice) & (df_daily_notes['日期'].astype(str) == str(date_str))
+    if not mask.any():
+        return df_daily_notes
+    df_daily_notes.loc[mask, field] = np.nan
+    row = df_daily_notes.loc[mask].iloc[0]
+    if not _row_has_meaningful_override(row):
+        df_daily_notes = df_daily_notes[~mask]
+    return df_daily_notes
+
+
+def _save_daily_notes_sorted(df_daily_notes):
+    """存檔前依「階段名稱、日期」排序，避免雲端表格日期跳來跳去、難以閱讀核對。"""
+    if not df_daily_notes.empty and '日期' in df_daily_notes.columns:
+        sort_cols = ['階段名稱', '日期'] if '階段名稱' in df_daily_notes.columns else ['日期']
+        df_daily_notes = df_daily_notes.sort_values(sort_cols).reset_index(drop=True)
+    return save_sheet_data("stage_daily_notes", df_daily_notes)
+
+
 def sync_stage_daily_log(stage_choice, df_results):
     """
     把「目前作業階段」今天這一列的統計數字，即時 upsert 寫入 stage_daily_notes 雲端分頁。
@@ -479,7 +531,7 @@ def sync_stage_daily_log(stage_choice, df_results):
         new_row_df = pd.DataFrame([new_row])
         final_notes = pd.concat([df_daily_notes, new_row_df], ignore_index=True)
 
-    return save_sheet_data("stage_daily_notes", final_notes)
+    return _save_daily_notes_sorted(final_notes)
 
 
 def generate_backend_map(df_results, zone_grouped, stage_choice=None):
@@ -1475,12 +1527,31 @@ with tab_stage:
             if st.button("💾 儲存特例設定", key=f"save_zero_vol_{stage_choice}"):
                 updated_notes = df_daily_notes.copy()
                 for _, r in edited_zero.iterrows():
-                    updated_notes = _upsert_daily_notes_field(
-                        updated_notes, stage_choice, r['日期'], '計入工期', bool(r['算入工期並顯示'])
-                    )
-                save_sheet_data("stage_daily_notes", updated_notes)
-                st.success("已儲存特例設定！沒出土但打勾的日期會出現在下方明細表並算入工期。")
+                    d = str(r['日期'])
+                    if bool(r['算入工期並顯示']):
+                        updated_notes = _upsert_daily_notes_field(updated_notes, stage_choice, d, '計入工期', True)
+                    else:
+                        # 沒勾 = 恢復預設行為，不需要特地存一筆 False，
+                        # 直接清掉這個欄位；如果那天已經沒有其他值得保留的手動設定，整列一併移除，避免留下空列
+                        updated_notes = _clear_daily_notes_field_or_drop(updated_notes, stage_choice, d, '計入工期')
+                _save_daily_notes_sorted(updated_notes)
+                st.success("已儲存特例設定！沒出土但打勾的日期會出現在下方明細表並算入工期；沒勾的日期不會在雲端留下多餘紀錄。")
                 st.rerun()
+
+    with st.expander("🧹 清理雲端舊資料（一次性；清掉沒有實際內容的空白紀錄列）", expanded=False):
+        st.caption("如果你的雲端 stage_daily_notes 分頁裡有很多內控預計車次、備註都空白，計入工期也是空的舊紀錄列（例如舊版程式曾經誤寫入的資料），可以用這顆按鈕一次清掉。只會刪除「內控預計車次沒填、備註沒寫、計入工期沒被勾選為True」的列；只要三者有一個有內容，那一列就會被保留。")
+        if st.button("🧹 清理本階段沒有意義的舊紀錄列", key=f"cleanup_notes_{stage_choice}"):
+            cleaned_notes = df_daily_notes.copy()
+            if not cleaned_notes.empty:
+                mask_stage_clean = cleaned_notes['階段名稱'] == stage_choice
+                keep_mask = (~mask_stage_clean) | cleaned_notes.apply(_row_has_meaningful_override, axis=1)
+                removed_count = int((~keep_mask).sum())
+                cleaned_notes = cleaned_notes[keep_mask]
+            else:
+                removed_count = 0
+            _save_daily_notes_sorted(cleaned_notes)
+            st.success(f"已清理【{stage_choice}】{removed_count} 筆沒有實際內容的舊紀錄列。")
+            st.rerun()
 
     display_cols = ['日期', '內控預計車次', '實際車次', '差異', '累積差異', '當日運棄量', '累計運棄量', '剩餘土方量', '備註']
     df_range_display = df_range[(df_range['當日運棄量'] > 0) | (df_range['計入工期'] == True)]
@@ -1500,7 +1571,11 @@ with tab_stage:
             mask_stage = df_daily_notes['階段名稱'] == stage_choice
             if '內控預計車次' in df_daily_notes.columns:
                 df_daily_notes.loc[mask_stage, '內控預計車次'] = np.nan
-            save_sheet_data("stage_daily_notes", df_daily_notes)
+            # 清空後，把已經沒有任何值得保留設定（備註/計入工期）的空列一併移除，避免留下垃圾列
+            if not df_daily_notes.empty:
+                keep_mask = (~mask_stage) | df_daily_notes.apply(_row_has_meaningful_override, axis=1)
+                df_daily_notes = df_daily_notes[keep_mask]
+            _save_daily_notes_sorted(df_daily_notes)
             st.success(f"已清空【{stage_choice}】所有日期的內控預計車次，全部改回套用目前參數算出的系統預設值。")
             st.rerun()
     with col_reset1:
@@ -1531,7 +1606,7 @@ with tab_stage:
         edited_dates = set(save_df['日期'])
         other_notes = df_daily_notes[~((df_daily_notes['階段名稱'] == stage_choice) & (df_daily_notes['日期'].astype(str).isin(edited_dates)))]
         final_notes = pd.concat([other_notes, save_df], ignore_index=True)
-        save_sheet_data("stage_daily_notes", final_notes)
+        _save_daily_notes_sorted(final_notes)
         st.rerun()
 
     st.divider()
