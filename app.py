@@ -66,6 +66,33 @@ def save_sheet_data(sheet_name, df):
         st.error(f"寫入分頁 `{sheet_name}` 失敗：{e}")
         return False
 
+
+def _is_voided(val):
+    """
+    穩健判斷「作廢」欄位是否為 True。因為資料存到 Google 試算表再讀回來，
+    布林值常常會變成字串 'TRUE'/'FALSE' 或數字 1/0，不能直接用 `if val:` 判斷。
+    """
+    if pd.isna(val):
+        return False
+    if isinstance(val, bool):
+        return val
+    s = str(val).strip().upper()
+    return s in ('TRUE', '1', 'YES', 'V', '是')
+
+
+def filter_active_dispatch_logs(df_logs):
+    """
+    回傳排除「已作廢」紀錄後的派車紀錄，給所有車次/方量統計計算使用
+    （例如爆胎超時被台北港拒收、原車返回工地的那種聯單，作廢後不應計入車次與出土量）。
+    原始資料（含作廢列）完全不受影響，仍完整保留在雲端可供查核，只是統計時被排除。
+    """
+    if df_logs is None or df_logs.empty:
+        return df_logs
+    if '作廢' not in df_logs.columns:
+        return df_logs
+    return df_logs[~df_logs['作廢'].apply(_is_voided)].copy()
+
+
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
     for sheet in ["grid_zones", "dispatch_logs", "manifest_settings", "manifest_delivery", "stage_settings", "stage_daily_notes"]:
         if f"cache_{sheet}" in st.session_state:
@@ -203,7 +230,7 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     est_days_ = max((est_end_ - est_start_).days, 1)
     est_daily_vol_ = est_vol_ / est_days_ if est_days_ > 0 else 0
 
-    df_logs_ = load_sheet_data("dispatch_logs")
+    df_logs_ = filter_active_dispatch_logs(load_sheet_data("dispatch_logs"))
     if not df_logs_.empty and "日期" in df_logs_.columns:
         valid_logs_ = df_logs_.copy()
         valid_logs_['載運方量(m³)'] = pd.to_numeric(valid_logs_.get('載運方量(m³)', vol_per_truck_), errors='coerce').fillna(vol_per_truck_)
@@ -1122,9 +1149,15 @@ with tab_stats:
     if not df_logs.empty and "日期" in df_logs.columns:
         if "聯單序號" not in df_logs.columns:
             df_logs["聯單序號"] = ""
+        if "作廢" not in df_logs.columns:
+            df_logs["作廢"] = False
+        if "作廢原因" not in df_logs.columns:
+            df_logs["作廢原因"] = ""
 
         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
-        valid_logs = df_logs.copy()
+        # valid_logs 是統計計算用的資料，會排除已標記「作廢」的紀錄（例如爆胎超時被拒收、原車返回的那種）
+        # df_logs 本身維持完整原始資料（含作廢列），供下面「檢視所有歷史紀錄」查閱與編輯
+        valid_logs = filter_active_dispatch_logs(df_logs)
 
         if not valid_logs.empty and '時間' in valid_logs.columns:
             valid_logs = valid_logs.sort_values(['車頭車號', '日期', '時間'])
@@ -1401,6 +1434,41 @@ with tab_stats:
         if not display_df.empty:
             st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+        st.divider()
+        st.markdown("#### 🚫 標記異常作廢聯單")
+        st.caption("例如：司機爆胎導致超過4小時、台北港拒收原車返回工地，這種聯單要作廢。選日期、勾選要作廢的紀錄並填寫原因後儲存，作廢的紀錄不會再計入車次與出土量統計（地圖、報表、進度、PDF全部都會排除），但原始紀錄仍完整保留在雲端可查，不會被刪除。")
+        void_date = st.date_input("選擇要處理的日期", value=tw_today, key="void_search_date")
+        day_logs = df_logs[df_logs['ParsedDate'] == void_date] if not df_logs.empty else pd.DataFrame()
+        if day_logs.empty:
+            st.info("這天沒有派車紀錄。")
+        else:
+            void_display_cols = [c for c in ['車頭車號', '時間', '出土分區', '載運方量(m³)', '聯單序號', '作廢', '作廢原因'] if c in day_logs.columns]
+            edited_void = st.data_editor(
+                day_logs[void_display_cols],
+                column_config={
+                    "車頭車號": st.column_config.TextColumn(disabled=True),
+                    "時間": st.column_config.TextColumn(disabled=True),
+                    "出土分區": st.column_config.TextColumn(disabled=True),
+                    "載運方量(m³)": st.column_config.NumberColumn(disabled=True),
+                    "聯單序號": st.column_config.TextColumn(disabled=True),
+                    "作廢": st.column_config.CheckboxColumn(help="勾選代表這筆聯單作廢，不計入任何統計"),
+                    "作廢原因": st.column_config.TextColumn(help="例如：爆胎超時遭台北港拒收，原車返回工地"),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key=f"void_editor_{void_date}",
+            )
+            if st.button("💾 儲存作廢設定", key=f"save_void_{void_date}"):
+                full_logs = df_logs.copy()
+                for idx in edited_void.index:
+                    full_logs.loc[idx, '作廢'] = bool(edited_void.loc[idx, '作廢'])
+                    full_logs.loc[idx, '作廢原因'] = edited_void.loc[idx, '作廢原因']
+                save_cols = [c for c in full_logs.columns if c not in ('orig_index', 'ParsedDate')]
+                if save_sheet_data("dispatch_logs", full_logs[save_cols]):
+                    void_count = int(edited_void['作廢'].apply(_is_voided).sum())
+                    st.success(f"已儲存！{void_date} 目前有 {void_count} 筆作廢紀錄，統計數字會自動排除。")
+                    st.rerun()
+
         with st.expander("📂 檢視所有歷史紀錄"):
             clean_show_logs = df_logs.copy()
             if 'orig_index' in clean_show_logs.columns:
@@ -1613,7 +1681,7 @@ with tab_stage:
     st.markdown(f"#### 🗺️ 【{stage_choice}】單階段專用地圖（僅顯示本階段挖掘進度）")
     st.markdown("⬜ 尚未開始 🟧 進行中 🟩 已完成")
 
-    df_logs_for_map = load_sheet_data("dispatch_logs")
+    df_logs_for_map = filter_active_dispatch_logs(load_sheet_data("dispatch_logs"))
     zone_vol_dict = {}
     if not df_logs_for_map.empty and '出土分區' in df_logs_for_map.columns and '載運方量(m³)' in df_logs_for_map.columns:
         tmp_map_logs = df_logs_for_map[df_logs_for_map['出土分區'] != '未指定'].copy()
