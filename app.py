@@ -1443,8 +1443,13 @@ with tab_stats:
             st.info("這天沒有派車紀錄。")
         else:
             void_display_cols = [c for c in ['車頭車號', '時間', '出土分區', '載運方量(m³)', '聯單序號', '作廢', '作廢原因'] if c in day_logs.columns]
+            day_logs_display = day_logs[void_display_cols].copy()
+            # CheckboxColumn 要求欄位一定要是「真正的布林值」dtype，
+            # 但這欄剛從雲端讀回來（或是全新欄位）型態可能是空值/字串，要先強制轉型，不然 data_editor 會直接報錯
+            day_logs_display['作廢'] = day_logs_display['作廢'].apply(_is_voided)
+            day_logs_display['作廢原因'] = day_logs_display['作廢原因'].fillna("").astype(str)
             edited_void = st.data_editor(
-                day_logs[void_display_cols],
+                day_logs_display,
                 column_config={
                     "車頭車號": st.column_config.TextColumn(disabled=True),
                     "時間": st.column_config.TextColumn(disabled=True),
