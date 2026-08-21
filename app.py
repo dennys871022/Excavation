@@ -1113,6 +1113,76 @@ with tab_grid:
         fig.update_layout(dragmode='pan', xaxis_title="X (m)", yaxis_title="Y (m)", yaxis=dict(scaleanchor="x", scaleratio=1), height=700, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
+    st.divider()
+    st.markdown("### 🖱️ 框選查詢範圍內各階段土方量")
+    st.caption("在下方地圖用滑鼠拖曳框選想查詢的範圍（地圖右上角工具列可切換框選/套索選取），下方會即時加總範圍內所有分區的各挖階土方量。如果你部署的 Streamlit 版本不支援框選，可以改用下面的分區勾選清單。")
+
+    select_fig = go.Figure()
+    for idx, row in df_results.iterrows():
+        select_fig.add_trace(go.Scatter(
+            x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
+            y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
+            mode='lines', line=dict(color='lightblue', width=1),
+            fill='toself', fillcolor='rgba(0, 100, 255, 0.08)', showlegend=False, hoverinfo='skip'
+        ))
+    marker_trace_index = len(df_results)  # 矩形共 len(df_results) 條 trace（索引 0 ~ N-1），中心點marker是接下來加的第 N 條
+    select_fig.add_trace(go.Scatter(
+        x=df_results['x_center'], y=df_results['y_center'],
+        mode='markers+text',
+        text=df_results['分區代號'], textposition='middle center', textfont=dict(size=9, color='black'),
+        marker=dict(size=20, color='rgba(0,100,255,0.35)', line=dict(width=1, color='blue')),
+        showlegend=False,
+        hovertext=[f"{r['分區代號']}<br>預估總土方: {r['預估總土方']:,.0f} m³" for _, r in df_results.iterrows()],
+        hoverinfo='text',
+    ))
+    select_fig.update_layout(
+        dragmode='select',
+        xaxis_title="X (m)", yaxis_title="Y (m)",
+        yaxis=dict(scaleanchor="x", scaleratio=1),
+        height=650, margin=dict(l=20, r=20, t=30, b=20),
+    )
+
+    box_selected_codes = []
+    select_supported = True
+    try:
+        select_event = st.plotly_chart(
+            select_fig, use_container_width=True, key="grid_box_select_chart",
+            on_select="rerun", selection_mode=("box", "lasso"),
+            config={'scrollZoom': True},
+        )
+        if select_event and select_event.get("selection", {}).get("points"):
+            for p in select_event["selection"]["points"]:
+                if p.get("curve_number") == marker_trace_index:
+                    pi = p.get("point_index")
+                    if pi is not None and pi < len(df_results):
+                        box_selected_codes.append(df_results.iloc[pi]['分區代號'])
+    except TypeError:
+        select_supported = False
+        st.plotly_chart(select_fig, use_container_width=True, config={'scrollZoom': True})
+        st.warning("⚠️ 目前部署的 Streamlit 版本不支援地圖互動框選（需要較新版本），請改用下方的分區勾選清單來查詢範圍。")
+
+    manual_codes = st.multiselect(
+        "或者，直接勾選要查詢的分區（框選後這裡會自動帶入，也可以手動增減）",
+        options=df_results['分區代號'].tolist(),
+        default=box_selected_codes,
+        key="grid_manual_select",
+    )
+
+    final_codes = manual_codes if manual_codes else box_selected_codes
+
+    if final_codes:
+        subset = df_results[df_results['分區代號'].isin(final_codes)]
+        st.success(f"已選取 **{len(subset)}** 個分區：{'、'.join(final_codes)}")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("第1挖方量", f"{subset['第1挖方量(m³)'].sum():,.0f} m³")
+        m2.metric("第2挖方量", f"{subset['第2挖方量(m³)'].sum():,.0f} m³")
+        m3.metric("第3挖方量", f"{subset['第3挖方量(m³)'].sum():,.0f} m³")
+        m4.metric("第4挖方量", f"{subset['第4挖方量(m³)'].sum():,.0f} m³")
+        m5.metric("預估總土方", f"{subset['預估總土方'].sum():,.0f} m³")
+        st.dataframe(subset[export_columns], use_container_width=True, hide_index=True)
+    else:
+        st.info("尚未選取任何分區。請用滑鼠在上方地圖拖曳框選，或在下方清單勾選分區代號。")
+
 with tab_stats:
     st.write("### 📊 雲端出土統計儀表板")
 
