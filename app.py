@@ -308,7 +308,6 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     else:
         default_daily_trips_ = round((est_vol_ / vol_per_truck_) / est_days_) if est_days_ > 0 and vol_per_truck_ > 0 else 0
     df_range_['內控預計車次'] = pd.to_numeric(df_range_['內控預計車次'], errors='coerce').fillna(default_daily_trips_)
-    df_range_['差異'] = df_range_['實際車次'] - df_range_['內控預計車次']
     df_range_['備註'] = df_range_['備註'].fillna("")
     df_range_['剩餘土方量'] = (est_vol_ - df_range_['累計運棄量']).clip(lower=0)
 
@@ -321,9 +320,16 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     df_range_.loc[df_range_['當日運棄量'] > 0, '計入工期'] = True  # 有出土一律算，不受任何手動設定影響
     df_range_ = df_range_.drop(columns=['計入工期_saved'])
 
-    # 累積差異：只累加「有顯示的日期」（計入工期=True）的差異，被隱藏的0出土日不會貢獻差異值，
+    # 備註含「台北港」字樣且當天沒出土 → 這天的差異／累積差異直接跳過不計算（差異留空、累積差異維持前一天數字不變）
+    _port_reject_mask = df_range_['備註'].apply(_note_indicates_port_rejection) & (df_range_['當日運棄量'] == 0)
+
+    df_range_['差異'] = df_range_['實際車次'] - df_range_['內控預計車次']
+    df_range_.loc[_port_reject_mask, '差異'] = np.nan
+
+    # 累積差異：只累加「有顯示且沒被台北港註記跳過」的日期的差異，被隱藏的0出土日跟台北港排除日都不會貢獻差異值，
     # 這樣畫面上兩個相鄰可見日期之間的累積差異變化，才會等於中間那筆「差異」的值，數字對得起來
-    df_range_['累積差異'] = df_range_['差異'].where(df_range_['計入工期'], 0).cumsum()
+    _cumsum_contribution = df_range_['差異'].where(df_range_['計入工期'] & ~_port_reject_mask, 0).fillna(0)
+    df_range_['累積差異'] = _cumsum_contribution.cumsum()
 
     actual_start_date_ = est_start_
     # 目前作業工期改用「有計入工期的天數」，不是單純日曆天數，
@@ -331,11 +337,10 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     # 另外：即使被勾選為特例要顯示，只要備註寫了「台北港無收土/停止收容」之類關鍵字，
     # 那天雖然會顯示在明細表上，但不會被算進工期與平均功率（除非那天其實有出土量，就一律照算）。
     today_str_ = query_date_.strftime("%Y-%m-%d")
-    _port_reject_mask = df_range_['備註'].apply(_note_indicates_port_rejection)
     _work_days_mask = (
         (df_range_['日期'] <= today_str_)
         & (df_range_['計入工期'] == True)
-        & (~_port_reject_mask | (df_range_['當日運棄量'] > 0))
+        & (~_port_reject_mask)
     )
     current_work_days_ = int(_work_days_mask.sum())
     today_row_ = df_range_[df_range_['日期'] == today_str_]
@@ -895,12 +900,14 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
             x_pos = margin
             for col, w in zip(dc_cols, col_widths):
                 val = row[col]
-                if isinstance(val, float):
+                if isinstance(val, float) and pd.isna(val):
+                    text_val = "－"  # 台北港排除日：差異/累積差異跳過不計算，顯示為破折號而不是難看的 nan
+                elif isinstance(val, float):
                     text_val = f"{val:,.1f}"
                 else:
                     text_val = str(val)
                 try:
-                    is_negative = col in red_cols and float(val) < 0
+                    is_negative = col in red_cols and not pd.isna(val) and float(val) < 0
                 except (ValueError, TypeError):
                     is_negative = False
                 if is_negative:
@@ -1507,16 +1514,24 @@ with tab_stats:
             zone_list = df_results["分區代號"].tolist() if not df_results.empty else []
             col_z1, col_z2 = st.columns([2, 1])
             with col_z1:
-                selected_zone = st.selectbox("選擇要套用的分區", options=["請選擇", "開挖前土方"] + zone_list)
+                selected_zones = st.multiselect(
+                    "選擇要套用的分區（可複選；選多個時，系統會把勾選的紀錄依序輪流平均分配到這些分區）",
+                    options=["開挖前土方"] + zone_list,
+                )
             with col_z2:
-                if st.button("套用到勾選的紀錄"):
-                    if selected_zone == "請選擇":
-                        st.error("請先選擇分區")
+                st.write("")
+                st.write("")
+                if st.button("套用到勾選的紀錄", use_container_width=True):
+                    if not selected_zones:
+                        st.error("請至少選擇一個分區")
                     else:
                         checked_rows = edited_unassigned[edited_unassigned['勾選'] == True]
                         if len(checked_rows) > 0:
                             original_indices = checked_rows['orig_index'].tolist()
-                            df_logs.loc[original_indices, '出土分區'] = selected_zone
+                            # 選1個分區＝全部指定同一區（跟原本行為一樣）；選多個分區＝依序輪流平均分配
+                            n_zones = len(selected_zones)
+                            assigned_zones = [selected_zones[i % n_zones] for i in range(len(original_indices))]
+                            df_logs.loc[original_indices, '出土分區'] = assigned_zones
 
                             if 'orig_index' in df_logs.columns:
                                 df_logs = df_logs.drop(columns=['orig_index'])
@@ -1525,7 +1540,13 @@ with tab_stats:
 
                             if save_sheet_data("dispatch_logs", df_logs):
                                 sync_stage_daily_log(global_stage_choice, df_results)
-                                st.success(f"成功更新 {len(checked_rows)} 筆紀錄！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
+                                if n_zones == 1:
+                                    st.success(f"成功更新 {len(checked_rows)} 筆紀錄，全部指定至【{selected_zones[0]}】！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
+                                else:
+                                    from collections import Counter
+                                    zone_counts = Counter(assigned_zones)
+                                    breakdown = "、".join([f"{z}：{c}筆" for z, c in zone_counts.items()])
+                                    st.success(f"成功更新 {len(checked_rows)} 筆紀錄，已平均分配到 {n_zones} 個分區（{breakdown}）！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
                                 st.rerun()
                         else:
                             st.warning("⚠️ 請至少勾選一筆要套用的紀錄。")
@@ -1692,7 +1713,7 @@ with tab_stage:
 
     st.divider()
     st.markdown("#### 📅 每日出土管控明細")
-    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港無收土），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量；「累積差異」為「差異」逐日累加。「差異」與「累積差異」為負數時，下方預覽表會以紅色標示。下方表格只顯示「有出土」或「被標記為特例」的日期；沒出土又沒被標記的日期不會出現、也不算進「目前作業工期」；備註含「台北港」字樣的特例日期，會顯示但同樣不算進工期與平均功率。")
+    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港無收土），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量；「累積差異」為「差異」逐日累加。「差異」與「累積差異」為負數時，下方預覽表會以紅色標示。下方表格只顯示「有出土」或「被標記為特例」的日期；沒出土又沒被標記的日期不會出現、也不算進「目前作業工期」；備註含「台北港」字樣且當天沒出土的日期，會顯示但同樣不算進工期與平均功率，且「差異」「累積差異」當天直接跳過不計算（差異留空、累積差異維持前一天數字），PDF匯出時這種日期的差異/累積差異會顯示「－」。")
 
     zero_vol_df = df_range[df_range['當日運棄量'] == 0][['日期', '計入工期', '備註']].copy()
     with st.expander(f"⚙️ 管理沒有出土的日期（共 {len(zero_vol_df)} 天；預設不顯示、不算工期，勾選才會顯示）", expanded=False):
