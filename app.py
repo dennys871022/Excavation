@@ -108,6 +108,51 @@ def _note_indicates_port_rejection(note):
     return any(kw in note_str for kw in PORT_REJECTION_KEYWORDS)
 
 
+GLOBAL_PREFS_KEY = "__全域設定__"
+
+
+def load_global_prefs():
+    """
+    讀取存在 stage_settings 分頁裡一筆特殊的「全域設定」列，用來記住側邊欄的
+    「目前作業階段」跟「現地GL高程增減」，這樣重新整理瀏覽器時才不會跳回預設值。
+    借用既有的 stage_settings 分頁存放，不需要額外去雲端新增分頁。
+    """
+    prefs = {}
+    df = load_sheet_data("stage_settings")
+    if df.empty or "階段名稱" not in df.columns:
+        return prefs
+    row = df[df["階段名稱"] == GLOBAL_PREFS_KEY]
+    if row.empty:
+        return prefs
+    r = row.iloc[0]
+    if "全域_目前作業階段" in df.columns and pd.notna(r.get("全域_目前作業階段")):
+        prefs["global_stage_choice"] = str(r.get("全域_目前作業階段"))
+    if "全域_現地GL高程增減" in df.columns and pd.notna(r.get("全域_現地GL高程增減")):
+        try:
+            prefs["current_gl_offset"] = float(r.get("全域_現地GL高程增減"))
+        except (ValueError, TypeError):
+            pass
+    return prefs
+
+
+def save_global_pref(field, value):
+    """把單一全域設定值寫回 stage_settings 分頁的「全域設定」列，其餘欄位/其他階段的設定完全不動。"""
+    df = load_sheet_data("stage_settings")
+    if df.empty or "階段名稱" not in df.columns:
+        df = pd.DataFrame(columns=["階段名稱"])
+    if field not in df.columns:
+        df[field] = np.nan
+    mask = df["階段名稱"] == GLOBAL_PREFS_KEY
+    if mask.any():
+        df.loc[mask, field] = value
+    else:
+        new_row = {c: np.nan for c in df.columns}
+        new_row["階段名稱"] = GLOBAL_PREFS_KEY
+        new_row[field] = value
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    return save_sheet_data("stage_settings", df)
+
+
 if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=True):
     for sheet in ["grid_zones", "dispatch_logs", "manifest_settings", "manifest_delivery", "stage_settings", "stage_daily_notes"]:
         if f"cache_{sheet}" in st.session_state:
@@ -115,14 +160,24 @@ if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=
     st.cache_data.clear()
     st.rerun()
 
+_global_prefs = load_global_prefs()
+
 st.sidebar.markdown("### 🎯 目前作業階段")
 STAGE_OPTIONS = ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)"]
 if "global_stage_choice" not in st.session_state:
-    st.session_state["global_stage_choice"] = STAGE_OPTIONS[0]
+    _saved_stage = _global_prefs.get("global_stage_choice")
+    st.session_state["global_stage_choice"] = _saved_stage if _saved_stage in STAGE_OPTIONS else STAGE_OPTIONS[0]
+
+
+def _on_stage_choice_change():
+    save_global_pref("全域_目前作業階段", st.session_state["global_stage_choice"])
+
+
 global_stage_choice = st.sidebar.selectbox(
-    "影響：階段管控頁 / 出土儀表板PDF / 單階段地圖",
+    "影響：階段管控頁 / 出土儀表板PDF / 單階段地圖　（重新整理後會記住上次選的階段）",
     STAGE_OPTIONS,
     key="global_stage_choice",
+    on_change=_on_stage_choice_change,
 )
 
 st.sidebar.markdown("### 各區開挖 GL 高程設定")
@@ -130,7 +185,21 @@ base_x_input = st.sidebar.number_input("1軸與A軸交點 X", value=-274766.4, f
 base_y_input = st.sidebar.number_input("1軸與A軸交點 Y", value=-24009.49, format="%.2f")
 scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "公尺 (不轉換)", "公釐 (除以1000)"])
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
-current_gl = st.sidebar.number_input("現地 GL 高程增減 (m)", value=0.0, step=0.1)
+
+if "current_gl_offset" not in st.session_state:
+    st.session_state["current_gl_offset"] = _global_prefs.get("current_gl_offset", 0.0)
+
+
+def _on_gl_offset_change():
+    save_global_pref("全域_現地GL高程增減", st.session_state["current_gl_offset"])
+
+
+current_gl = st.sidebar.number_input(
+    "現地 GL 高程增減 (m)　（重新整理後會記住上次的數字）",
+    step=0.1,
+    key="current_gl_offset",
+    on_change=_on_gl_offset_change,
+)
 
 gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
 gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
