@@ -137,6 +137,11 @@ gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.
 gl_bc_input = st.sidebar.text_input("滯洪池BC區 GL高程 (2挖)", "1.5, 7.6")
 gl_a_input = st.sidebar.text_input("滯洪池A區 GL高程 (2挖)", "2.0, 7.85")
 
+LOOSE_SOIL_FACTOR = 1.3  # 實方轉鬆方的膨脹係數。圖資與方量基準頁算出來的是「實方」（原地未擾動體積），
+                          # 階段管控頁的「預估土方量(鬆方)」則是開挖後蓬鬆後的體積，需要乘上這個係數換算。
+                          # 不同土質膨脹率不同，如果現場實測係數不是1.3，改這個數字即可全站套用。
+
+
 def get_thickness_from_gl(gl_str, gl_offset):
     try:
         gl_list = [float(x.strip()) for x in gl_str.split(",")]
@@ -208,7 +213,10 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     else:
         target_col_ = None
 
-    default_est_vol_ = df_stage_map_[target_col_].sum() if target_col_ and not df_stage_map_.empty else 0
+    # 圖資與方量基準算出來的是「實方」，這裡要乘上膨脹係數換算成「鬆方」，
+    # 這個值會隨圖資頁的現地GL高程調整即時重新計算（只是預設值，實際存進 stage_settings 的數字要按「套用最新圖資計算值」才會更新）
+    default_est_vol_real_ = df_stage_map_[target_col_].sum() if target_col_ and not df_stage_map_.empty else 0
+    default_est_vol_ = default_est_vol_real_ * LOOSE_SOIL_FACTOR
 
     df_stage_set_ = load_sheet_data("stage_settings")
     if df_stage_set_.empty or "階段名稱" not in df_stage_set_.columns:
@@ -392,6 +400,7 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
         "target_col": target_col_,
         "vol_per_truck": vol_per_truck_,
         "est_vol_default": default_est_vol_,
+        "est_vol_default_real": default_est_vol_real_,
         "default_daily_trips": default_daily_trips_,
         "manual_daily_trips": manual_daily_trips_ if pd.notna(manual_daily_trips_) else None,
     }
@@ -1669,6 +1678,31 @@ with tab_stage:
         st.caption(f"🎯 目前每日預計車次採用**手動指定值：{_preview_manual_trips} 台/天**（不套公式）")
     else:
         st.caption("🧮 目前每日預計車次採用**公式自動計算**（留空「手動指定每日預計車次」欄位即為此模式）")
+
+    if overview["target_col"] is not None:
+        _current_est_vol = pd.to_numeric(edited_stage_set.iloc[0].get("預估土方量(鬆方)"), errors='coerce')
+        _live_real = overview["est_vol_default_real"]
+        _live_loose = overview["est_vol_default"]
+        st.markdown("###### 📊 預估土方量對照（圖資與方量基準即時計算 vs 目前設定值）")
+        col_cmp1, col_cmp2, col_cmp3 = st.columns(3)
+        col_cmp1.metric("圖資即時算出的實方", f"{_live_real:,.0f} m³")
+        col_cmp2.metric(f"換算鬆方（×{LOOSE_SOIL_FACTOR}）", f"{_live_loose:,.0f} m³")
+        col_cmp3.metric("目前設定值", f"{_current_est_vol:,.0f} m³" if pd.notna(_current_est_vol) else "尚未設定")
+
+        if pd.isna(_current_est_vol) or abs(_current_est_vol - _live_loose) > 1:
+            st.warning(f"⚠️ 目前設定值跟圖資即時計算的鬆方量對不起來（可能是你調整過現地GL高程，或這個數字是之前手動輸入的），如果要以圖資最新計算為準，按下面的按鈕同步。")
+            if st.button("🔄 套用圖資最新計算值", key=f"sync_est_vol_{stage_choice}"):
+                sync_set = df_stage_set[df_stage_set["階段名稱"] != stage_choice].copy()
+                new_setting_row = edited_stage_set.iloc[0].copy()
+                new_setting_row["預計開始時間"] = pd.to_datetime(new_setting_row["預計開始時間"]).strftime("%Y-%m-%d")
+                new_setting_row["預計結束日期"] = pd.to_datetime(new_setting_row["預計結束日期"]).strftime("%Y-%m-%d")
+                new_setting_row["預估土方量(鬆方)"] = _live_loose
+                sync_set = pd.concat([sync_set, pd.DataFrame([new_setting_row])], ignore_index=True)
+                save_sheet_data("stage_settings", sync_set)
+                st.success(f"已套用最新圖資計算值：{_live_loose:,.0f} m³（實方 {_live_real:,.0f} × {LOOSE_SOIL_FACTOR}）")
+                st.rerun()
+        else:
+            st.caption("✅ 目前設定值與圖資即時計算一致。")
 
     if st.button("💾 儲存本階段設定"):
         save_set = edited_stage_set.copy()
