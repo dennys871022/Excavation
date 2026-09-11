@@ -163,7 +163,7 @@ if st.sidebar.button("🔄 強制同步雲端最新資料", use_container_width=
 _global_prefs = load_global_prefs()
 
 st.sidebar.markdown("### 🎯 目前作業階段")
-STAGE_OPTIONS = ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)"]
+STAGE_OPTIONS = ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)", "第5階段 (油槽開挖)"]
 if "global_stage_choice" not in st.session_state:
     _saved_stage = _global_prefs.get("global_stage_choice")
     st.session_state["global_stage_choice"] = _saved_stage if _saved_stage in STAGE_OPTIONS else STAGE_OPTIONS[0]
@@ -201,19 +201,79 @@ current_gl = st.sidebar.number_input(
     on_change=_on_gl_offset_change,
 )
 
-gl_admin_input = st.sidebar.text_input("行政棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 9.9")
-gl_lab_input = st.sidebar.text_input("實驗棟區域 GL高程 (4挖)", "2.5, 4.45, 7.85, 11.4")
-gl_bc_input = st.sidebar.text_input("滯洪池BC區 GL高程 (2挖)", "1.5, 7.6")
-gl_a_input = st.sidebar.text_input("滯洪池A區 GL高程 (2挖)", "2.0, 7.85")
+def _make_persistent_gl_input(label, pref_field, default_value, session_key):
+    """建立一個會存到雲端、重新整理後也記得住的GL高程文字輸入框。"""
+    if session_key not in st.session_state:
+        st.session_state[session_key] = _global_prefs.get(pref_field, default_value)
+
+    def _on_change():
+        save_global_pref(pref_field, st.session_state[session_key])
+
+    return st.sidebar.text_input(label, key=session_key, on_change=_on_change)
+
+
+gl_admin_input = _make_persistent_gl_input(
+    "行政棟區域 GL高程 (4挖，可用負值)", "全域_GL_行政棟", "-2.5, -4.45, -7.85, -9.9", "gl_admin_input_key")
+gl_lab_input = _make_persistent_gl_input(
+    "實驗棟區域 GL高程 (4挖，可用負值)", "全域_GL_實驗棟", "-2.5, -4.45, -7.85, -11.4", "gl_lab_input_key")
+gl_bc_input = _make_persistent_gl_input(
+    "滯洪池BC區 GL高程 (3挖，可用負值)", "全域_GL_滯洪池BC", "-1.5, -4.5, -7.6", "gl_bc_input_key")
+gl_a_input = _make_persistent_gl_input(
+    "滯洪池A區 GL高程 (3挖，可用負值)", "全域_GL_滯洪池A", "-2.0, -5.0, -7.85", "gl_a_input_key")
+gl_oil_input = _make_persistent_gl_input(
+    "油槽區域 GL高程 (獨立第5挖，可用負值)", "全域_GL_油槽", "-4.25", "gl_oil_input_key")
+st.sidebar.caption("💡 滯洪池BC區的第2個數字（中間那個）是我暫時估的，不是實際數字，改成正確的之後會自動存起來，下次重整不會跑掉。GL高程可以直接輸入負值（例如 -2.5），跟輸入正值算出來的方量完全一樣，純粹方便你照工程慣例讀。")
 
 LOOSE_SOIL_FACTOR = 1.3  # 實方轉鬆方的膨脹係數。圖資與方量基準頁算出來的是「實方」（原地未擾動體積），
                           # 階段管控頁的「預估土方量(鬆方)」則是開挖後蓬鬆後的體積，需要乘上這個係數換算。
                           # 不同土質膨脹率不同，如果現場實測係數不是1.3，改這個數字即可全站套用。
 
 
+STAGE_VOLUME_COLS = ['第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '第5挖方量(m³)']
+
+
+def zone_active_in_stage(row, stage_idx):
+    """
+    判斷一個分區在「第 stage_idx+1 挖」(0-indexed) 是否有實際開挖方量(>0)。
+    取代原本寫死「滯洪池不出現在第3、4挖」的規則，改成完全依照每個分區實際算出來的
+    各階方量動態判斷，這樣不管以後哪個分區變幾挖、或新增像油槽這種只在特定單一階段
+    （例如第5挖）開挖的特殊分區，地圖跟統計都會自動正確反映，不用再改寫死的規則。
+    """
+    if stage_idx is None or stage_idx >= len(STAGE_VOLUME_COLS):
+        return False
+    col = STAGE_VOLUME_COLS[stage_idx]
+    if col not in row:
+        return False
+    val = row[col]
+    return pd.notna(val) and val > 0
+
+
+def filter_zones_for_stage(df, stage_idx):
+    """回傳 df 中「在該階段有實際開挖方量」的分區子集；stage_idx 為 None 時（開挖前土方）回傳全部分區。"""
+    if df is None or df.empty or stage_idx is None:
+        return df
+    mask = df.apply(lambda r: zone_active_in_stage(r, stage_idx), axis=1)
+    return df[mask]
+
+
+def local_stage_index(row, stage_idx):
+    """
+    把「全域階段索引」(0~4，對應第1~5挖) 換算成「這個分區自己的門檻清單(各階累計方量)裡的位置」。
+    大多數分區（例如行政棟4挖、滯洪池3挖）是從第1挖開始連續參與，全域索引跟自己清單的位置是1:1對應。
+    但油槽這種只在單一後段階段（第5挖）才開挖的分區，它的門檻清單只有1筆資料，
+    如果直接拿全域索引4去對應清單第4個位置就會抓錯（清單根本沒有第4個），
+    所以要先算「這個分區在 0~stage_idx 這些階段裡，總共實際參與了幾次」，
+    再減1，才是它自己清單裡正確的位置。
+    """
+    count_active = sum(1 for s in range(stage_idx + 1) if zone_active_in_stage(row, s))
+    return count_active - 1
+
+
 def get_thickness_from_gl(gl_str, gl_offset):
     try:
-        gl_list = [float(x.strip()) for x in gl_str.split(",")]
+        # 取絕對值：不管你輸入正數(2.5, 4.45...)還是負數高程(-2.5, -4.45...)，算出來的厚度完全一樣，
+        # 純粹是輸入格式讓你可以照工程慣例用負值表示高程，不影響任何土方量計算結果
+        gl_list = [abs(float(x.strip())) for x in gl_str.split(",")]
         thickness = []
         for i in range(len(gl_list)):
             if i == 0:
@@ -267,18 +327,10 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     query_date_ = as_of_date if as_of_date is not None else tw_today_
 
     df_stage_map_ = df_results.copy() if df_results is not None and not df_results.empty else pd.DataFrame()
-    if "第1挖" in stage_choice:
-        target_col_ = '第1挖方量(m³)'
-    elif "第2挖" in stage_choice:
-        target_col_ = '第2挖方量(m³)'
-    elif "第3挖" in stage_choice:
-        target_col_ = '第3挖方量(m³)'
-        if not df_stage_map_.empty:
-            df_stage_map_ = df_stage_map_[~df_stage_map_['分區代號'].str.contains("滯")]
-    elif "第4挖" in stage_choice:
-        target_col_ = '第4挖方量(m³)'
-        if not df_stage_map_.empty:
-            df_stage_map_ = df_stage_map_[~df_stage_map_['分區代號'].str.contains("滯")]
+    _stage_idx_for_target = get_stage_index(stage_choice)
+    if _stage_idx_for_target is not None:
+        target_col_ = STAGE_VOLUME_COLS[_stage_idx_for_target]
+        df_stage_map_ = filter_zones_for_stage(df_stage_map_, _stage_idx_for_target)
     else:
         target_col_ = None
 
@@ -553,7 +605,7 @@ def build_stage_overview_html(overview):
 
 
 def get_stage_index(stage_choice):
-    """回傳 0~3 代表第1~4挖；開挖前土方回傳 None（因為它不是以分區門檻定義的階段）。"""
+    """回傳 0~4 代表第1~5挖（第5挖是油槽獨立開挖）；開挖前土方回傳 None（因為它不是以分區門檻定義的階段）。"""
     if "第1挖" in stage_choice:
         return 0
     if "第2挖" in stage_choice:
@@ -562,6 +614,8 @@ def get_stage_index(stage_choice):
         return 2
     if "第4挖" in stage_choice:
         return 3
+    if "第5挖" in stage_choice or "油槽" in stage_choice:
+        return 4
     return None
 
 
@@ -702,8 +756,8 @@ def generate_backend_map(df_results, zone_grouped, stage_choice=None):
     stage_idx = get_stage_index(stage_choice) if stage_choice else None
 
     plot_df = df_results
-    if stage_idx in (2, 3):
-        plot_df = df_results[~df_results['分區代號'].str.contains("滯")]
+    if stage_idx is not None:
+        plot_df = filter_zones_for_stage(df_results, stage_idx)
 
     for idx, row in plot_df.iterrows():
         grid_id = row['分區代號']
@@ -711,17 +765,19 @@ def generate_backend_map(df_results, zone_grouped, stage_choice=None):
         thresholds = stage_dict.get(grid_id, [])
         fill_color = '#F0F0F0'
 
-        if stage_idx is not None and thresholds and stage_idx < len(thresholds):
-            band_start = thresholds[stage_idx - 1] if stage_idx > 0 else 0
-            band_end = thresholds[stage_idx]
-            band_size = band_end - band_start
-            pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
-            if pct >= 98:
-                fill_color = '#2ECC71'
-            elif pct > 0:
-                fill_color = '#E67E22'
-            else:
-                fill_color = '#F0F0F0'
+        if stage_idx is not None and thresholds:
+            _local_idx = local_stage_index(row, stage_idx)
+            if _local_idx >= 0 and _local_idx < len(thresholds):
+                band_start = thresholds[_local_idx - 1] if _local_idx > 0 else 0
+                band_end = thresholds[_local_idx]
+                band_size = band_end - band_start
+                pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
+                if pct >= 98:
+                    fill_color = '#2ECC71'
+                elif pct > 0:
+                    fill_color = '#E67E22'
+                else:
+                    fill_color = '#F0F0F0'
         elif stage_idx is None:
             if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
                 if current_vol >= thresholds[-1] * 0.98:
@@ -1098,6 +1154,7 @@ try:
     depths_lab = get_thickness_from_gl(gl_lab_input, current_gl)
     depths_bc = get_thickness_from_gl(gl_bc_input, current_gl)
     depths_a = get_thickness_from_gl(gl_a_input, current_gl)
+    depths_oil = get_thickness_from_gl(gl_oil_input, current_gl)
 
     results = []
 
@@ -1118,7 +1175,7 @@ try:
             results.append({
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
                 "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
@@ -1139,11 +1196,15 @@ try:
             results.append({
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
                 "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
+
+    # F'8 座標記一下，油槽區塊要用
+    f8_x_min = x_coords2[1]
+    f8_y_min = y_coords2[6]
 
     bc_x = [-2764.56, -2758.41, -2749.46]
     bc_y = [-250.94, -256.69, -262.94, -270.04, -275.14]
@@ -1165,7 +1226,7 @@ try:
             results.append({
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
                 "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
@@ -1190,12 +1251,35 @@ try:
             results.append({
                 "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                 "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
-                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0),
+                "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
                 "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
                 "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                 "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
             })
             idx_r += 1
+
+    # 油槽：獨立第5挖，等其他區域都挖完、結構做到B1版才會單獨開挖。
+    # 位置在 F'8 正下方，長度6.4m（從F'8左邊界起算），面積28.4㎡反推高度 ≈ 4.4m。
+    # 假設是矩形貼齊F'8下緣；如果實際形狀/座標不是這樣，跟我說正確座標我再調整。
+    OIL_TANK_LENGTH = 6.4
+    OIL_TANK_AREA = 28.4
+    oil_height = OIL_TANK_AREA / OIL_TANK_LENGTH
+    oil_x_min = f8_x_min
+    oil_x_max = f8_x_min + OIL_TANK_LENGTH
+    oil_y_max = f8_y_min
+    oil_y_min = oil_y_max - oil_height
+    oil_poly = Polygon([(oil_x_min, oil_y_min), (oil_x_max, oil_y_min), (oil_x_max, oil_y_max), (oil_x_min, oil_y_max)])
+    vols_oil = [oil_poly.area * d for d in depths_oil]
+    cum_vols_oil = [round(v, 0) for v in list(np.cumsum(vols_oil))]
+    v5_oil = vols_oil[0] if len(vols_oil) > 0 else 0
+    results.append({
+        "分區代號": "油槽", "區域面積(㎡)": round(oil_poly.area, 0),
+        "第1挖方量(m³)": 0, "第2挖方量(m³)": 0,
+        "第3挖方量(m³)": 0, "第4挖方量(m³)": 0, "第5挖方量(m³)": round(v5_oil, 0),
+        "預估總土方": round(sum(vols_oil), 0), "各階累計方量": cum_vols_oil,
+        "x_min": oil_x_min, "x_max": oil_x_max, "y_min": oil_y_min, "y_max": oil_y_max,
+        "x_center": (oil_x_min + oil_x_max)/2, "y_center": (oil_y_min + oil_y_max)/2
+    })
 
     df_results = pd.DataFrame(results)
 except Exception as e:
@@ -1206,7 +1290,7 @@ tab_grid, tab_stats, tab_stage, tab_sync, tab_manifest, tab_delivery = st.tabs([
 ])
 
 with tab_grid:
-    export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '預估總土方']
+    export_columns = ['分區代號', '區域面積(㎡)', '第1挖方量(m³)', '第2挖方量(m³)', '第3挖方量(m³)', '第4挖方量(m³)', '第5挖方量(m³)', '預估總土方']
     if st.button("🚀 推送分區資料至雲端試算表"):
         if save_sheet_data("grid_zones", df_results[export_columns]):
             st.success("分區基準已成功上傳！")
@@ -1464,9 +1548,10 @@ with tab_stats:
 
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
 
-                # 第3、4挖沒有滯洪池分區（滯洪池只有2挖），地圖上要把這些格子濾掉
-                if _stats_stage_idx in (2, 3):
-                    df_map_zones = df_results[~df_results['分區代號'].str.contains("滯")]
+                # 依每個分區實際算出來的各階方量動態判斷，該階段沒有開挖的分區（例如滯洪池只到第3挖、
+                # 油槽只有第5挖）地圖上會自動被濾掉，不用再寫死判斷是不是滯洪池
+                if _stats_stage_idx is not None:
+                    df_map_zones = filter_zones_for_stage(df_results, _stats_stage_idx)
                 else:
                     df_map_zones = df_results
 
@@ -1475,9 +1560,10 @@ with tab_stats:
                     current_vol = vol_dict.get(grid_id, 0)
                     thresholds = stage_dict.get(grid_id, [])
 
-                    if _stats_stage_idx is not None and thresholds and _stats_stage_idx < len(thresholds):
-                        band_start = thresholds[_stats_stage_idx - 1] if _stats_stage_idx > 0 else 0
-                        band_end = thresholds[_stats_stage_idx]
+                    _local_idx = local_stage_index(row, _stats_stage_idx) if _stats_stage_idx is not None else -1
+                    if _stats_stage_idx is not None and thresholds and 0 <= _local_idx < len(thresholds):
+                        band_start = thresholds[_local_idx - 1] if _local_idx > 0 else 0
+                        band_end = thresholds[_local_idx]
                         band_size = band_end - band_start
                         pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
 
@@ -1942,9 +2028,10 @@ with tab_stage:
         thresholds = stage_thresholds_dict.get(grid_id, [])
         t_vol = row[target_col] if target_col else 0
 
-        if stage_idx is not None and thresholds and stage_idx < len(thresholds):
-            band_start = thresholds[stage_idx - 1] if stage_idx > 0 else 0
-            band_end = thresholds[stage_idx]
+        _local_idx = local_stage_index(row, stage_idx) if stage_idx is not None else -1
+        if stage_idx is not None and thresholds and 0 <= _local_idx < len(thresholds):
+            band_start = thresholds[_local_idx - 1] if _local_idx > 0 else 0
+            band_end = thresholds[_local_idx]
             band_size = band_end - band_start
             pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
 
