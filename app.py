@@ -114,8 +114,13 @@ GLOBAL_PREFS_KEY = "__全域設定__"
 def load_global_prefs():
     """
     讀取存在 stage_settings 分頁裡一筆特殊的「全域設定」列，用來記住側邊欄的
-    「目前作業階段」跟「現地GL高程增減」，這樣重新整理瀏覽器時才不會跳回預設值。
+    「目前作業階段」「現地GL高程增減」跟各區GL高程輸入，這樣重新整理瀏覽器時才不會跳回預設值。
     借用既有的 stage_settings 分頁存放，不需要額外去雲端新增分頁。
+
+    這裡改成「自動讀取所有『全域_』開頭的欄位」，回傳的 dict 直接用欄位名稱當 key。
+    這樣以後不管再加幾個新的全域設定欄位，只要用 save_global_pref() 存的時候欄位名稱
+    是「全域_」開頭，這裡就會自動讀得到，不用每次新增欄位都要回來手動加一行——
+    上次就是漏了改這裡，才會發生「存進雲端了、但重整後讀不回來」的問題。
     """
     prefs = {}
     df = load_sheet_data("stage_settings")
@@ -125,13 +130,9 @@ def load_global_prefs():
     if row.empty:
         return prefs
     r = row.iloc[0]
-    if "全域_目前作業階段" in df.columns and pd.notna(r.get("全域_目前作業階段")):
-        prefs["global_stage_choice"] = str(r.get("全域_目前作業階段"))
-    if "全域_現地GL高程增減" in df.columns and pd.notna(r.get("全域_現地GL高程增減")):
-        try:
-            prefs["current_gl_offset"] = float(r.get("全域_現地GL高程增減"))
-        except (ValueError, TypeError):
-            pass
+    for col in df.columns:
+        if col.startswith("全域_") and pd.notna(r.get(col)):
+            prefs[col] = r.get(col)
     return prefs
 
 
@@ -141,7 +142,12 @@ def save_global_pref(field, value):
     if df.empty or "階段名稱" not in df.columns:
         df = pd.DataFrame(columns=["階段名稱"])
     if field not in df.columns:
-        df[field] = np.nan
+        # 用 object dtype 建立新欄位（可以同時放文字或數字），不要用 np.nan 直接指派，
+        # 那樣 pandas 會把欄位型態推斷成 float64，之後這裡要存文字（例如GL高程公式）就會直接報錯
+        df[field] = pd.Series([None] * len(df), dtype="object", index=df.index)
+    else:
+        # 既有欄位也強制轉成 object，避免它原本被推斷成 float64（例如全都是數字的欄位）導致後面寫入字串失敗
+        df[field] = df[field].astype("object")
     mask = df["階段名稱"] == GLOBAL_PREFS_KEY
     if mask.any():
         df.loc[mask, field] = value
@@ -165,7 +171,7 @@ _global_prefs = load_global_prefs()
 st.sidebar.markdown("### 🎯 目前作業階段")
 STAGE_OPTIONS = ["開挖前土方", "第1階段 (第1挖)", "第2階段 (第2挖)", "第3階段 (第3挖)", "第4階段 (第4挖)", "第5階段 (油槽開挖)"]
 if "global_stage_choice" not in st.session_state:
-    _saved_stage = _global_prefs.get("global_stage_choice")
+    _saved_stage = _global_prefs.get("全域_目前作業階段")
     st.session_state["global_stage_choice"] = _saved_stage if _saved_stage in STAGE_OPTIONS else STAGE_OPTIONS[0]
 
 
@@ -187,7 +193,10 @@ scale_option = st.sidebar.selectbox("CAD圖資單位", ["公分 (除以100)", "�
 scale_factor = 100 if "公分" in scale_option else (1000 if "公釐" in scale_option else 1)
 
 if "current_gl_offset" not in st.session_state:
-    st.session_state["current_gl_offset"] = _global_prefs.get("current_gl_offset", 0.0)
+    try:
+        st.session_state["current_gl_offset"] = float(_global_prefs.get("全域_現地GL高程增減", 0.0))
+    except (ValueError, TypeError):
+        st.session_state["current_gl_offset"] = 0.0
 
 
 def _on_gl_offset_change():
