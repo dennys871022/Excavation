@@ -1474,6 +1474,39 @@ with tab_grid:
         m4.metric("第4挖方量", f"{subset['第4挖方量(m³)'].sum():,.0f} m³")
         m5.metric("預估總土方", f"{subset['預估總土方'].sum():,.0f} m³")
         st.dataframe(subset[export_columns], use_container_width=True, hide_index=True)
+
+        st.markdown("##### ⏱️ 依各階段目前的平均出土功率，預估這個範圍還要挖幾天")
+        st.caption("平均出土功率抓自「階段管控頁」各階段的即時總覽（累積出土量 ÷ 目前作業工期），會隨每天的派車紀錄自動更新。某階段還沒有任何出土紀錄時無法估算天數，會顯示「尚無工率資料」。")
+
+        _est_stage_defs = [
+            ("第1挖", "第1階段 (第1挖)", "第1挖方量(m³)"),
+            ("第2挖", "第2階段 (第2挖)", "第2挖方量(m³)"),
+            ("第3挖", "第3階段 (第3挖)", "第3挖方量(m³)"),
+            ("第4挖", "第4階段 (第4挖)", "第4挖方量(m³)"),
+        ]
+        _est_cols = st.columns(5)
+        _total_days = 0.0
+        _total_has_estimate = True
+        for _col, (_label, _stage_name, _vol_key) in zip(_est_cols[:4], _est_stage_defs):
+            _stage_vol = subset[_vol_key].sum()
+            try:
+                _ov = compute_stage_overview(_stage_name, df_results)
+                _rate = _ov.get('avg_vol_per_day', 0)
+            except Exception:
+                _rate = 0
+            if _rate and _rate > 0:
+                _days = _stage_vol / _rate
+                _total_days += _days
+                _col.metric(f"{_label} 預估天數", f"{_days:.1f} 天", help=f"{_stage_vol:,.0f} m³ ÷ 目前平均功率 {_rate:,.1f} m³/天")
+            else:
+                _total_has_estimate = False
+                _col.metric(f"{_label} 預估天數", "尚無工率資料")
+
+        with _est_cols[4]:
+            if _total_has_estimate:
+                st.metric("1~4挖 總計預估天數", f"{_total_days:.1f} 天", help="假設各階段依序施作（不重疊），四階段天數加總")
+            else:
+                st.metric("1~4挖 總計預估天數", "資料不全")
     else:
         st.info("尚未選取任何分區。請用滑鼠在上方地圖拖曳框選，或在下方清單勾選分區代號。")
 
