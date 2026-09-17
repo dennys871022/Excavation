@@ -278,6 +278,69 @@ def local_stage_index(row, stage_idx):
     return count_active - 1
 
 
+def get_stage_remaining_capacity(zone_code, df_results, stage_idx, excavated_vol_dict):
+    """
+    算出某個分區在「目前階段」還剩多少方量可以挖（m³）。
+    = 該區這一挖的累計門檻 − 已經挖掉的累計量，最少為0（已超挖就回傳0）。
+    excavated_vol_dict: {分區代號: 目前累計實挖方量}
+    回傳 None 代表這個分區在這個階段沒有開挖目標（例如滯洪池的第4挖、或非階段性的「開挖前土方」），
+    此時視為沒有容量上限，不參與「挖滿就跳過」的判斷。
+    """
+    if stage_idx is None or df_results is None or df_results.empty:
+        return None
+    match = df_results[df_results['分區代號'] == zone_code]
+    if match.empty:
+        return None
+    row = match.iloc[0]
+    if not zone_active_in_stage(row, stage_idx):
+        return None
+    thresholds = row.get('各階累計方量', [])
+    local_idx = local_stage_index(row, stage_idx)
+    if not thresholds or local_idx < 0 or local_idx >= len(thresholds):
+        return None
+    band_end = thresholds[local_idx]
+    current_vol = excavated_vol_dict.get(zone_code, 0) or 0
+    return max(0.0, band_end - current_vol)
+
+
+def allocate_trucks_by_capacity(truck_volumes, selected_zones, df_results, stage_idx, excavated_vol_dict):
+    """
+    依「各分區在目前階段的剩餘容量」分配車次，而不是單純平均輪流。
+    規則：輪流分派，但如果某個分區剩餘容量已經不夠再吃下一車，就跳過它（視為已填滿），
+    剩下的車次繼續分給還有空間的分區；全部分區都填滿後，多出來的車次回報為未分配。
+
+    truck_volumes: 每一筆要分配的紀錄各自的載運方量（list of float）
+    回傳 (assigned_zones, unassigned_count)
+      assigned_zones: 跟 truck_volumes 等長的分區代號清單，未分配到的位置會是 None
+      unassigned_count: 沒分配出去的車次數
+    """
+    # 每個分區的剩餘容量；None 代表沒有上限（不受填滿限制）
+    remaining = {}
+    for z in selected_zones:
+        cap = get_stage_remaining_capacity(z, df_results, stage_idx, excavated_vol_dict)
+        remaining[z] = cap
+
+    assigned = []
+    cursor = 0
+    n = len(selected_zones)
+    for vol in truck_volumes:
+        placed = None
+        # 從上次停的位置開始找，最多繞一圈，找到第一個「還吃得下這一車」的分區
+        for step in range(n):
+            z = selected_zones[(cursor + step) % n]
+            cap = remaining[z]
+            if cap is None or cap >= vol:
+                placed = z
+                if cap is not None:
+                    remaining[z] = cap - vol
+                cursor = (cursor + step + 1) % n  # 下一車從下一個分區開始找，維持輪流的公平性
+                break
+        assigned.append(placed)
+
+    unassigned_count = sum(1 for a in assigned if a is None)
+    return assigned, unassigned_count
+
+
 def get_thickness_from_gl(gl_str, gl_offset):
     try:
         # 取絕對值：不管你輸入正數(2.5, 4.45...)還是負數高程(-2.5, -4.45...)，算出來的厚度完全一樣，
@@ -1010,18 +1073,43 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
         y -= 9 * mm
 
         dc_cols = list(daily_control_df.columns)
-        # 欄位寬度：日期與備註給寬一點，其餘平分
-        wide_cols = {'日期', '備註'}
-        n_wide = sum(1 for col in dc_cols if col in wide_cols)
-        n_narrow = len(dc_cols) - n_wide
         total_w = width - 2 * margin
-        wide_w = total_w * 0.20
-        narrow_w = (total_w - wide_w * n_wide) / max(n_narrow, 1)
-        col_widths = [wide_w if col in wide_cols else narrow_w for col in dc_cols]
+
+        def _dc_cell_text(val):
+            if isinstance(val, float) and pd.isna(val):
+                return "－"  # 台北港排除日：差異/累積差異跳過不計算，顯示為破折號而不是難看的 nan
+            if isinstance(val, float):
+                return f"{val:,.1f}"
+            return str(val)
+
+        # 依「表頭文字」跟「每一列實際資料」量測每一欄需要多寬，而不是用寫死的百分比硬切，
+        # 這樣像「內控預計車次」這種字比較多的表頭才不會被壓縮到跟旁邊的欄位重疊
+        dc_font_size = 8
+        col_padding = 2.5 * mm
+        col_widths = []
+        for col in dc_cols:
+            needed = c.stringWidth(str(col), font_name, dc_font_size)
+            for _, row in daily_control_df.iterrows():
+                cell_w = c.stringWidth(_dc_cell_text(row[col]), font_name, dc_font_size)
+                if cell_w > needed:
+                    needed = cell_w
+            col_widths.append(needed + col_padding)
+
+        total_needed = sum(col_widths)
+        if total_needed > total_w:
+            # 量出來的總寬度超過版面，等比例縮小；縮太多的話字體也跟著縮小一點，避免文字被切斷
+            scale = total_w / total_needed
+            col_widths = [w * scale for w in col_widths]
+            if scale < 0.8:
+                dc_font_size = 7
+        else:
+            # 版面還有多餘空間，平均分給每一欄，表格不會擠成一團
+            extra = (total_w - total_needed) / len(dc_cols)
+            col_widths = [w + extra for w in col_widths]
 
         def draw_dc_header():
             nonlocal y
-            c.setFont(font_name, 8)
+            c.setFont(font_name, dc_font_size)
             x_pos = margin
             for col, w in zip(dc_cols, col_widths):
                 c.drawString(x_pos, y, str(col))
@@ -1032,7 +1120,7 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
 
         red_cols = {'差異', '累積差異'}
         draw_dc_header()
-        c.setFont(font_name, 8)
+        c.setFont(font_name, dc_font_size)
         for _, row in daily_control_df.iterrows():
             if y < margin + 10 * mm:
                 new_page()
@@ -1043,12 +1131,7 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
             x_pos = margin
             for col, w in zip(dc_cols, col_widths):
                 val = row[col]
-                if isinstance(val, float) and pd.isna(val):
-                    text_val = "－"  # 台北港排除日：差異/累積差異跳過不計算，顯示為破折號而不是難看的 nan
-                elif isinstance(val, float):
-                    text_val = f"{val:,.1f}"
-                else:
-                    text_val = str(val)
+                text_val = _dc_cell_text(val)
                 try:
                     is_negative = col in red_cols and not pd.isna(val) and float(val) < 0
                 except (ValueError, TypeError):
@@ -1688,23 +1771,59 @@ with tab_stats:
             col_z1, col_z2 = st.columns([2, 1])
             with col_z1:
                 selected_zones = st.multiselect(
-                    "選擇要套用的分區（可複選；選多個時，系統會把勾選的紀錄依序輪流平均分配到這些分區）",
+                    "選擇要套用的分區（可複選；選多個時會輪流分配，但某一區達到本階段開挖目標後就自動跳過，剩下的車次繼續分給還有空間的分區）",
                     options=["開挖前土方"] + zone_list,
                 )
             with col_z2:
                 st.write("")
                 st.write("")
-                if st.button("套用到勾選的紀錄", use_container_width=True):
+                apply_clicked = st.button("套用到勾選的紀錄", use_container_width=True)
+
+            # 顯示目前選定分區在本階段還剩多少可挖，方便你先評估夠不夠分
+            _cap_stage_idx = get_stage_index(global_stage_choice)
+            _excavated_dict = {}
+            if not zone_grouped.empty:
+                _excavated_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+            if selected_zones and _cap_stage_idx is not None:
+                cap_rows = []
+                for z in selected_zones:
+                    cap = get_stage_remaining_capacity(z, df_results, _cap_stage_idx, _excavated_dict)
+                    cap_rows.append({
+                        "分區": z,
+                        f"【{global_stage_choice}】剩餘可挖 (m³)": f"{cap:,.0f}" if cap is not None else "無上限（本階段無目標）",
+                    })
+                st.caption(f"📏 目前選定分區在【{global_stage_choice}】的剩餘容量（依此自動判斷何時跳過）：")
+                st.dataframe(pd.DataFrame(cap_rows), use_container_width=True, hide_index=True)
+
+            if apply_clicked:
                     if not selected_zones:
                         st.error("請至少選擇一個分區")
                     else:
                         checked_rows = edited_unassigned[edited_unassigned['勾選'] == True]
                         if len(checked_rows) > 0:
                             original_indices = checked_rows['orig_index'].tolist()
-                            # 選1個分區＝全部指定同一區（跟原本行為一樣）；選多個分區＝依序輪流平均分配
                             n_zones = len(selected_zones)
-                            assigned_zones = [selected_zones[i % n_zones] for i in range(len(original_indices))]
-                            df_logs.loc[original_indices, '出土分區'] = assigned_zones
+
+                            if n_zones == 1:
+                                # 只選1個分區＝全部指定同一區（維持原本行為，不做容量判斷）
+                                assigned_zones = [selected_zones[0]] * len(original_indices)
+                                unassigned_count = 0
+                            else:
+                                # 依各分區在目前階段的剩餘容量分配：挖滿的自動跳過，多的維持未指定
+                                truck_vols = pd.to_numeric(
+                                    checked_rows.get('載運方量(m³)', pd.Series([12.0] * len(checked_rows))),
+                                    errors='coerce'
+                                ).fillna(12.0).tolist()
+                                assigned_zones, unassigned_count = allocate_trucks_by_capacity(
+                                    truck_vols, selected_zones, df_results, _cap_stage_idx, _excavated_dict
+                                )
+
+                            # 只寫入有分配到分區的紀錄，沒分配到的維持「未指定」不動
+                            applied_count = 0
+                            for idx, zone in zip(original_indices, assigned_zones):
+                                if zone is not None:
+                                    df_logs.loc[idx, '出土分區'] = zone
+                                    applied_count += 1
 
                             if 'orig_index' in df_logs.columns:
                                 df_logs = df_logs.drop(columns=['orig_index'])
@@ -1714,12 +1833,14 @@ with tab_stats:
                             if save_sheet_data("dispatch_logs", df_logs):
                                 sync_stage_daily_log(global_stage_choice, df_results)
                                 if n_zones == 1:
-                                    st.success(f"成功更新 {len(checked_rows)} 筆紀錄，全部指定至【{selected_zones[0]}】！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
+                                    st.success(f"成功更新 {applied_count} 筆紀錄，全部指定至【{selected_zones[0]}】！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
                                 else:
                                     from collections import Counter
-                                    zone_counts = Counter(assigned_zones)
+                                    zone_counts = Counter([z for z in assigned_zones if z is not None])
                                     breakdown = "、".join([f"{z}：{c}筆" for z, c in zone_counts.items()])
-                                    st.success(f"成功更新 {len(checked_rows)} 筆紀錄，已平均分配到 {n_zones} 個分區（{breakdown}）！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
+                                    st.success(f"成功更新 {applied_count} 筆紀錄（{breakdown}）！本日「{global_stage_choice}」逐日紀錄已同步寫入雲端。")
+                                if unassigned_count > 0:
+                                    st.warning(f"⚠️ 有 **{unassigned_count} 筆**車次沒有分配出去，因為所選分區在【{global_stage_choice}】的開挖目標都已經填滿了。這些紀錄維持「未指定」狀態，請你自行決定要讓哪些區域超挖、或改指定到其他分區。")
                                 st.rerun()
                         else:
                             st.warning("⚠️ 請至少勾選一筆要套用的紀錄。")
