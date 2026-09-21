@@ -306,13 +306,10 @@ def get_stage_remaining_capacity(zone_code, df_results, stage_idx, excavated_vol
 def allocate_trucks_by_capacity(truck_volumes, selected_zones, df_results, stage_idx, excavated_vol_dict):
     """
     依「各分區在目前階段的剩餘容量」分配車次，而不是單純平均輪流。
-    規則：輪流分派，但如果某個分區剩餘容量已經不夠再吃下一車，就跳過它（視為已填滿），
-    剩下的車次繼續分給還有空間的分區；全部分區都填滿後，多出來的車次回報為未分配。
-
-    truck_volumes: 每一筆要分配的紀錄各自的載運方量（list of float）
-    回傳 (assigned_zones, unassigned_count)
-      assigned_zones: 跟 truck_volumes 等長的分區代號清單，未分配到的位置會是 None
-      unassigned_count: 沒分配出去的車次數
+    規則：輪流分派，只要分區還有剩餘需求（>0）就會分給它，優先讓它完成；
+    最後一車如果剩餘量小於一整車，允許些微超挖把它收尾完成（不會卡在差一點點卻永遠補不滿的狀態），
+    完成後（剩餘量歸零）才會跳過、把後續車次轉去分給還有空間的其他分區；
+    全部分區都完成後，多出來的車次回報為未分配。
     """
     # 每個分區的剩餘容量；None 代表沒有上限（不受填滿限制）
     remaining = {}
@@ -325,14 +322,14 @@ def allocate_trucks_by_capacity(truck_volumes, selected_zones, df_results, stage
     n = len(selected_zones)
     for vol in truck_volumes:
         placed = None
-        # 從上次停的位置開始找，最多繞一圈，找到第一個「還吃得下這一車」的分區
+        # 從上次停的位置開始找，最多繞一圈，找到第一個「還有剩餘需求」的分區（>0即可，不用整車都裝得下）
         for step in range(n):
             z = selected_zones[(cursor + step) % n]
             cap = remaining[z]
-            if cap is None or cap >= vol:
+            if cap is None or cap > 0:
                 placed = z
                 if cap is not None:
-                    remaining[z] = cap - vol
+                    remaining[z] = max(0.0, cap - vol)  # 允許最後一車些微超挖，完成後歸零不會變負的
                 cursor = (cursor + step + 1) % n  # 下一車從下一個分區開始找，維持輪流的公平性
                 break
         assigned.append(placed)
@@ -1793,12 +1790,26 @@ with tab_stats:
         st.markdown("#### ⚙️ 批量設定出土分區")
         df_unassigned = valid_logs[valid_logs['出土分區'] == '未指定'].copy()
         if not df_unassigned.empty:
-            st.info(f"尚有 {len(df_unassigned)} 筆有效紀錄未指定分區，請勾選並套用。")
+            st.info(f"尚有 {len(df_unassigned)} 筆有效紀錄未指定分區。")
 
-            select_all = st.checkbox("☑️ 一鍵全選所有未指定紀錄", value=False)
+            unassigned_dates = sorted(df_unassigned['日期'].unique(), reverse=True) if '日期' in df_unassigned.columns else []
+            selected_dates = st.multiselect(
+                "依日期篩選要處理的紀錄（不選＝顯示全部日期）",
+                options=unassigned_dates,
+            )
+            if selected_dates:
+                df_unassigned = df_unassigned[df_unassigned['日期'].isin(selected_dates)]
+
+            select_all = st.checkbox(f"☑️ 一鍵全選（{'篩選出的' if selected_dates else '全部'} {len(df_unassigned)} 筆）", value=False)
             df_unassigned.insert(0, '勾選', select_all)
 
             edited_unassigned = st.data_editor(df_unassigned, hide_index=True, column_config={"勾選": st.column_config.CheckboxColumn(required=True)})
+
+            checked_count = int((edited_unassigned['勾選'] == True).sum())
+            checked_vol = pd.to_numeric(
+                edited_unassigned.loc[edited_unassigned['勾選'] == True, '載運方量(m³)'], errors='coerce'
+            ).fillna(0).sum() if '載運方量(m³)' in edited_unassigned.columns else 0
+            st.caption(f"✅ 目前已勾選 **{checked_count}** 筆，合計約 **{checked_vol:,.0f} m³**")
 
             zone_list = df_results["分區代號"].tolist() if not df_results.empty else []
             col_z1, col_z2 = st.columns([2, 1])
