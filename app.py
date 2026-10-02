@@ -2231,6 +2231,49 @@ with tab_stage:
         st.rerun()
 
     st.divider()
+    st.markdown("#### 📈 週會資料：區間車次趨勢")
+    st.caption("選一段日期區間，只顯示「日期、實際車次、備註」三欄，並畫出車次折線圖（X軸日期、Y軸車次），方便週會報告直接用。這裡會列出區間內每一天（包含沒出土的日子），讓趨勢圖看得出完整狀況。")
+
+    col_wk1, col_wk2 = st.columns(2)
+    with col_wk1:
+        week_start = st.date_input(
+            "起始日期", value=max(overview["est_start"], overview["today"] - timedelta(days=7)),
+            key=f"week_start_{stage_choice}"
+        )
+    with col_wk2:
+        week_end = st.date_input("結束日期", value=overview["today"], key=f"week_end_{stage_choice}")
+
+    if week_start > week_end:
+        st.error("起始日期不能晚於結束日期。")
+    else:
+        week_start_str = week_start.strftime("%Y-%m-%d")
+        week_end_str = week_end.strftime("%Y-%m-%d")
+        week_df = df_range[(df_range['日期'] >= week_start_str) & (df_range['日期'] <= week_end_str)].copy()
+
+        if week_df.empty:
+            st.info("這個區間內沒有資料。")
+        else:
+            week_display = week_df[['日期', '實際車次', '備註']]
+            st.dataframe(week_display, use_container_width=True, hide_index=True)
+
+            fig_week = go.Figure()
+            fig_week.add_trace(go.Scatter(
+                x=week_df['日期'], y=week_df['實際車次'],
+                mode='lines+markers+text',
+                text=week_df['實際車次'].astype(int).astype(str),
+                textposition='top center',
+                line=dict(color='#3498DB', width=2),
+                marker=dict(size=7),
+                name='實際車次',
+            ))
+            fig_week.update_layout(
+                title=f"【{stage_choice}】{week_start_str} ~ {week_end_str} 車次趨勢",
+                xaxis_title="日期", yaxis_title="車次 (台)",
+                height=420, margin=dict(l=20, r=20, t=50, b=20),
+            )
+            st.plotly_chart(fig_week, use_container_width=True)
+
+    st.divider()
     st.markdown(f"#### 🗺️ 【{stage_choice}】單階段專用地圖（僅顯示本階段挖掘進度）")
     st.markdown("⬜ 尚未開始 🟧 進行中 🟩 已完成")
 
