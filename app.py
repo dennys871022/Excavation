@@ -1148,6 +1148,79 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
 # ============================================================================
 # 補充：聯單交付簽收 PDF 報表（tab_delivery 原本也缺少此函式定義）
 # ============================================================================
+def generate_weekly_trend_pdf(week_display_df, stage_choice, start_str, end_str):
+    """
+    產出週會用的簡易PDF：標題 + 日期區間 + 「日期/實際車次/備註」三欄表格。
+    回傳暫存 PDF 檔案路徑。
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font_path = "font.ttf"
+    font_name = "CustomFont"
+    if os.path.exists(font_path):
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+        except Exception:
+            font_name = "Helvetica"
+    else:
+        font_name = "Helvetica"
+
+    tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    c = canvas.Canvas(tmp_pdf.name, pagesize=A4)
+    width, height = A4
+    margin = 18 * mm
+    y = height - margin
+
+    def new_page():
+        nonlocal y
+        c.showPage()
+        c.setFont(font_name, 10)
+        y = height - margin
+
+    c.setFont(font_name, 16)
+    c.drawCentredString(width / 2, y, f"【{stage_choice}】週會車次資料")
+    y -= 9 * mm
+    c.setFont(font_name, 10)
+    c.drawCentredString(width / 2, y, f"統計區間：{start_str} ～ {end_str}")
+    y -= 12 * mm
+
+    dc_cols = ['日期', '實際車次', '備註']
+    total_w = width - 2 * margin
+    col_widths = [total_w * 0.25, total_w * 0.2, total_w * 0.55]
+
+    def draw_header():
+        nonlocal y
+        c.setFont(font_name, 10)
+        x_pos = margin
+        for col, w in zip(dc_cols, col_widths):
+            c.drawString(x_pos, y, col)
+            x_pos += w
+        y -= 2 * mm
+        c.line(margin, y, width - margin, y)
+        y -= 6 * mm
+
+    draw_header()
+    c.setFont(font_name, 10)
+    for _, row in week_display_df.iterrows():
+        if y < margin + 10 * mm:
+            new_page()
+            draw_header()
+        x_pos = margin
+        for col, w in zip(dc_cols, col_widths):
+            val = row[col]
+            text_val = f"{val:,.0f}" if isinstance(val, float) and not pd.isna(val) else ("" if pd.isna(val) else str(val))
+            c.drawString(x_pos, y, text_val)
+            x_pos += w
+        y -= 6 * mm
+
+    c.save()
+    return tmp_pdf.name
+
+
 def generate_delivery_pdf(df, scope):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
@@ -2256,9 +2329,12 @@ with tab_stage:
             week_display = week_df[['日期', '實際車次', '備註']]
             st.dataframe(week_display, use_container_width=True, hide_index=True)
 
+            week_df['_date_obj'] = pd.to_datetime(week_df['日期'])
+            week_df['_date_label'] = week_df['_date_obj'].apply(lambda d: f"{d.month}/{d.day}")
+
             fig_week = go.Figure()
             fig_week.add_trace(go.Scatter(
-                x=week_df['日期'], y=week_df['實際車次'],
+                x=week_df['_date_obj'], y=week_df['實際車次'],
                 mode='lines+markers+text',
                 text=week_df['實際車次'].astype(int).astype(str),
                 textposition='top center',
@@ -2268,10 +2344,33 @@ with tab_stage:
             ))
             fig_week.update_layout(
                 title=f"【{stage_choice}】{week_start_str} ~ {week_end_str} 車次趨勢",
-                xaxis_title="日期", yaxis_title="車次 (台)",
-                height=420, margin=dict(l=20, r=20, t=50, b=20),
+                xaxis=dict(
+                    title="日期",
+                    type='date',
+                    tickmode='array',
+                    tickvals=week_df['_date_obj'],
+                    ticktext=week_df['_date_label'],  # 直接用算好的「9/13」格式文字，不靠Plotly解析日期格式字串
+                    tickangle=-45,
+                ),
+                yaxis_title="車次 (台)",
+                height=460, margin=dict(l=20, r=20, t=50, b=60),
             )
             st.plotly_chart(fig_week, use_container_width=True)
+
+            if st.button("📥 匯出週會表格 PDF", key=f"export_week_pdf_{stage_choice}"):
+                with st.spinner("PDF 產生中..."):
+                    week_pdf_path = generate_weekly_trend_pdf(
+                        week_display, stage_choice, week_start_str, week_end_str
+                    )
+                with open(week_pdf_path, "rb") as f:
+                    st.download_button(
+                        label=f"✅ 點此下載 週會車次表格 ({week_start_str}~{week_end_str}).pdf",
+                        data=f,
+                        file_name=f"weekly_trend_{stage_choice}_{week_start_str}_{week_end_str}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"download_week_pdf_{stage_choice}",
+                    )
 
     st.divider()
     st.markdown(f"#### 🗺️ 【{stage_choice}】單階段專用地圖（僅顯示本階段挖掘進度）")
