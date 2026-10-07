@@ -453,8 +453,14 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     if not df_logs_.empty and "日期" in df_logs_.columns:
         valid_logs_ = df_logs_.copy()
         valid_logs_['載運方量(m³)'] = pd.to_numeric(valid_logs_.get('載運方量(m³)', vol_per_truck_), errors='coerce').fillna(vol_per_truck_)
+        # 車次數：正常逐台登記的紀錄固定是1；FDA簡化集計紀錄一列代表好幾台車，數字會大於1，
+        # 用加總「車次數」而不是數「列數」，FDA的台數才會正確算進每日/累計車次統計裡
+        if '車次數' in valid_logs_.columns:
+            valid_logs_['車次數'] = pd.to_numeric(valid_logs_['車次數'], errors='coerce').fillna(1)
+        else:
+            valid_logs_['車次數'] = 1
         daily_stats_ = valid_logs_.groupby('日期').agg(
-            實際車次=('車頭車號', 'count'),
+            實際車次=('車次數', 'sum'),
             當日運棄量=('載運方量(m³)', 'sum')
         ).reset_index()
         daily_stats_ = daily_stats_.sort_values('日期')
@@ -1669,6 +1675,14 @@ with tab_stats:
             df_logs["作廢"] = False
         if "作廢原因" not in df_logs.columns:
             df_logs["作廢原因"] = ""
+        if "運送目的地" not in df_logs.columns:
+            df_logs["運送目的地"] = "台北港"
+        else:
+            df_logs["運送目的地"] = df_logs["運送目的地"].fillna("台北港").replace("", "台北港")
+        if "車次數" not in df_logs.columns:
+            df_logs["車次數"] = 1
+        else:
+            df_logs["車次數"] = pd.to_numeric(df_logs["車次數"], errors='coerce').fillna(1)
 
         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
         # valid_logs 是統計計算用的資料，會排除已標記「作廢」的紀錄（例如爆胎超時被拒收、原車返回的那種）
@@ -1682,9 +1696,11 @@ with tab_stats:
         cumul_logs = valid_logs[valid_logs['ParsedDate'] <= end_date].copy()
 
         range_trucks = range_logs['車頭車號'].nunique() if '車頭車號' in range_logs.columns else 0
-        range_trips = len(range_logs)
+        # 車次改用加總「車次數」欄位，不是單純數列數：FDA簡化集計紀錄一列代表好幾台車，
+        # 數列數會低估真實車次，要用這欄位的加總才對
+        range_trips = pd.to_numeric(range_logs['車次數'], errors='coerce').fillna(1).sum() if '車次數' in range_logs.columns else len(range_logs)
         range_vol = pd.to_numeric(range_logs['載運方量(m³)'], errors='coerce').sum() if '載運方量(m³)' in range_logs.columns else 0
-        total_all_trips = len(cumul_logs)
+        total_all_trips = pd.to_numeric(cumul_logs['車次數'], errors='coerce').fillna(1).sum() if '車次數' in cumul_logs.columns else len(cumul_logs)
 
         period_days = range_logs['ParsedDate'].nunique() if not range_logs.empty and 'ParsedDate' in range_logs.columns else 0
         period_rate = round(range_trips / period_days, 1) if period_days > 0 else 0
@@ -1752,6 +1768,19 @@ with tab_stats:
         manifest_total = 79692.0
         overall_rate = round((total_excavated / manifest_total * 100), 1) if manifest_total > 0 else 0
 
+        # FDA土方交換統計：本期（跟上面車次/方量同一個日期區間）與累積兩種，開挖前土方另計（跟一般的累計實挖方量同樣的呈現方式）
+        _fda_col = '運送目的地'
+        fda_range_logs = range_logs[range_logs[_fda_col] == 'FDA'] if _fda_col in range_logs.columns else range_logs.iloc[0:0]
+        period_fda_trips = pd.to_numeric(fda_range_logs['車次數'], errors='coerce').fillna(1).sum() if not fda_range_logs.empty else 0
+        period_fda_vol = pd.to_numeric(fda_range_logs['載運方量(m³)'], errors='coerce').fillna(0).sum() if not fda_range_logs.empty else 0
+
+        fda_cumul_logs = cumul_logs[cumul_logs[_fda_col] == 'FDA'] if _fda_col in cumul_logs.columns else cumul_logs.iloc[0:0]
+        cumul_fda_trips = pd.to_numeric(fda_cumul_logs['車次數'], errors='coerce').fillna(1).sum() if not fda_cumul_logs.empty else 0
+        cumul_fda_vol = pd.to_numeric(fda_cumul_logs['載運方量(m³)'], errors='coerce').fillna(0).sum() if not fda_cumul_logs.empty else 0
+        cumul_fda_pre_vol = pd.to_numeric(
+            fda_cumul_logs[fda_cumul_logs['出土分區'] == '開挖前土方']['載運方量(m³)'], errors='coerce'
+        ).fillna(0).sum() if not fda_cumul_logs.empty else 0
+
         report_text_left = f"""【CDC土方開挖{period_label}回報】 區間: {start_date} 至 {end_date}
 {period_label}出土天數： {period_days} 天
 {period_label}車次： {range_trips} 台
@@ -1762,7 +1791,9 @@ with tab_stats:
 總出土功率： {total_rate} 台/天
 累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
 聯單預估總出土： {manifest_total:,.0f} m³
-總體開挖進度： {overall_rate}%"""
+總體開挖進度： {overall_rate}%
+{period_label}FDA土方交換： {period_fda_trips:.0f} 台 / {period_fda_vol:,.0f} m³
+累積FDA土方交換： {cumul_fda_trips:.0f} 台 / {cumul_fda_vol:,.0f} m³ (另計開挖前土方: {cumul_fda_pre_vol:,.0f} m³)"""
 
         report_text_right = f"區間聯單分類出土：\n{manifest_breakdown_str}"
         ui_display_text = f"{report_text_left}\n\n{report_text_right}"
@@ -1906,6 +1937,51 @@ with tab_stats:
                     )
             except Exception as ex:
                 st.error(f"PDF 匯出失敗：{ex}")
+
+        st.divider()
+
+        st.markdown("#### 🔄 FDA土方交換（無電子聯單，簡化輸入）")
+        st.caption("隔壁工地FDA沒有電子聯單，這裡用簡化方式登記：填當天總台數、總方量、分配到哪個分區，按新增後會直接併入派車紀錄，自動算進累計實挖方量、地圖進度、完成率（視同跟台北港的量合併計算），也會同步顯示在下面「本日回報」的FDA土方交換統計裡。")
+
+        fda_col1, fda_col2, fda_col3, fda_col4 = st.columns([1, 1, 1, 2])
+        with fda_col1:
+            fda_date = st.date_input("交換日期", value=tw_today, key="fda_entry_date")
+        with fda_col2:
+            fda_trucks = st.number_input("總台數", min_value=1, value=1, step=1, key="fda_entry_trucks")
+        with fda_col3:
+            fda_vol = st.number_input("總方量 (m³)", min_value=0.0, value=12.0, step=1.0, key="fda_entry_vol")
+        with fda_col4:
+            fda_zone_options = ["開挖前土方"] + (df_results["分區代號"].tolist() if not df_results.empty else [])
+            fda_zone = st.selectbox("分配到分區", options=fda_zone_options, key="fda_entry_zone")
+
+        fda_note = st.text_input("備註（選填）", value="", key="fda_entry_note", placeholder="例如：FDA工地土方交換")
+
+        if st.button("➕ 新增這筆FDA土方交換紀錄", key="fda_entry_submit"):
+            fda_raw_logs = load_sheet_data("dispatch_logs")
+            if fda_raw_logs.empty:
+                fda_raw_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註", "聯單序號", "作廢", "作廢原因", "運送目的地", "車次數"])
+            for _col, _default in [("作廢", False), ("作廢原因", ""), ("運送目的地", "台北港"), ("車次數", 1), ("聯單序號", "")]:
+                if _col not in fda_raw_logs.columns:
+                    fda_raw_logs[_col] = _default
+
+            new_fda_row = {
+                "日期": fda_date.strftime("%Y-%m-%d"),
+                "時間": "00:00:00",
+                "車頭車號": f"FDA集計-{fda_date.strftime('%Y%m%d')}-{fda_zone}",
+                "出土分區": fda_zone,
+                "載運方量(m³)": float(fda_vol),
+                "備註": (f"FDA土方交換" + (f"：{fda_note}" if fda_note else "")),
+                "聯單序號": "",
+                "作廢": False,
+                "作廢原因": "",
+                "運送目的地": "FDA",
+                "車次數": int(fda_trucks),
+            }
+            fda_raw_logs = pd.concat([fda_raw_logs, pd.DataFrame([new_fda_row])], ignore_index=True)
+            if save_sheet_data("dispatch_logs", fda_raw_logs):
+                sync_stage_daily_log(global_stage_choice, df_results)
+                st.success(f"已新增：{fda_date.strftime('%Y-%m-%d')} FDA土方交換 {fda_trucks} 台 / {fda_vol:,.0f} m³ → 分配至【{fda_zone}】")
+                st.rerun()
 
         st.divider()
 
@@ -2464,11 +2540,17 @@ with tab_sync:
                             df_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註", "聯單序號"])
                         if "聯單序號" not in df_logs.columns:
                             df_logs["聯單序號"] = ""
+                        if "運送目的地" not in df_logs.columns:
+                            df_logs["運送目的地"] = "台北港"
+                        else:
+                            df_logs["運送目的地"] = df_logs["運送目的地"].fillna("台北港").replace("", "台北港")
 
                         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
                         df_logs['FullTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
                         df_logs['正規化車號'] = df_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
-                        sync_sys_df = df_logs[df_logs['ParsedDate'] == sync_date].copy()
+                        # 官方對帳只處理「台北港」的正式聯單車輛，FDA簡化集計紀錄完全不是這套系統的東西，
+                        # 一定要排除掉，不然會被誤判成「系統多出來、官方聯單沒有對應」而被刪除
+                        sync_sys_df = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['運送目的地'] != 'FDA')].copy()
 
                         # 先算出差異摘要，等下比對完一起顯示給你看
                         off_counts = sync_off_df['正規化車號'].value_counts().reset_index()
@@ -2486,7 +2568,7 @@ with tab_sync:
                         plates = set(sync_off_df['正規化車號']).union(set(sync_sys_df['正規化車號']))
                         for plate in plates:
                             o_subset = sync_off_df[sync_off_df['正規化車號'] == plate].sort_values('FullTime')
-                            s_subset = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['正規化車號'] == plate)].sort_values('FullTime')
+                            s_subset = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['正規化車號'] == plate) & (df_logs['運送目的地'] != 'FDA')].sort_values('FullTime')
 
                             s_indices = s_subset.index.tolist()
                             used_s = set()
