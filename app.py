@@ -1941,47 +1941,99 @@ with tab_stats:
         st.divider()
 
         st.markdown("#### 🔄 FDA土方交換（無電子聯單，簡化輸入）")
-        st.caption("隔壁工地FDA沒有電子聯單，這裡用簡化方式登記：填當天總台數、總方量、分配到哪個分區，按新增後會直接併入派車紀錄，自動算進累計實挖方量、地圖進度、完成率（視同跟台北港的量合併計算），也會同步顯示在下面「本日回報」的FDA土方交換統計裡。")
+        st.caption("隔壁工地FDA沒有電子聯單，這裡用簡化方式登記：填當天總台數、總方量，分配到的分區可以複選。按新增後會直接併入派車紀錄，自動算進累計實挖方量、地圖進度、完成率（視同跟台北港的量合併計算），也會同步顯示在下面「本日回報」的FDA土方交換統計裡。")
 
-        fda_col1, fda_col2, fda_col3, fda_col4 = st.columns([1, 1, 1, 2])
+        fda_col1, fda_col2, fda_col3 = st.columns([1, 1, 1])
         with fda_col1:
             fda_date = st.date_input("交換日期", value=tw_today, key="fda_entry_date")
         with fda_col2:
             fda_trucks = st.number_input("總台數", min_value=1, value=1, step=1, key="fda_entry_trucks")
         with fda_col3:
             fda_vol = st.number_input("總方量 (m³)", min_value=0.0, value=12.0, step=1.0, key="fda_entry_vol")
-        with fda_col4:
-            fda_zone_options = ["開挖前土方"] + (df_results["分區代號"].tolist() if not df_results.empty else [])
-            fda_zone = st.selectbox("分配到分區", options=fda_zone_options, key="fda_entry_zone")
 
+        fda_zone_options = ["開挖前土方"] + (df_results["分區代號"].tolist() if not df_results.empty else [])
+        fda_zones = st.multiselect(
+            "分配到分區（可複選；選多個時依剩餘容量自動分配，某區達到本階段目標後自動跳過、改分給其他區，邏輯跟下面「批量設定出土分區」一樣）",
+            options=fda_zone_options, key="fda_entry_zones",
+        )
         fda_note = st.text_input("備註（選填）", value="", key="fda_entry_note", placeholder="例如：FDA工地土方交換")
 
-        if st.button("➕ 新增這筆FDA土方交換紀錄", key="fda_entry_submit"):
-            fda_raw_logs = load_sheet_data("dispatch_logs")
-            if fda_raw_logs.empty:
-                fda_raw_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註", "聯單序號", "作廢", "作廢原因", "運送目的地", "車次數"])
-            for _col, _default in [("作廢", False), ("作廢原因", ""), ("運送目的地", "台北港"), ("車次數", 1), ("聯單序號", "")]:
-                if _col not in fda_raw_logs.columns:
-                    fda_raw_logs[_col] = _default
+        # 顯示選定分區在本階段的剩餘容量，跟批量設定出土分區那邊共用同一套參考資訊
+        _fda_cap_stage_idx = get_stage_index(global_stage_choice)
+        _fda_excavated_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict() if not zone_grouped.empty else {}
+        if fda_zones and _fda_cap_stage_idx is not None:
+            fda_cap_rows = []
+            for z in fda_zones:
+                cap = get_stage_remaining_capacity(z, df_results, _fda_cap_stage_idx, _fda_excavated_dict)
+                fda_cap_rows.append({
+                    "分區": z,
+                    f"【{global_stage_choice}】剩餘可挖 (m³)": f"{cap:,.0f}" if cap is not None else "無上限（本階段無目標）",
+                })
+            st.caption(f"📏 目前選定分區在【{global_stage_choice}】的剩餘容量：")
+            st.dataframe(pd.DataFrame(fda_cap_rows), use_container_width=True, hide_index=True)
 
-            new_fda_row = {
-                "日期": fda_date.strftime("%Y-%m-%d"),
-                "時間": "00:00:00",
-                "車頭車號": f"FDA集計-{fda_date.strftime('%Y%m%d')}-{fda_zone}",
-                "出土分區": fda_zone,
-                "載運方量(m³)": float(fda_vol),
-                "備註": (f"FDA土方交換" + (f"：{fda_note}" if fda_note else "")),
-                "聯單序號": "",
-                "作廢": False,
-                "作廢原因": "",
-                "運送目的地": "FDA",
-                "車次數": int(fda_trucks),
-            }
-            fda_raw_logs = pd.concat([fda_raw_logs, pd.DataFrame([new_fda_row])], ignore_index=True)
-            if save_sheet_data("dispatch_logs", fda_raw_logs):
-                sync_stage_daily_log(global_stage_choice, df_results)
-                st.success(f"已新增：{fda_date.strftime('%Y-%m-%d')} FDA土方交換 {fda_trucks} 台 / {fda_vol:,.0f} m³ → 分配至【{fda_zone}】")
-                st.rerun()
+        if st.button("➕ 新增這筆FDA土方交換紀錄", key="fda_entry_submit"):
+            if not fda_zones:
+                st.error("請至少選擇一個分區")
+            else:
+                fda_raw_logs = load_sheet_data("dispatch_logs")
+                if fda_raw_logs.empty:
+                    fda_raw_logs = pd.DataFrame(columns=["日期", "時間", "車頭車號", "出土分區", "載運方量(m³)", "備註", "聯單序號", "作廢", "作廢原因", "運送目的地", "車次數"])
+                for _col, _default in [("作廢", False), ("作廢原因", ""), ("運送目的地", "台北港"), ("車次數", 1), ("聯單序號", "")]:
+                    if _col not in fda_raw_logs.columns:
+                        fda_raw_logs[_col] = _default
+
+                # 把「總台數+總方量」拆成一台一台的方量清單，交給跟批量設定出土分區同一套容量感知分配演算法，
+                # 完成的分區會自動跳過，再把分配結果依分區彙總回集計列（維持FDA簡化輸入的精神，不逐台存成一列）
+                per_truck_vol = fda_vol / fda_trucks if fda_trucks > 0 else 0
+                truck_vol_list = [per_truck_vol] * int(fda_trucks)
+
+                if len(fda_zones) == 1:
+                    assigned_list = [fda_zones[0]] * len(truck_vol_list)
+                else:
+                    assigned_list, _ = allocate_trucks_by_capacity(
+                        truck_vol_list, fda_zones, df_results, _fda_cap_stage_idx, _fda_excavated_dict
+                    )
+
+                from collections import defaultdict
+                zone_agg = defaultdict(lambda: [0, 0.0])
+                unassigned_trucks = 0
+                unassigned_vol = 0.0
+                for z, v in zip(assigned_list, truck_vol_list):
+                    if z is None:
+                        unassigned_trucks += 1
+                        unassigned_vol += v
+                    else:
+                        zone_agg[z][0] += 1
+                        zone_agg[z][1] += v
+
+                new_fda_rows = []
+                for z, (trucks, vol) in zone_agg.items():
+                    new_fda_rows.append({
+                        "日期": fda_date.strftime("%Y-%m-%d"),
+                        "時間": "00:00:00",
+                        "車頭車號": f"FDA集計-{fda_date.strftime('%Y%m%d')}-{z}",
+                        "出土分區": z,
+                        "載運方量(m³)": round(vol, 1),
+                        "備註": (f"FDA土方交換" + (f"：{fda_note}" if fda_note else "")),
+                        "聯單序號": "",
+                        "作廢": False,
+                        "作廢原因": "",
+                        "運送目的地": "FDA",
+                        "車次數": trucks,
+                    })
+
+                if new_fda_rows:
+                    fda_raw_logs = pd.concat([fda_raw_logs, pd.DataFrame(new_fda_rows)], ignore_index=True)
+                    if save_sheet_data("dispatch_logs", fda_raw_logs):
+                        sync_stage_daily_log(global_stage_choice, df_results)
+                        breakdown_str = "、".join([f"{z}：{int(t)}台/{v:,.0f}m³" for z, (t, v) in zone_agg.items()])
+                        st.success(f"已新增：{fda_date.strftime('%Y-%m-%d')} FDA土方交換，{breakdown_str}")
+                        if unassigned_trucks > 0:
+                            st.warning(f"⚠️ 有 **{unassigned_trucks} 台**（約 {unassigned_vol:,.0f} m³）沒有分配出去，因為所選分區在【{global_stage_choice}】的目標都已經填滿了，請自行調整分區或接受超挖後重新輸入。")
+                        st.rerun()
+                else:
+                    st.error("所選分區在這個階段的目標都已經完成，沒有任何容量可以分配，請改選其他分區。")
 
         st.divider()
 
@@ -2565,7 +2617,10 @@ with tab_sync:
                         to_add_records = []
                         updates = {}
 
-                        plates = set(sync_off_df['正規化車號']).union(set(sync_sys_df['正規化車號']))
+                        # 只處理「這次上傳的CSV裡有提到的車號」，不要去動系統裡其他車號的紀錄
+                        # （例如同一天另外上傳的不同土質CSV已經對過帳的資料）。
+                        # 這樣你分好幾次上傳不同土質的CSV，彼此不會互相刪除對方的紀錄。
+                        plates = set(sync_off_df['正規化車號'])
                         for plate in plates:
                             o_subset = sync_off_df[sync_off_df['正規化車號'] == plate].sort_values('FullTime')
                             s_subset = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['正規化車號'] == plate) & (df_logs['運送目的地'] != 'FDA')].sort_values('FullTime')
