@@ -93,6 +93,23 @@ def filter_active_dispatch_logs(df_logs):
     return df_logs[~df_logs['作廢'].apply(_is_voided)].copy()
 
 
+def _clean_serial(v):
+    """
+    把聯單序號統一整理成乾淨字串，用來判斷「這筆紀錄有沒有官方聯單序號」：
+    空白、NaN、None、'nan' 一律視為沒有序號；數字被雲端讀成 123.0 的，去掉尾巴的 .0。
+    """
+    if v is None:
+        return ""
+    if isinstance(v, float) and pd.isna(v):
+        return ""
+    s = str(v).strip()
+    if s.upper() in ("NAN", "NONE", "NAT"):
+        return ""
+    if s.endswith(".0") and s[:-2].replace("-", "").isdigit():
+        s = s[:-2]
+    return s
+
+
 PORT_REJECTION_KEYWORDS = ['台北港']
 
 
@@ -454,18 +471,56 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
         valid_logs_ = df_logs_.copy()
         valid_logs_['載運方量(m³)'] = pd.to_numeric(valid_logs_.get('載運方量(m³)', vol_per_truck_), errors='coerce').fillna(vol_per_truck_)
         # 車次數：正常逐台登記的紀錄固定是1；FDA簡化集計紀錄一列代表好幾台車，數字會大於1，
-        # 用加總「車次數」而不是數「列數」，FDA的台數才會正確算進每日/累計車次統計裡
+        # 所以車次要加總「車次數」而不是數「列數」
         if '車次數' in valid_logs_.columns:
             valid_logs_['車次數'] = pd.to_numeric(valid_logs_['車次數'], errors='coerce').fillna(1)
         else:
             valid_logs_['車次數'] = 1
+        if '運送目的地' in valid_logs_.columns:
+            _is_fda_ = valid_logs_['運送目的地'].fillna('台北港').astype(str).eq('FDA')
+        else:
+            _is_fda_ = pd.Series(False, index=valid_logs_.index)
+
+        # 「實際車次」只算台北港正式聯單的車次，FDA車次不併進來（FDA另外在 df_fda_daily 獨立一張表）。
+        # 「當日運棄量」則仍含FDA方量，因為FDA挖出來的土一樣算開挖進度。
+        valid_logs_['_台北港車次'] = valid_logs_['車次數'].where(~_is_fda_, 0)
         daily_stats_ = valid_logs_.groupby('日期').agg(
-            實際車次=('車次數', 'sum'),
+            實際車次=('_台北港車次', 'sum'),
             當日運棄量=('載運方量(m³)', 'sum')
         ).reset_index()
         daily_stats_ = daily_stats_.sort_values('日期')
+
+        # FDA 專用每日明細（獨立一張表，不跟台北港的車次混在一起）
+        fda_logs_ = valid_logs_[_is_fda_]
+        if not fda_logs_.empty:
+            _fda_rows = []
+            for _d, _sub in fda_logs_.groupby('日期'):
+                _zone_parts = [
+                    f"{_z}（{int(_zsub['車次數'].sum())}台/{_zsub['載運方量(m³)'].sum():,.0f}m³）"
+                    for _z, _zsub in _sub.groupby('出土分區')
+                ]
+                _notes = []
+                if '備註' in _sub.columns:
+                    for _n in _sub['備註'].dropna().unique():
+                        _n = str(_n).replace("FDA土方交換：", "").replace("FDA土方交換", "").strip()
+                        if _n and _n not in _notes:
+                            _notes.append(_n)
+                _fda_rows.append({
+                    '日期': _d,
+                    'FDA車次': int(_sub['車次數'].sum()),
+                    'FDA方量(m³)': float(_sub['載運方量(m³)'].sum()),
+                    '分區分配': '、'.join(_zone_parts),
+                    '備註': '；'.join(_notes),
+                })
+            df_fda_daily_ = pd.DataFrame(_fda_rows).sort_values('日期').reset_index(drop=True)
+            df_fda_daily_['累計FDA車次'] = df_fda_daily_['FDA車次'].cumsum()
+            df_fda_daily_['累計FDA方量(m³)'] = df_fda_daily_['FDA方量(m³)'].cumsum()
+            df_fda_daily_ = df_fda_daily_[['日期', 'FDA車次', 'FDA方量(m³)', '累計FDA車次', '累計FDA方量(m³)', '分區分配', '備註']]
+        else:
+            df_fda_daily_ = pd.DataFrame(columns=['日期', 'FDA車次', 'FDA方量(m³)', '累計FDA車次', '累計FDA方量(m³)', '分區分配', '備註'])
     else:
         daily_stats_ = pd.DataFrame(columns=['日期', '實際車次', '當日運棄量'])
+        df_fda_daily_ = pd.DataFrame(columns=['日期', 'FDA車次', 'FDA方量(m³)', '累計FDA車次', '累計FDA方量(m³)', '分區分配', '備註'])
 
     df_daily_notes_ = load_sheet_data("stage_daily_notes")
     if df_daily_notes_.empty:
@@ -598,6 +653,7 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
         "est_vol_default": default_est_vol_,
         "est_vol_default_real": default_est_vol_real_,
         "default_daily_trips": default_daily_trips_,
+        "df_fda_daily": df_fda_daily_,
         "manual_daily_trips": manual_daily_trips_ if pd.notna(manual_daily_trips_) else None,
     }
 
@@ -891,7 +947,8 @@ def generate_backend_map(df_results, zone_grouped, stage_choice=None):
 # ============================================================================
 def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_path,
                                period_label, start_date, end_date, stage_overview=None,
-                               daily_control_df=None, map_legend_items=None, stage_label=None):
+                               daily_control_df=None, map_legend_items=None, stage_label=None,
+                               fda_daily_df=None):
     """
     產出每日/區間出土統計 PDF 報表：
       - 標題（置中）
@@ -900,6 +957,7 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
       - 圖例（真正的顏色色塊，map_legend_items = [(label, hex_color), ...]） + 各區開挖階段狀態地圖
       - 各分區挖掘進度總表（放在地圖後面，避免分區數增加時把地圖往下擠）
       - 每日出土管控明細 (daily_control_df, 放在PDF最後面；標題用 stage_label)
+      - FDA土方交換每日明細 (fda_daily_df, 獨立一張表，接在每日出土管控明細後面)
     回傳暫存 PDF 檔案路徑。
     """
     from reportlab.lib.pagesizes import A4
@@ -1145,6 +1203,84 @@ def generate_daily_report_pdf(report_text, breakdown_text, display_df, map_img_p
                 if is_negative:
                     c.setFillColor(HexColor("#000000"))
                 x_pos += w
+            y -= 5 * mm
+
+    # FDA土方交換每日明細（獨立一張表，車次與方量都不併進上面台北港的實際車次）
+    if fda_daily_df is not None and not fda_daily_df.empty:
+        if y < margin + 45 * mm:
+            new_page()
+        else:
+            y -= 10 * mm
+        c.setFont(font_name, 13)
+        c.drawString(margin, y, "【FDA土方交換】每日明細（車次與方量獨立統計）")
+        y -= 9 * mm
+
+        fda_cols = list(fda_daily_df.columns)
+        fda_total_w = width - 2 * margin
+        fda_font_size = 8
+        fda_text_cols = {'分區分配', '備註'}
+
+        def _fda_cell_text(val):
+            if isinstance(val, (int, np.integer)):
+                return f"{int(val):,}"
+            if isinstance(val, float):
+                return "" if pd.isna(val) else f"{val:,.1f}"
+            return "" if val is None else str(val)
+
+        def _fda_fit_text(text, max_w):
+            if c.stringWidth(text, font_name, fda_font_size) <= max_w:
+                return text
+            while text and c.stringWidth(text + "...", font_name, fda_font_size) > max_w:
+                text = text[:-1]
+            return text + "..."
+
+        fda_pad = 2.5 * mm
+        fda_widths = {}
+        for col in fda_cols:
+            if col in fda_text_cols:
+                continue
+            needed = c.stringWidth(str(col), font_name, fda_font_size)
+            for _, r in fda_daily_df.iterrows():
+                needed = max(needed, c.stringWidth(_fda_cell_text(r[col]), font_name, fda_font_size))
+            fda_widths[col] = needed + fda_pad
+        num_total = sum(fda_widths.values())
+        min_text_w = 50 * mm
+        remain = fda_total_w - num_total
+        if remain < min_text_w and num_total > 0:
+            shrink = max((fda_total_w - min_text_w) / num_total, 0.3)
+            fda_widths = {k: v * shrink for k, v in fda_widths.items()}
+            remain = fda_total_w - sum(fda_widths.values())
+        fda_widths['分區分配'] = remain * 0.65
+        fda_widths['備註'] = remain * 0.35
+
+        def draw_fda_header():
+            nonlocal y
+            c.setFont(font_name, fda_font_size)
+            x_pos = margin
+            for col in fda_cols:
+                c.drawString(x_pos, y, str(col))
+                x_pos += fda_widths[col]
+            y -= 2 * mm
+            c.line(margin, y, width - margin, y)
+            y -= 4.5 * mm
+
+        draw_fda_header()
+        c.setFont(font_name, fda_font_size)
+        for _, r in fda_daily_df.iterrows():
+            if y < margin + 10 * mm:
+                new_page()
+                c.setFont(font_name, 13)
+                c.drawString(margin, y, "【FDA土方交換】每日明細（續）")
+                y -= 9 * mm
+                draw_fda_header()
+                c.setFont(font_name, fda_font_size)
+            x_pos = margin
+            for col in fda_cols:
+                text_val = _fda_cell_text(r[col])
+                if col in fda_text_cols:
+                    text_val = _fda_fit_text(text_val, fda_widths[col] - 2 * mm)
+                c.drawString(x_pos, y, text_val)
+                x_pos += fda_widths[col]
             y -= 5 * mm
 
     c.save()
@@ -1695,12 +1831,20 @@ with tab_stats:
         range_logs = valid_logs[(valid_logs['ParsedDate'] >= start_date) & (valid_logs['ParsedDate'] <= end_date)]
         cumul_logs = valid_logs[valid_logs['ParsedDate'] <= end_date].copy()
 
-        range_trucks = range_logs['車頭車號'].nunique() if '車頭車號' in range_logs.columns else 0
-        # 車次改用加總「車次數」欄位，不是單純數列數：FDA簡化集計紀錄一列代表好幾台車，
-        # 數列數會低估真實車次，要用這欄位的加總才對
-        range_trips = pd.to_numeric(range_logs['車次數'], errors='coerce').fillna(1).sum() if '車次數' in range_logs.columns else len(range_logs)
+        # 車次/車頭數只算台北港正式聯單的車，FDA的車次不併進來（FDA另外在「FDA土方交換」那兩行獨立統計）。
+        # 方量（本期出土方量、累計實挖方量）則仍含FDA，因為FDA挖出來的土一樣算開挖進度。
+        def _exclude_fda(_df):
+            if '運送目的地' in _df.columns:
+                return _df[_df['運送目的地'].fillna('台北港').astype(str) != 'FDA']
+            return _df
+        range_logs_official = _exclude_fda(range_logs)
+        cumul_logs_official = _exclude_fda(cumul_logs)
+
+        range_trucks = range_logs_official['車頭車號'].nunique() if '車頭車號' in range_logs_official.columns else 0
+        # 車次用加總「車次數」欄位，不是單純數列數（一列不一定只代表一台車）
+        range_trips = pd.to_numeric(range_logs_official['車次數'], errors='coerce').fillna(1).sum() if '車次數' in range_logs_official.columns else len(range_logs_official)
         range_vol = pd.to_numeric(range_logs['載運方量(m³)'], errors='coerce').sum() if '載運方量(m³)' in range_logs.columns else 0
-        total_all_trips = pd.to_numeric(cumul_logs['車次數'], errors='coerce').fillna(1).sum() if '車次數' in cumul_logs.columns else len(cumul_logs)
+        total_all_trips = pd.to_numeric(cumul_logs_official['車次數'], errors='coerce').fillna(1).sum() if '車次數' in cumul_logs_official.columns else len(cumul_logs_official)
 
         period_days = range_logs['ParsedDate'].nunique() if not range_logs.empty and 'ParsedDate' in range_logs.columns else 0
         period_rate = round(range_trips / period_days, 1) if period_days > 0 else 0
@@ -1924,6 +2068,7 @@ with tab_stats:
                         end_date=end_date,
                         stage_overview=None,
                         daily_control_df=daily_control_for_pdf,
+                        fda_daily_df=stage_overview_for_pdf.get("df_fda_daily"),
                         map_legend_items=pdf_legend_items,
                         stage_label=global_stage_choice,
                     )
@@ -2326,7 +2471,7 @@ with tab_stage:
 
     st.divider()
     st.markdown("#### 📅 每日出土管控明細")
-    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港無收土），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量；「累積差異」為「差異」逐日累加。「差異」與「累積差異」為負數時，下方預覽表會以紅色標示。下方表格只顯示「有出土」或「被標記為特例」的日期；沒出土又沒被標記的日期不會出現、也不算進「目前作業工期」；備註含「台北港」字樣且當天沒出土的日期，會顯示但同樣不算進工期與平均功率，且「差異」「累積差異」當天直接跳過不計算（差異留空、累積差異維持前一天數字），PDF匯出時這種日期的差異/累積差異會顯示「－」。")
+    st.caption("💡 「備註」欄可填寫無法出土原因（例如：台北港無收土），供後續對帳查閱；「剩餘土方量」為該日累計後推算之剩餘量；「累積差異」為「差異」逐日累加。「差異」與「累積差異」為負數時，下方預覽表會以紅色標示。下方表格只顯示「有出土」或「被標記為特例」的日期；沒出土又沒被標記的日期不會出現、也不算進「目前作業工期」；備註含「台北港」字樣且當天沒出土的日期，會顯示但同樣不算進工期與平均功率，且「差異」「累積差異」當天直接跳過不計算（差異留空、累積差異維持前一天數字），PDF匯出時這種日期的差異/累積差異會顯示「－」。 另外：「實際車次」只計台北港正式聯單的車次，FDA車次不併入，改列在下方「FDA土方交換每日明細」獨立一張表；「當日運棄量／累計運棄量／剩餘土方量」則含FDA方量（FDA挖出來的土仍算開挖進度）。")
 
     zero_vol_df = df_range[df_range['當日運棄量'] == 0][['日期', '計入工期', '備註']].copy()
     with st.expander(f"⚙️ 管理沒有出土的日期（共 {len(zero_vol_df)} 天；預設不顯示、不算工期，勾選才會顯示）", expanded=False):
@@ -2430,6 +2575,16 @@ with tab_stage:
         final_notes = pd.concat([other_notes, save_df], ignore_index=True)
         _save_daily_notes_sorted(final_notes)
         st.rerun()
+
+    st.divider()
+    st.markdown("#### 🔄 FDA土方交換每日明細（獨立一張表，不併入上方實際車次）")
+    st.caption("隔壁工地FDA的土方交換另外列表：車次與方量獨立呈現，「分區分配」顯示當天各分區各分到幾台、多少方量。FDA的方量仍然計入各分區累計實挖方量與開挖進度，只是車次不跟台北港正式聯單的車次混在一起算。")
+    df_fda_view = overview.get("df_fda_daily")
+    if df_fda_view is None or df_fda_view.empty:
+        st.info("目前還沒有任何FDA土方交換紀錄。可以到「出土統計儀表板」的「🔄 FDA土方交換」表單新增。")
+    else:
+        st.dataframe(df_fda_view, use_container_width=True, hide_index=True)
+        st.caption(f"📌 FDA累計：**{int(df_fda_view['FDA車次'].sum())} 台** / **{df_fda_view['FDA方量(m³)'].sum():,.0f} m³**")
 
     st.divider()
     st.markdown("#### 📈 週會資料：區間車次趨勢")
@@ -2596,10 +2751,17 @@ with tab_sync:
                             df_logs["運送目的地"] = "台北港"
                         else:
                             df_logs["運送目的地"] = df_logs["運送目的地"].fillna("台北港").replace("", "台北港")
+                        for _c, _d in [("作廢", False), ("作廢原因", ""), ("車次數", 1)]:
+                            if _c not in df_logs.columns:
+                                df_logs[_c] = _d
+                        # 序號欄位轉成可以放文字的型態，避免整欄原本被判成數字時寫入字串報錯
+                        df_logs["聯單序號"] = df_logs["聯單序號"].astype(object)
 
                         df_logs['ParsedDate'] = pd.to_datetime(df_logs['日期']).dt.date
                         df_logs['FullTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
                         df_logs['正規化車號'] = df_logs['車頭車號'].astype(str).str.replace(r'\W+', '', regex=True).str.upper()
+                        # 這筆紀錄有沒有「官方聯單序號」：有的話代表已經對過帳，這次對帳絕對不能刪、也不能被拿去重新配對覆蓋
+                        df_logs['_serial_clean'] = df_logs['聯單序號'].apply(_clean_serial)
                         # 官方對帳只處理「台北港」的正式聯單車輛，FDA簡化集計紀錄完全不是這套系統的東西，
                         # 一定要排除掉，不然會被誤判成「系統多出來、官方聯單沒有對應」而被刪除
                         sync_sys_df = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['運送目的地'] != 'FDA')].copy()
@@ -2612,14 +2774,21 @@ with tab_sync:
                         merged = pd.merge(off_counts, sys_counts, on='車頭車號', how='outer').fillna(0)
                         merged['差異 (多按或漏按)'] = merged['系統台數'] - merged['官方台數']
 
+                        # 系統裡已經登記過的官方聯單序號 → 對應的紀錄索引（不限日期、不含FDA），用來判斷「這張官方聯單先前是不是已經對過帳」
+                        serial_to_idx_all = {}
+                        for _idx, _s in df_logs.loc[df_logs['運送目的地'] != 'FDA', '_serial_clean'].items():
+                            if _s:
+                                serial_to_idx_all.setdefault(_s, _idx)
+
                         # 直接執行時間序列精準比對覆蓋與序號寫入
                         to_delete_indices = []
                         to_add_records = []
                         updates = {}
+                        already_reconciled = 0   # 官方序號系統裡早就有了、原封不動的筆數
+                        protected_count = 0      # 這次沒配到官方資料、但因為已有官方序號而受保護沒被刪的筆數
 
                         # 只處理「這次上傳的CSV裡有提到的車號」，不要去動系統裡其他車號的紀錄
                         # （例如同一天另外上傳的不同土質CSV已經對過帳的資料）。
-                        # 這樣你分好幾次上傳不同土質的CSV，彼此不會互相刪除對方的紀錄。
                         plates = set(sync_off_df['正規化車號'])
                         for plate in plates:
                             o_subset = sync_off_df[sync_off_df['正規化車號'] == plate].sort_values('FullTime')
@@ -2631,13 +2800,24 @@ with tab_sync:
                             for _, o_row in o_subset.iterrows():
                                 o_t = o_row['FullTime']
                                 o_plate_raw = o_row[plate_col]
-                                o_serial_raw = str(o_row[serial_col])
+                                o_serial_clean = _clean_serial(o_row[serial_col])
 
+                                # (1) 這張官方聯單序號系統裡已經有了 → 先前（例如上一份不同土質的CSV）已經對過帳，原封不動
+                                if o_serial_clean and o_serial_clean in serial_to_idx_all:
+                                    _existing_idx = serial_to_idx_all[o_serial_clean]
+                                    if _existing_idx is not None:
+                                        used_s.add(_existing_idx)
+                                    already_reconciled += 1
+                                    continue
+
+                                # (2) 只在「還沒有官方序號」的紀錄裡，找時間最接近的配對；
+                                #     已經有別張官方序號的紀錄不能被拿來配對，不然會把人家的序號蓋掉
                                 best_s_idx = None
                                 best_diff = float('inf')
 
                                 for idx in s_indices:
                                     if idx in used_s: continue
+                                    if s_subset.loc[idx, '_serial_clean']: continue
                                     st_t = s_subset.loc[idx, 'FullTime']
                                     if pd.isna(o_t) or pd.isna(st_t): continue
                                     diff = abs((o_t - st_t).total_seconds())
@@ -2649,8 +2829,10 @@ with tab_sync:
                                     used_s.add(best_s_idx)
                                     updates[best_s_idx] = {
                                         "時間": o_t.strftime("%H:%M:%S"),
-                                        "聯單序號": o_serial_raw
+                                        "聯單序號": o_serial_clean
                                     }
+                                    if o_serial_clean:
+                                        serial_to_idx_all[o_serial_clean] = best_s_idx
                                 else:
                                     to_add_records.append({
                                         "日期": o_t.strftime("%Y-%m-%d") if pd.notnull(o_t) else sync_date.strftime("%Y-%m-%d"),
@@ -2659,12 +2841,22 @@ with tab_sync:
                                         "出土分區": "未指定",
                                         "載運方量(m³)": 12.0,
                                         "備註": "官方聯單補登",
-                                        "聯單序號": o_serial_raw
+                                        "聯單序號": o_serial_clean,
+                                        "作廢": False,
+                                        "作廢原因": "",
+                                        "運送目的地": "台北港",
+                                        "車次數": 1,
                                     })
+                                    if o_serial_clean:
+                                        serial_to_idx_all[o_serial_clean] = None  # 同一份CSV裡序號重複出現時不要重複補登
 
                             for idx in s_indices:
-                                if idx not in used_s:
-                                    to_delete_indices.append(idx)
+                                if idx in used_s:
+                                    continue
+                                if s_subset.loc[idx, '_serial_clean']:
+                                    protected_count += 1  # 已有官方聯單序號 → 絕對不刪
+                                    continue
+                                to_delete_indices.append(idx)
 
                         if updates:
                             for idx, vals in updates.items():
@@ -2678,12 +2870,16 @@ with tab_sync:
                             df_logs = pd.concat([df_logs, pd.DataFrame(to_add_records)], ignore_index=True)
 
                         df_logs['SortTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
-                        df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime'])
+                        df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime', '_serial_clean'])
 
                         save_ok = save_sheet_data("dispatch_logs", df_logs)
 
                     if save_ok:
-                        st.success(f"✅ 比對完成並已直接寫入雲端！更新 {len(updates)} 筆、新增 {len(to_add_records)} 筆、剔除 {len(to_delete_indices)} 筆。")
+                        st.success(
+                            f"✅ 比對完成並已直接寫入雲端！更新 {len(updates)} 筆、新增 {len(to_add_records)} 筆、剔除 {len(to_delete_indices)} 筆。"
+                            f"另有 {already_reconciled} 筆官方聯單先前已對過帳（序號已存在）維持不動，"
+                            f"{protected_count} 筆已有官方聯單序號的紀錄因受保護而沒有被刪除。"
+                        )
                         st.markdown("##### 比對差異摘要（僅供參考，資料已寫入雲端）")
                         st.dataframe(merged, use_container_width=True)
                     else:
