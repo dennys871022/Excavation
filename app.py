@@ -2734,6 +2734,13 @@ with tab_sync:
             if missing_cols:
                 st.error(f"⚠️ CSV 檔案格式不符！缺少必要欄位：{', '.join(missing_cols)}。請確認官方匯出的檔案是否包含這些欄位。")
             else:
+                final_csv_of_day = st.checkbox(
+                    "📌 這是這一天「最後一份」CSV（所有土質都已經上傳完了）→ 同時清除當天不在任何CSV裡、也沒有官方聯單序號的殘留紀錄",
+                    value=False, key="sync_final_csv_of_day",
+                    help="平常（沒勾選）對帳只會處理「這份CSV裡有出現的車牌」，這是為了讓你分批上傳不同土質的CSV時，不會把另一份CSV的車誤刪。"
+                         "但這樣一來，車牌打錯、或多按到不屬於任何CSV的車，就不會被清掉。"
+                         "當天所有CSV都傳完之後，最後一份勾選這個，就會把這種殘留紀錄一併清掉。已有官方聯單序號的紀錄與已作廢的紀錄一律受保護，不會被刪。",
+                )
                 if st.button("🚀 開始比對並直接寫入雲端", use_container_width=True):
                     with st.spinner("比對中並同步寫入雲端，請稍候..."):
                         official_df['FullTime'] = pd.to_datetime(official_df[datetime_col], errors='coerce')
@@ -2856,7 +2863,26 @@ with tab_sync:
                                 if s_subset.loc[idx, '_serial_clean']:
                                     protected_count += 1  # 已有官方聯單序號 → 絕對不刪
                                     continue
+                                if _is_voided(s_subset.loc[idx, '作廢']):
+                                    continue  # 你手動標記作廢的紀錄是稽核軌跡，也不能被對帳刪掉
                                 to_delete_indices.append(idx)
+
+                        # 勾選「最後一份CSV」時：當天所有土質都傳完了，順便清掉「車牌根本不在任何CSV裡」、又沒有官方聯單序號的殘留紀錄
+                        # （通常是車牌輸入錯誤、或多按的）。已有官方序號、已作廢的紀錄一樣完全受保護。
+                        extra_cleaned = 0
+                        if final_csv_of_day and not sync_off_df.empty:
+                            _already_marked = set(to_delete_indices)
+                            _day_rows = df_logs[(df_logs['ParsedDate'] == sync_date) & (df_logs['運送目的地'] != 'FDA')]
+                            for _idx, _r in _day_rows.iterrows():
+                                if _idx in _already_marked or _r['正規化車號'] in plates:
+                                    continue  # 有出現在CSV的車牌上面已經處理過了
+                                if _r['_serial_clean']:
+                                    protected_count += 1
+                                    continue
+                                if _is_voided(_r['作廢']):
+                                    continue
+                                to_delete_indices.append(_idx)
+                                extra_cleaned += 1
 
                         if updates:
                             for idx, vals in updates.items():
@@ -2869,6 +2895,16 @@ with tab_sync:
                         if to_add_records:
                             df_logs = pd.concat([df_logs, pd.DataFrame(to_add_records)], ignore_index=True)
 
+                        # 對帳完成後，這一天還留在系統裡、卻沒有官方聯單序號的台北港紀錄（多按、車牌打錯，或屬於還沒上傳的其他土質CSV）
+                        _chk_date = pd.to_datetime(df_logs['日期'], errors='coerce').dt.date
+                        _chk_mask = (
+                            (_chk_date == sync_date)
+                            & (df_logs['聯單序號'].apply(_clean_serial) == '')
+                            & (df_logs['運送目的地'].fillna('台北港').astype(str) != 'FDA')
+                            & (~df_logs['作廢'].apply(_is_voided))
+                        )
+                        leftover_df = df_logs.loc[_chk_mask, ['車頭車號', '時間', '出土分區']].reset_index(drop=True)
+
                         df_logs['SortTime'] = pd.to_datetime(df_logs['日期'].astype(str) + ' ' + df_logs['時間'].astype(str), errors='coerce')
                         df_logs = df_logs.sort_values('SortTime').drop(columns=['ParsedDate', 'FullTime', '正規化車號', 'SortTime', '_serial_clean'])
 
@@ -2879,7 +2915,16 @@ with tab_sync:
                             f"✅ 比對完成並已直接寫入雲端！更新 {len(updates)} 筆、新增 {len(to_add_records)} 筆、剔除 {len(to_delete_indices)} 筆。"
                             f"另有 {already_reconciled} 筆官方聯單先前已對過帳（序號已存在）維持不動，"
                             f"{protected_count} 筆已有官方聯單序號的紀錄因受保護而沒有被刪除。"
+                            + (f"另外清除了 {extra_cleaned} 筆不在任何CSV裡、也沒有官方聯單序號的殘留紀錄。" if extra_cleaned else "")
                         )
+                        if final_csv_of_day and sync_off_df.empty:
+                            st.warning("⚠️ 這份CSV裡沒有你選的這一天的資料，所以已略過「清除殘留紀錄」，避免誤刪。請確認對帳日期是否選對。")
+                        if not leftover_df.empty:
+                            st.warning(
+                                f"⚠️ 這一天系統裡還有 **{len(leftover_df)} 筆**沒有官方聯單序號的紀錄（可能是多按、車牌輸入錯誤，"
+                                f"或屬於還沒上傳的其他土質CSV）。如果這是這一天最後一份CSV，勾選上方「最後一份CSV」後再按一次對帳，就會一併清掉："
+                            )
+                            st.dataframe(leftover_df, use_container_width=True, hide_index=True)
                         st.markdown("##### 比對差異摘要（僅供參考，資料已寫入雲端）")
                         st.dataframe(merged, use_container_width=True)
                     else:
