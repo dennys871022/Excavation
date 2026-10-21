@@ -34,19 +34,18 @@ df_results = build_zone_results(
     settings["gl_bc_input"], settings["gl_a_input"], settings["gl_oil_input"],
 )
 
-t_grid, t_stats, t_stage, t_sync, t_manifest, t_delivery = st.tabs([
-    "🗺️ 圖資與方量基準", "📊 出土統計儀表板", "📈 階段開挖管控", "🧾 官方聯單對帳", "🎫 聯單庫存管理", "✍️ 現場廠商簽收"
-])
-
-with t_grid:
-    tab_grid.render(df_results, global_stage_choice)
-with t_stats:
-    tab_stats.render(df_results, global_stage_choice)
-with t_stage:
-    tab_stage.render(df_results, global_stage_choice)
-with t_sync:
-    tab_sync.render(df_results, global_stage_choice)
-with t_manifest:
-    tab_manifest.render(df_results, global_stage_choice)
-with t_delivery:
-    tab_delivery.render(df_results, global_stage_choice)
+# 用單選列取代 st.tabs：st.tabs 每次互動都會把「所有分頁」的程式碼全部跑一遍，
+# 改成只執行目前選到的分頁，其他分頁完全不運算，網頁會快很多。
+TAB_RENDERERS = {
+    "🗺️ 圖資與方量基準": tab_grid.render,
+    "📊 出土統計儀表板": tab_stats.render,
+    "📈 階段開挖管控": tab_stage.render,
+    "🧾 官方聯單對帳": tab_sync.render,
+    "🎫 聯單庫存管理": tab_manifest.render,
+    "✍️ 現場廠商簽收": tab_delivery.render,
+}
+active_tab = st.radio(
+    "目前分頁", list(TAB_RENDERERS), horizontal=True, key="active_tab", label_visibility="collapsed",
+)
+st.divider()
+TAB_RENDERERS[active_tab](df_results, global_stage_choice)
