@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from config import LOOSE_SOIL_FACTOR
 from data_store import filter_active_dispatch_logs, load_sheet_data, save_sheet_data
-from map_3d import render_layers_3d, view_toggle
+from map_3d import VIEW_BLOCK, VIEW_PIT, render_layers_3d, render_planned_pit, view_toggle
 from stage_calc import compute_stage_overview, get_stage_index
 from zones import get_stage_remaining_capacity
 
@@ -25,8 +25,10 @@ def render(df_results, global_stage_choice):
     with col1:
         st.write("### 精準網格地圖")
         _grid_view = view_toggle("map_view_grid")
-        if _grid_view == "3D":
+        if _grid_view == VIEW_BLOCK:
             render_layers_3d(df_results)
+        elif _grid_view == VIEW_PIT:
+            render_planned_pit(df_results)
         else:
             fig = go.Figure()
             for idx, row in df_results.iterrows():
