@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from config import LOOSE_SOIL_FACTOR
 from data_store import filter_active_dispatch_logs, load_sheet_data, save_sheet_data
+from map_3d import render_layers_3d, view_toggle
 from stage_calc import compute_stage_overview, get_stage_index
 from zones import get_stage_remaining_capacity
 
@@ -23,17 +24,21 @@ def render(df_results, global_stage_choice):
 
     with col1:
         st.write("### 精準網格地圖")
-        fig = go.Figure()
-        for idx, row in df_results.iterrows():
-            fig.add_trace(go.Scatter(
-                x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
-                y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
-                mode='lines', line=dict(color='blue', width=1),
-                fill='toself', fillcolor='rgba(0, 100, 255, 0.1)', showlegend=False, hoverinfo='skip'
-            ))
-            fig.add_annotation(x=row['x_center'], y=row['y_center'], text=row['分區代號'], showarrow=False, font=dict(color="red", size=12))
-        fig.update_layout(dragmode='pan', xaxis_title="X (m)", yaxis_title="Y (m)", yaxis=dict(scaleanchor="x", scaleratio=1), height=700, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
+        _grid_view = view_toggle("map_view_grid")
+        if _grid_view == "3D":
+            render_layers_3d(df_results)
+        else:
+            fig = go.Figure()
+            for idx, row in df_results.iterrows():
+                fig.add_trace(go.Scatter(
+                    x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
+                    y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
+                    mode='lines', line=dict(color='blue', width=1),
+                    fill='toself', fillcolor='rgba(0, 100, 255, 0.1)', showlegend=False, hoverinfo='skip'
+                ))
+                fig.add_annotation(x=row['x_center'], y=row['y_center'], text=row['分區代號'], showarrow=False, font=dict(color="red", size=12))
+            fig.update_layout(dragmode='pan', xaxis_title="X (m)", yaxis_title="Y (m)", yaxis=dict(scaleanchor="x", scaleratio=1), height=700, margin=dict(l=20, r=20, t=30, b=20))
+            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
     st.divider()
     st.markdown("### 🖱️ 框選查詢範圍內各階段土方量")
