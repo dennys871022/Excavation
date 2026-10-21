@@ -228,7 +228,9 @@ def compute_stage_overview(stage_choice, df_results, override_settings_row=None,
     df_range_ = df_range_.drop(columns=['計入工期_saved'])
 
     # 備註含「台北港」字樣且當天沒出土 → 這天的差異／累積差異直接跳過不計算（差異留空、累積差異維持前一天數字不變）
-    _port_reject_mask = df_range_['備註'].apply(_note_indicates_port_rejection) & (df_range_['當日運棄量'] == 0)
+    # 判斷「台北港有沒有出土」要看台北港自己的車次（實際車次，已排除FDA）；
+    # 當日運棄量含FDA方量，如果當天只有FDA土方交換、台北港暫停收土，運棄量>0但台北港車次=0，一樣要跳過差異。
+    _port_reject_mask = df_range_['備註'].apply(_note_indicates_port_rejection) & (df_range_['實際車次'] == 0)
 
     df_range_['差異'] = df_range_['實際車次'] - df_range_['內控預計車次']
     df_range_.loc[_port_reject_mask, '差異'] = np.nan
