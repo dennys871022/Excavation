@@ -142,6 +142,10 @@ def _range_picker(label, dates, key):
 def _view_daily(port):
     total_trips = int(port["trips"].sum())
     days = port.groupby("日期")["trips"].sum().sort_index()
+    all_dates = sorted(pd.to_datetime(port["日期"]).dt.date.unique())
+    # 班別圖表與車輛分析共用同一個區間
+    s, e = _range_picker("選取分析區間（班別圖表與車輛分析共用）", all_dates, "ana_daily_range")
+    s_str, e_str = s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")
     c1, c2 = st.columns([1, 2])
     with c1:
         st.metric("累計出土總車次", f"{total_trips:,}")
@@ -152,11 +156,9 @@ def _view_daily(port):
                 st.metric(f"最新進度比對（{last_d}）", f"{last_n} 車次", delta=f"{last_n - prev_n:+d}（對比 {prev_d} 的 {prev_n} 車次）")
             else:
                 st.metric(f"最新進度（{last_d}）", f"{last_n} 車次")
-    all_dates = sorted(pd.to_datetime(port["日期"]).dt.date.unique())
     with c2:
         st.markdown("##### 出車班別區間分析")
-        s, e = _range_picker("選取圖表區間", all_dates, "ana_daily_range")
-        rng = port[(port["日期"] >= s.strftime("%Y-%m-%d")) & (port["日期"] <= e.strftime("%Y-%m-%d"))]
+        rng = port[(port["日期"] >= s_str) & (port["日期"] <= e_str)]
         shift_names = [n for n, _, _ in SHIFTS] + ["其他時段"]
         by = rng.groupby(["日期", "shift"])["trips"].sum().unstack(fill_value=0).reindex(columns=shift_names, fill_value=0).sort_index()
         p1, p2 = st.columns(2)
@@ -176,8 +178,8 @@ def _view_daily(port):
 
     st.divider()
     st.markdown("##### 區間車輛趟次比較與運載時間分析")
-    ts, te = _range_picker("選取車輛分析區間", all_dates, "ana_truck_range")
-    tr = port[(port["日期"] >= ts.strftime("%Y-%m-%d")) & (port["日期"] <= te.strftime("%Y-%m-%d")) & (port["truck"] != "")]
+    st.caption(f"分析區間：{s_str} ～ {e_str}（跟上方班別圖表同一個區間）")
+    tr = port[(port["日期"] >= s_str) & (port["日期"] <= e_str) & (port["truck"] != "")]
     if tr.empty:
         st.info("此區間無資料")
     else:
