@@ -4,12 +4,45 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 from datetime import timedelta
-from data_store import _clean_serial, _is_voided, load_sheet_data, save_sheet_data
+from data_store import _clean_serial, _is_voided, apply_official_fields, load_sheet_data, save_sheet_data
 
 
 def render(df_results, global_stage_choice):
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
     st.info("💡 演算法說明：系統會自動尋找時間最接近的紀錄綁定並寫入聯單序號（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。上傳CSV後按一次按鈕即可完成比對並直接寫入雲端，不需要再分兩步驟。")
+
+    with st.expander("📎 補充官方欄位（補登／司機／土質）— 只填欄位，不動車次、不新增、不刪除", expanded=False):
+        st.caption("官方CSV裡的「是否為出場補登」才是真正的補登；雲端舊備註的「官方聯單補登」只是系統自動補上資料的註記，不是官方補登。"
+                   "把CSV（可一次選多份、整個月的都可以）上傳一次，系統會依「聯單序號」把官方的補登旗標與原因、司機姓名、土質填進雲端 dispatch_logs 對應的紀錄，"
+                   "「🔬 聯單進階分析」的補登異常率就會用這個真實數字。以後每次做日常對帳也會自動帶入，不必每個月重傳。")
+        enrich_files = st.file_uploader("上傳官方CSV（可多選）", type=["csv"], accept_multiple_files=True, key="enrich_csv_files")
+        if enrich_files and st.button("📎 只補充官方欄位（不改動車次）", key="btn_enrich_official"):
+            frames, bad = [], []
+            for f in enrich_files:
+                try:
+                    try:
+                        frames.append(pd.read_csv(f, encoding='utf-8'))
+                    except UnicodeDecodeError:
+                        f.seek(0)
+                        frames.append(pd.read_csv(f, encoding='big5'))
+                except Exception as e:
+                    bad.append(f"{f.name}：{e}")
+            if bad:
+                st.error("以下檔案讀取失敗：" + "；".join(bad))
+            if frames:
+                big = pd.concat(frames, ignore_index=True)
+                if "聯單序號" not in big.columns:
+                    st.error("CSV 缺少「聯單序號」欄位，無法對應。")
+                else:
+                    cur_logs = load_sheet_data("dispatch_logs")
+                    new_logs, n_match, unmatched = apply_official_fields(cur_logs, big)
+                    flag_col = "是否為出場補登 (0=正常, 1=補登)"
+                    n_real = int(pd.to_numeric(big.get(flag_col, 0), errors="coerce").fillna(0).astype(int).sum()) if flag_col in big.columns else 0
+                    if n_match and save_sheet_data("dispatch_logs", new_logs):
+                        st.success(f"✅ 已補充 {n_match} 筆紀錄的官方欄位（CSV 共 {len(big)} 筆，其中官方出場補登 {n_real} 筆）。"
+                                   + (f"另有 {len(unmatched)} 張CSV聯單在雲端找不到對應序號（可能還沒對帳過）。" if unmatched else ""))
+                    elif not n_match:
+                        st.warning("沒有任何CSV聯單序號對得上雲端紀錄，所以沒有寫入。請先用下方的「官方對帳」把該日期的序號對上之後再補充。")
 
     sync_date = st.date_input("選擇對帳日期：", value=(datetime.utcnow() + timedelta(hours=8)).date())
 
@@ -145,7 +178,7 @@ def render(df_results, global_stage_choice):
                                         "車頭車號": o_plate_raw,
                                         "出土分區": "未指定",
                                         "載運方量(m³)": 12.0,
-                                        "備註": "官方聯單補登",
+                                        "備註": "系統依官方CSV補齊（非官方補登）",
                                         "聯單序號": o_serial_clean,
                                         "作廢": False,
                                         "作廢原因": "",
@@ -193,6 +226,9 @@ def render(df_results, global_stage_choice):
                         if to_add_records:
                             df_logs = pd.concat([df_logs, pd.DataFrame(to_add_records)], ignore_index=True)
 
+                        # 順便把官方CSV裡真正的補登旗標/原因、司機、土質依聯單序號填進去（只填欄位，不增刪）
+                        df_logs, enriched_n, _unmatched_serials = apply_official_fields(df_logs, official_df)
+
                         # 對帳完成後，這一天還留在系統裡、卻沒有官方聯單序號的台北港紀錄（多按、車牌打錯，或屬於還沒上傳的其他土質CSV）
                         _chk_date = pd.to_datetime(df_logs['日期'], errors='coerce').dt.date
                         _chk_mask = (
@@ -214,6 +250,7 @@ def render(df_results, global_stage_choice):
                             f"另有 {already_reconciled} 筆官方聯單先前已對過帳（序號已存在）維持不動，"
                             f"{protected_count} 筆已有官方聯單序號的紀錄因受保護而沒有被刪除。"
                             + (f"另外清除了 {extra_cleaned} 筆不在任何CSV裡、也沒有官方聯單序號的殘留紀錄。" if extra_cleaned else "")
+                            + f"（同時依聯單序號補上 {enriched_n} 筆的官方補登／司機／土質欄位。）"
                         )
                         if final_csv_of_day and sync_off_df.empty:
                             st.warning("⚠️ 這份CSV裡沒有你選的這一天的資料，所以已略過「清除殘留紀錄」，避免誤刪。請確認對帳日期是否選對。")
