@@ -268,3 +268,45 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
     except Exception as e:
         st.sidebar.error(f"圖資運算錯誤: {e}")
     return df_results
+
+
+def zone_progress_style(row, current_vol, thresholds, stage_idx, stage_label):
+    """
+    依目前階段（stage_idx 為 None＝開挖前土方，看總體4階累計）算出某分區的狀態文字與地圖填色。
+    2D 地圖與 3D 地圖共用同一套規則，兩邊顏色一定一致。回傳 (狀態文字, 'rgba(...)' 顏色字串)。
+    """
+    _local_idx = local_stage_index(row, stage_idx) if stage_idx is not None else -1
+    if stage_idx is not None and thresholds and 0 <= _local_idx < len(thresholds):
+        band_start = thresholds[_local_idx - 1] if _local_idx > 0 else 0
+        band_end = thresholds[_local_idx]
+        band_size = band_end - band_start
+        pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
+
+        if pct >= 98:
+            fill_color = 'rgba(46, 204, 113, 0.8)'
+            stage_text = f"{stage_label} 已完成"
+        elif pct > 0:
+            fill_color = 'rgba(230, 126, 34, 0.7)'
+            stage_text = f"{stage_label} 進行中: {pct:.0f}%"
+        else:
+            fill_color = 'rgba(240, 240, 240, 0.5)'
+            stage_text = f"{stage_label} 尚未開始"
+    else:
+        stage_text = "尚未開挖"
+        fill_color = 'rgba(240, 240, 240, 0.5)'
+
+        if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
+            if current_vol >= thresholds[-1] * 0.98:
+                stage_text = "開挖完成"
+                fill_color = 'rgba(46, 204, 113, 0.8)'
+            else:
+                colors = ['rgba(241, 196, 15, 0.7)', 'rgba(230, 126, 34, 0.7)', 'rgba(52, 152, 219, 0.7)', 'rgba(155, 89, 182, 0.7)']
+                for s_idx, t_vol in enumerate(thresholds):
+                    if current_vol < t_vol * 0.98:
+                        if s_idx == 0:
+                            stage_text = "1挖進行中"
+                        else:
+                            stage_text = f"{s_idx}挖完成 / {s_idx+1}挖進行中"
+                        fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
+                        break
+    return stage_text, fill_color
