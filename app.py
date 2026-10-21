@@ -13,6 +13,7 @@ import tab_stage
 import tab_sync
 import tab_manifest
 import tab_delivery
+import tab_analytics
 
 render_auth()
 
@@ -40,6 +41,7 @@ TAB_RENDERERS = {
     "🗺️ 圖資與方量基準": tab_grid.render,
     "📊 出土統計儀表板": tab_stats.render,
     "📈 階段開挖管控": tab_stage.render,
+    "🔬 聯單進階分析": tab_analytics.render,
     "🧾 官方聯單對帳": tab_sync.render,
     "🎫 聯單庫存管理": tab_manifest.render,
     "✍️ 現場廠商簽收": tab_delivery.render,
