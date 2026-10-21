@@ -77,7 +77,7 @@ def zone_map_picker(df_results, target_key, stage_idx=None, excavated_dict=None,
         st.session_state[sig_key] = sig
         keep = [c for c in st.session_state.get(target_key, []) if c not in codes]   # 例如「開挖前土方」
         st.session_state[target_key] = keep + [c for c in codes if c in picked]
-        st.rerun()
+        # 不需要 st.rerun()：這裡在 multiselect 建立之前就改好 session_state，同一輪畫面就會帶入
 
     c1, c2 = st.columns([3, 1])
     with c1:
