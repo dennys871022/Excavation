@@ -9,7 +9,8 @@ from data_store import _is_voided, filter_active_dispatch_logs, load_sheet_data,
 from pdf_reports import generate_backend_map, generate_daily_report_pdf
 from stage_calc import compute_stage_overview, get_stage_index, sync_stage_daily_log
 from zone_picker import zone_map_picker
-from zones import allocate_trucks_by_capacity, filter_zones_for_stage, get_stage_remaining_capacity, local_stage_index
+from map_3d import render_progress_3d, view_toggle
+from zones import allocate_trucks_by_capacity, filter_zones_for_stage, get_stage_remaining_capacity, zone_progress_style
 
 
 def render(df_results, global_stage_choice):
@@ -215,57 +216,28 @@ def render(df_results, global_stage_choice):
                 else:
                     df_map_zones = df_results
 
-                for idx, row in df_map_zones.iterrows():
-                    grid_id = row['分區代號']
-                    current_vol = vol_dict.get(grid_id, 0)
-                    thresholds = stage_dict.get(grid_id, [])
+                _map_view = view_toggle("map_view_stats")
+                if _map_view == "3D":
+                    render_progress_3d(df_map_zones, vol_dict, _stats_stage_idx, global_stage_choice, end_date)
+                else:
+                    for idx, row in df_map_zones.iterrows():
+                        grid_id = row['分區代號']
+                        current_vol = vol_dict.get(grid_id, 0)
+                        thresholds = stage_dict.get(grid_id, [])
 
-                    _local_idx = local_stage_index(row, _stats_stage_idx) if _stats_stage_idx is not None else -1
-                    if _stats_stage_idx is not None and thresholds and 0 <= _local_idx < len(thresholds):
-                        band_start = thresholds[_local_idx - 1] if _local_idx > 0 else 0
-                        band_end = thresholds[_local_idx]
-                        band_size = band_end - band_start
-                        pct = min(max((current_vol - band_start) / band_size * 100, 0), 100) if band_size > 0 else 100.0
+                        stage_text, fill_color = zone_progress_style(row, current_vol, thresholds, _stats_stage_idx, global_stage_choice)
 
-                        if pct >= 98:
-                            fill_color = 'rgba(46, 204, 113, 0.8)'
-                            stage_text = f"{global_stage_choice} 已完成"
-                        elif pct > 0:
-                            fill_color = 'rgba(230, 126, 34, 0.7)'
-                            stage_text = f"{global_stage_choice} 進行中: {pct:.0f}%"
-                        else:
-                            fill_color = 'rgba(240, 240, 240, 0.5)'
-                            stage_text = f"{global_stage_choice} 尚未開始"
-                    else:
-                        stage_text = "尚未開挖"
-                        fill_color = 'rgba(240, 240, 240, 0.5)'
+                        fig_map.add_trace(go.Scatter(
+                            x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
+                            y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
+                            mode='lines', line=dict(color='gray', width=1),
+                            fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
+                            text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
+                        ))
+                        fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
 
-                        if pd.notnull(current_vol) and current_vol > 0 and len(thresholds) > 0:
-                            if current_vol >= thresholds[-1] * 0.98:
-                                stage_text = "開挖完成"
-                                fill_color = 'rgba(46, 204, 113, 0.8)'
-                            else:
-                                colors = ['rgba(241, 196, 15, 0.7)', 'rgba(230, 126, 34, 0.7)', 'rgba(52, 152, 219, 0.7)', 'rgba(155, 89, 182, 0.7)']
-                                for s_idx, t_vol in enumerate(thresholds):
-                                    if current_vol < t_vol * 0.98:
-                                        if s_idx == 0:
-                                            stage_text = "1挖進行中"
-                                        else:
-                                            stage_text = f"{s_idx}挖完成 / {s_idx+1}挖進行中"
-                                        fill_color = colors[s_idx] if s_idx < len(colors) else colors[-1]
-                                        break
-
-                    fig_map.add_trace(go.Scatter(
-                        x=[row['x_min'], row['x_max'], row['x_max'], row['x_min'], row['x_min']],
-                        y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
-                        mode='lines', line=dict(color='gray', width=1),
-                        fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
-                        text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
-                    ))
-                    fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
-
-                fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})　【{global_stage_choice}】", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
+                    fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})　【{global_stage_choice}】", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
 
         st.divider()
 
