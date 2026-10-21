@@ -2,10 +2,14 @@
 
 原本是獨立的 HTML 儀表板（要手動上傳官方CSV），現在改成直接讀雲端 dispatch_logs，不需要上傳任何檔案。
 對照原本欄位：dispatch_logs 沒有「司機姓名／實際進土量／土質／土資場名稱／補登旗標」，因此做了以下對應——
-  司機 → 只用車號；進土量 → 移除；土質 → 聯單類型(B1、B2-3...，由聯單序號判斷)；
-  土資場 → 運送目的地(台北港/FDA)與出土分區；補登異常 → 備註含「補登」或已作廢的紀錄。
+  進土量 → 移除；土資場 → 運送目的地(台北港/FDA)與出土分區。
+  司機、土質、出場/進場補登：來自官方CSV，由「官方聯單對帳」分頁（或其中的「補充官方欄位」）依聯單序號寫進 dispatch_logs；
+  沒有官方土質時，聯單類型改由聯單序號判斷。
+  補登異常 → 只看官方的「出場補登／進場補登」旗標，加上已作廢的紀錄。備註裡的「官方聯單補登」只是系統自動補資料的註記，不算補登。
 車次/趟次一律只算台北港（FDA不併入車次，跟全站規則一致）；已作廢的紀錄不計入車次與出土量，只列入異常分析。
 """
+import html as _html
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -51,12 +55,23 @@ def prepare_tickets(df_logs, manifest_types):
     d["is_void"] = d["作廢"].apply(_is_voided)
     d["void_reason"] = d["作廢原因"].fillna("").astype(str)
     d["note"] = d["備註"].fillna("").astype(str)
-    d["is_backfill"] = d["note"].str.contains("補登", na=False)
+    # 補登一律以官方CSV的旗標為準（出場補登／進場補登），不再用備註文字判斷
+    _out = pd.to_numeric(d["出場補登"], errors="coerce").fillna(0) if "出場補登" in d.columns else pd.Series(0, index=d.index)
+    _in = pd.to_numeric(d["進場補登"], errors="coerce").fillna(0) if "進場補登" in d.columns else pd.Series(0, index=d.index)
+    d["is_backfill"] = (_out == 1) | (_in == 1)
+    _ro = d["出場補登原因"].fillna("").astype(str).str.strip() if "出場補登原因" in d.columns else pd.Series("", index=d.index)
+    _ri = d["進場補登原因"].fillna("").astype(str).str.strip() if "進場補登原因" in d.columns else pd.Series("", index=d.index)
+    d["backfill_label"] = ""
+    d.loc[_in == 1, "backfill_label"] = "進場補登：" + _ri[_in == 1].replace("", "（未填原因）")
+    d.loc[_out == 1, "backfill_label"] = "出場補登：" + _ro[_out == 1].replace("", "（未填原因）")
+    d["driver"] = d["司機姓名"].fillna("").astype(str).str.strip().replace({"nan": ""}) if "司機姓名" in d.columns else ""
+    _soil = d["土質"].fillna("").astype(str).str.strip().replace({"nan": ""}) if "土質" in d.columns else pd.Series("", index=d.index)
     d["vol"] = pd.to_numeric(d["載運方量(m³)"], errors="coerce").fillna(0.0)
     d["trips"] = pd.to_numeric(d["車次數"], errors="coerce").fillna(1).clip(lower=1)
     d["truck"] = d["車頭車號"].fillna("").astype(str).str.strip()
     d["zone"] = d["出土分區"].fillna("").astype(str).replace({"": "未指定", "nan": "未指定"})
     d["ticket_type"] = d["聯單序號"].apply(lambda v: _serial_type(v, manifest_types))
+    d.loc[_soil != "", "ticket_type"] = _soil[_soil != ""]
     t = d["時間"].fillna("").astype(str).str.strip()
     d["dt"] = pd.to_datetime(d["日期"] + " " + t, errors="coerce")
     d["hour"] = d["dt"].dt.hour
@@ -73,6 +88,41 @@ def prepare_tickets(df_logs, manifest_types):
     diff = sub.groupby(["truck", "日期"])["dt"].diff().dt.total_seconds() / 60
     d.loc[sub.index, "cycle"] = diff
     return d
+
+
+def _show_table(df, height=380):
+    """用深色表頭、白色粗體字的HTML表格顯示（st.dataframe 的表頭樣式無法自訂，這裡改用HTML讓表頭一眼看得到）。"""
+    if df is None or df.empty:
+        st.caption("（沒有資料）")
+        return
+    head = "".join(f"<th>{_html.escape(str(c))}</th>" for c in df.columns)
+    body = []
+    for _, r in df.iterrows():
+        cells = []
+        for v in r.values:
+            if isinstance(v, float):
+                txt = "-" if pd.isna(v) else (f"{v:,.0f}" if float(v).is_integer() else f"{v:,.1f}")
+            else:
+                txt = "-" if v is None or (not isinstance(v, str) and pd.isna(v)) else str(v)
+            cells.append(f"<td>{_html.escape(txt)}</td>")
+        body.append("<tr>" + "".join(cells) + "</tr>")
+    st.markdown(
+        """<style>
+.ana-wrap{overflow:auto;border:1px solid #d5dbe1;border-radius:6px;}
+.ana-wrap table{border-collapse:collapse;width:100%;font-size:0.92rem;}
+.ana-wrap th{position:sticky;top:0;background:#1f3a5f;color:#fff;font-weight:700;font-size:0.95rem;padding:10px 8px;text-align:center;border:1px solid #16293f;white-space:nowrap;}
+.ana-wrap td{padding:7px 8px;text-align:center;border:1px solid #e3e7eb;color:inherit;}
+.ana-wrap tbody tr:nth-child(even){background:rgba(31,58,95,0.06);}
+.ana-wrap tbody tr:hover{background:rgba(243,156,18,0.18);}
+</style>"""
+        f'<div class="ana-wrap" style="max-height:{height}px"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _driver_of(g):
+    ds = g.loc[g["driver"] != "", "driver"] if "driver" in g.columns else []
+    return ds.mode().iloc[0] if len(ds) else ""
 
 
 def _fmt_min(x):
@@ -133,7 +183,7 @@ def _view_daily(port):
     else:
         rows = []
         for truck, g in tr.groupby("truck"):
-            r = {"車號": truck, "區間總趟次": int(g["trips"].sum()), "平均完成時間(單趟)": g["cycle"].mean()}
+            r = {"車號": truck, "司機": _driver_of(g), "區間總趟次": int(g["trips"].sum()), "平均完成時間(單趟)": g["cycle"].mean()}
             for n, _, _ in SHIFTS:
                 r[n.split(" ")[0] + "平均"] = g.loc[g["shift"] == n, "cycle"].mean()
             rows.append(r)
@@ -146,7 +196,9 @@ def _view_daily(port):
         show.insert(0, "排名", range(1, len(show) + 1))
         for c in ["平均完成時間(單趟)", "早班平均", "午班平均", "晚班平均"]:
             show[c] = show[c].apply(_fmt_min)
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        if (show["司機"] == "").all():
+            show = show.drop(columns=["司機"])
+        _show_table(show, 420)
         st.caption("平均完成時間＝同一台車同一天相鄰兩趟的出場時間差；每台車每天第一趟沒有前一趟可比，不納入平均。")
 
     st.divider()
@@ -154,7 +206,7 @@ def _view_daily(port):
     hist = port.groupby(["日期", "shift"])["trips"].sum().unstack(fill_value=0).reindex(columns=shift_names, fill_value=0)
     hist["單日總計"] = hist.sum(axis=1)
     hist = hist.sort_index(ascending=False).reset_index()
-    st.dataframe(hist, use_container_width=True, hide_index=True)
+    _show_table(hist, 420)
 
 
 def _abnormal_table(alltp):
@@ -164,7 +216,7 @@ def _abnormal_table(alltp):
             k = "作廢：" + (r["void_reason"].strip() or "（未填原因）")
             reasons[k] = reasons.get(k, 0) + 1
         elif r["is_backfill"]:
-            reasons["官方聯單補登"] = reasons.get("官方聯單補登", 0) + 1
+            reasons[r["backfill_label"]] = reasons.get(r["backfill_label"], 0) + 1
     return reasons
 
 
@@ -191,21 +243,25 @@ def _view_weekly(port, alltp):
     m1, m2, m3 = st.columns(3)
     m1.metric("區間實際出土量 (台北港)", f"{w['vol'].sum():,.1f} m³")
     m2.metric("區間平均運載時間 (單趟)", _fmt_min(w["cycle"].mean()))
-    m3.metric("區間異常與補登率", f"{(abn / len(wa) * 100 if len(wa) else 0):.1f}%", help="（已作廢 + 備註含「補登」的紀錄）÷ 區間全部台北港紀錄")
+    m3.metric("區間異常與補登率", f"{(abn / len(wa) * 100 if len(wa) else 0):.1f}%", help="（已作廢 + 官方出場/進場補登的紀錄）÷ 區間全部台北港紀錄。補登只看官方CSV的旗標。")
 
     l, r = st.columns(2)
     with l:
         st.markdown("##### 車隊運能排行（區間累計）")
-        rk = w[w["truck"] != ""].groupby("truck")["trips"].sum().sort_values(ascending=False).reset_index()
-        rk.insert(0, "排名", range(1, len(rk) + 1))
-        rk.columns = ["排名", "車號", "趟次"]
-        st.dataframe(rk, use_container_width=True, hide_index=True, height=300)
+        wt = w[w["truck"] != ""]
+        rk = pd.DataFrame([{"車號": t, "司機": _driver_of(g), "趟次": int(g["trips"].sum())} for t, g in wt.groupby("truck")])
+        if not rk.empty:
+            rk = rk.sort_values("趟次", ascending=False).reset_index(drop=True)
+            rk.insert(0, "排名", range(1, len(rk) + 1))
+            if (rk["司機"] == "").all():
+                rk = rk.drop(columns=["司機"])
+        _show_table(rk, 320)
     with r:
         st.markdown("##### 補登／作廢原因分析（區間累計）")
         reasons = _abnormal_table(wa)
         if reasons:
             rdf = pd.DataFrame([{"原因": k, "發生次數": v, "佔比": f"{v / sum(reasons.values()) * 100:.1f}%"} for k, v in sorted(reasons.items(), key=lambda x: -x[1])])
-            st.dataframe(rdf, use_container_width=True, hide_index=True, height=300)
+            _show_table(rdf, 320)
         else:
             st.caption("此區間無補登或作廢紀錄。")
 
@@ -264,7 +320,11 @@ def _view_monthly(port, alltp, fda):
     perf = m[m["truck"] != ""].groupby("truck").agg(總趟次=("trips", "sum"), 實際出土量=("vol", "sum")).sort_values("總趟次", ascending=False).reset_index()
     perf = perf.rename(columns={"truck": "車號"})
     perf["實際出土量"] = perf["實際出土量"].round(1)
-    st.dataframe(perf, use_container_width=True, hide_index=True)
+    _drv = {t: _driver_of(g) for t, g in m.groupby("truck")}
+    perf.insert(1, "司機", perf["車號"].map(_drv).fillna(""))
+    if (perf["司機"] == "").all():
+        perf = perf.drop(columns=["司機"])
+    _show_table(perf, 420)
 
 
 def render(df_results=None, global_stage_choice=None):
@@ -277,6 +337,9 @@ def render(df_results=None, global_stage_choice=None):
     if d.empty:
         st.info("雲端 dispatch_logs 目前沒有可分析的資料。")
         return
+    if "出場補登" not in df_logs.columns:
+        st.info("📎 雲端 dispatch_logs 還沒有官方補登資料，所以目前「補登」只會統計到已作廢的紀錄。"
+                "請到「🧾 官方聯單對帳」分頁最上面的「補充官方欄位」上傳官方CSV一次（可一次選多份），之後就會用官方真實的補登數字；日常對帳也會自動帶入。")
     alltp = d[d["dest"] == "台北港"]                       # 含作廢（異常分析用）
     port = alltp[~alltp["is_void"]]                        # 正式台北港紀錄（車次/出土量）
     fda = d[(d["dest"] == "FDA") & (~d["is_void"])]
