@@ -210,3 +210,53 @@ def _save_daily_notes_sorted(df_daily_notes):
         sort_cols = ['階段名稱', '日期'] if '階段名稱' in df_daily_notes.columns else ['日期']
         df_daily_notes = df_daily_notes.sort_values(sort_cols).reset_index(drop=True)
     return save_sheet_data("stage_daily_notes", df_daily_notes)
+
+
+OFFICIAL_FIELD_COLS = ["出場補登", "出場補登原因", "進場補登", "進場補登原因", "司機姓名", "土質"]
+
+
+def apply_official_fields(df_logs, official_df):
+    """
+    把官方CSV裡「真正的」補登資訊與司機、土質，依「聯單序號」對應寫進 dispatch_logs 的新欄位
+    （出場補登 0/1、出場補登原因、進場補登 0/1、進場補登原因、司機姓名、土質）。
+    只會填補欄位，不新增、不刪除、不改動車次/時間/序號/分區，所以任何時候重複執行都是安全的。
+    備註裡舊的「官方聯單補登」只是系統自動補上資料的註記，不是官方的補登，統計一律以這裡的「出場補登」欄位為準。
+    回傳 (更新後的df_logs, 對應到的筆數, 官方CSV裡找不到對應紀錄的序號清單)。
+    """
+    if df_logs is None or df_logs.empty or official_df is None or official_df.empty or "聯單序號" not in official_df.columns:
+        return df_logs, 0, []
+    off = official_df.copy()
+    off["_s"] = off["聯單序號"].apply(_clean_serial)
+    off = off[off["_s"] != ""].drop_duplicates("_s", keep="last")
+
+    def _col(*names):
+        for n in names:
+            if n in off.columns:
+                return off[n]
+        return pd.Series([None] * len(off), index=off.index)
+
+    def _flag(series):
+        return pd.to_numeric(series, errors="coerce").fillna(0).astype(int)
+
+    def _text(series):
+        return series.fillna("").astype(str).str.strip().replace({"nan": "", "NaN": ""})
+
+    rec = pd.DataFrame({
+        "出場補登": _flag(_col("是否為出場補登 (0=正常, 1=補登)")).values,
+        "出場補登原因": _text(_col("出場補登原因")).values,
+        "進場補登": _flag(_col("是否為進場補登 (0=正常, 1=補登)")).values,
+        "進場補登原因": _text(_col("進場補登原因")).values,
+        "司機姓名": _text(_col("司機姓名")).values,
+        "土質": _text(_col("土質")).values,
+    }, index=off["_s"].values)   # 用 .values 避免跟 off 的索引對齊成全空
+
+    out = df_logs.copy()
+    cur = out["聯單序號"].apply(_clean_serial) if "聯單序號" in out.columns else pd.Series([""] * len(out), index=out.index)
+    mask = cur.isin(rec.index)
+    for c in OFFICIAL_FIELD_COLS:
+        if c not in out.columns:
+            out[c] = ""
+        out[c] = out[c].astype(object)
+        out.loc[mask, c] = cur[mask].map(rec[c]).values
+    unmatched = sorted(set(rec.index) - set(cur[cur != ""]))
+    return out, int(mask.sum()), unmatched
