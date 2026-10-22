@@ -9,7 +9,7 @@ from data_store import _is_voided, filter_active_dispatch_logs, load_sheet_data,
 from pdf_reports import generate_backend_map, generate_daily_report_pdf
 from stage_calc import compute_stage_overview, get_stage_index, sync_stage_daily_log
 from zone_picker import zone_map_picker
-from map_3d import VIEW_BLOCK, VIEW_PIT, VIEW_RENDER, render_progress_3d, render_progress_pit, view_toggle
+from map_3d import VIEW_ANIM, VIEW_BLOCK, VIEW_PIT, VIEW_RENDER, render_dig_animation, render_progress_3d, render_progress_pit, view_toggle
 from zones import allocate_trucks_by_capacity, filter_zones_for_stage, get_stage_remaining_capacity, zone_progress_style
 
 
@@ -216,9 +216,11 @@ def render(df_results, global_stage_choice):
                 else:
                     df_map_zones = df_results
 
-                _map_view = view_toggle("map_view_stats")
+                _map_view = view_toggle("map_view_stats", with_anim=True)
                 if _map_view == VIEW_BLOCK:
                     render_progress_3d(df_map_zones, vol_dict, _stats_stage_idx, global_stage_choice, end_date)
+                elif _map_view == VIEW_ANIM:
+                    render_dig_animation(cumul_logs, df_map_zones, _stats_stage_idx, global_stage_choice, end_date)
                 elif _map_view in (VIEW_PIT, VIEW_RENDER):
                     render_progress_pit(df_map_zones, vol_dict, _stats_stage_idx, global_stage_choice, end_date, realistic=(_map_view == VIEW_RENDER))
                 else:
