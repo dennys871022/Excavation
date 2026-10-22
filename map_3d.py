@@ -29,13 +29,13 @@ def view_toggle(key, with_anim=False):
 
 def render_dig_animation(logs, df_map_zones, stage_idx, stage_label, end_date, key="map3d_anim"):
     """3D 開挖順序動畫：一天一天播放怪手挖土、土車運出。"""
-    from render_anim import build_dig_days, render_animation
-    zinfo, palette, days = build_dig_days(logs, df_map_zones, stage_idx, stage_label)
+    from render_anim import build_dig_days, default_site, render_animation
+    zinfo, palette, days, slab_day = build_dig_days(logs, df_map_zones, stage_idx, stage_label)
     if not days:
         st.info("目前沒有可播放的出土紀錄。")
         return
     z_exag = st.slider("深度放大倍率", 1.0, 8.0, 2.5, 0.5, key=f"{key}_zoom")
-    render_animation(zinfo, palette, days, f"3D 開挖順序動畫（至 {end_date}）【{stage_label}】", z_exag)
+    render_animation(zinfo, palette, days, f"3D 開挖順序動畫（至 {end_date}）【{stage_label}】", z_exag, default_site(df_map_zones), slab_day)
     st.caption("每一天：怪手移到當天出土量最多的分區（最多 3 區）挖土，坑逐漸變深；橘色土車＝台北港車次、藍色＝FDA，一台一台從便道運出。"
                "土車最多同時顯示 14 台，實際車次數看右上角資訊。深度是累計方量 ÷ 分區面積的估算值，怪手與便道位置僅為示意，不代表實際施工動線。")
 
