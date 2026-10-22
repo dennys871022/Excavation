@@ -320,9 +320,12 @@ def _view_weekly(port, alltp):
     m1, m2, m2b, m3 = st.columns(4)
     m1.metric("區間實際出土量 (台北港)", f"{w['vol'].sum():,.1f} m³")
     m2.metric("區間平均完成時間（出場→出場）", _fmt_min(w["cycle"].mean()), help="同一台車同一天相鄰兩趟的出場時間差。")
-    m2b.metric("區間平均單趟運送時間", _fmt_dur(w["transit"].mean()), help="進場時間 − 出場時間（單程）。需要先在「補充官方欄位」補進場時間。")
+    m2b.metric("區間平均運送時間（出場→進場）", _fmt_dur(w["transit"].mean()), help="進場時間 − 出場時間（單程）。需要先在「補充官方欄位」補進場時間。")
     m3.metric("區間異常與補登率", f"{(abn / len(wa) * 100 if len(wa) else 0):.1f}%", help="（已作廢 + 官方出場/進場補登的紀錄）÷ 區間全部台北港紀錄。補登只看官方CSV的旗標。")
 
+    st.divider()
+    _transit_section(w, "ana_transit_w")
+    st.divider()
     l, r = st.columns(2)
     with l:
         st.markdown("##### 車隊運能排行（區間累計）")
@@ -372,10 +375,13 @@ def _view_monthly(port, alltp, fda):
     a.metric("區間總車次 (台北港)", f"{int(m['trips'].sum()):,}")
     b.metric("區間出土量 (台北港)", f"{m['vol'].sum():,.1f} m³")
     c.metric("區間平均完成時間（出場→出場）", _fmt_min(m["cycle"].mean()))
-    c2.metric("區間平均單趟運送時間", _fmt_dur(m["transit"].mean()), help="進場時間 − 出場時間（單程）。")
+    c2.metric("區間平均運送時間（出場→進場）", _fmt_dur(m["transit"].mean()), help="進場時間 − 出場時間（單程）。")
     d.metric("區間總異常率", f"{(abn / len(ma) * 100 if len(ma) else 0):.1f}%")
     e.metric("FDA土方交換方量", f"{(mf['vol'].sum() if len(mf) else 0):,.1f} m³", help="FDA不計入車次，另列方量供參考")
 
+    st.divider()
+    _transit_section(m, "ana_transit_m")
+    st.divider()
     l, r = st.columns(2)
     with l:
         by_t = m.groupby("ticket_type")["vol"].sum()
