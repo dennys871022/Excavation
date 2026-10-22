@@ -212,13 +212,14 @@ def _save_daily_notes_sorted(df_daily_notes):
     return save_sheet_data("stage_daily_notes", df_daily_notes)
 
 
-OFFICIAL_FIELD_COLS = ["出場補登", "出場補登原因", "進場補登", "進場補登原因", "司機姓名", "土質"]
+OFFICIAL_FIELD_COLS = ["出場補登", "出場補登原因", "進場補登", "進場補登原因", "司機姓名", "土質", "進場時間"]
 
 
 def apply_official_fields(df_logs, official_df):
     """
     把官方CSV裡「真正的」補登資訊與司機、土質，依「聯單序號」對應寫進 dispatch_logs 的新欄位
-    （出場補登 0/1、出場補登原因、進場補登 0/1、進場補登原因、司機姓名、土質）。
+    （出場補登 0/1、出場補登原因、進場補登 0/1、進場補登原因、司機姓名、土質、進場時間）。
+    進場時間＝官方CSV「進場日期」（土車抵達土資場的完整時間），聯單進階分析用它和出場時間算單趟運送時間。
     只會填補欄位，不新增、不刪除、不改動車次/時間/序號/分區，所以任何時候重複執行都是安全的。
     備註裡舊的「官方聯單補登」只是系統自動補上資料的註記，不是官方的補登，統計一律以這裡的「出場補登」欄位為準。
     回傳 (更新後的df_logs, 對應到的筆數, 官方CSV裡找不到對應紀錄的序號清單)。
@@ -241,6 +242,11 @@ def apply_official_fields(df_logs, official_df):
     def _text(series):
         return series.fillna("").astype(str).str.strip().replace({"nan": "", "NaN": ""})
 
+    def _arrival(series):
+        # 官方CSV的「進場日期」是土車抵達土資場（台北港）的完整日期時間；存成 YYYY-MM-DD HH:MM:SS 文字
+        t = pd.to_datetime(series, errors="coerce")
+        return t.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+
     rec = pd.DataFrame({
         "出場補登": _flag(_col("是否為出場補登 (0=正常, 1=補登)")).values,
         "出場補登原因": _text(_col("出場補登原因")).values,
@@ -248,6 +254,7 @@ def apply_official_fields(df_logs, official_df):
         "進場補登原因": _text(_col("進場補登原因")).values,
         "司機姓名": _text(_col("司機姓名")).values,
         "土質": _text(_col("土質")).values,
+        "進場時間": _arrival(_col("進場日期")).values,
     }, index=off["_s"].values)   # 用 .values 避免跟 off 的索引對齊成全空
 
     out = df_logs.copy()
