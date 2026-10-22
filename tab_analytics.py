@@ -19,6 +19,9 @@ SHIFTS = [("早班 (05-08)", 5, 8), ("午班 (08-12)", 8, 12), ("晚班 (12-18)"
 SHIFT_COLORS = ["#3498db", "#f1c40f", "#2c3e50", "#95a5a6"]
 
 
+TRANSIT_MAX_MIN = 720   # 單趟運送時間超過 12 小時視為時間異常（例如隔天才進場）
+
+
 def _shift_of(h):
     if pd.isna(h):
         return "其他時段"
@@ -74,6 +77,19 @@ def prepare_tickets(df_logs, manifest_types):
     d.loc[_soil != "", "ticket_type"] = _soil[_soil != ""]
     t = d["時間"].fillna("").astype(str).str.strip()
     d["dt"] = pd.to_datetime(d["日期"] + " " + t, errors="coerce")
+    # 進場時間（官方CSV的進場日期，土車抵達台北港）→ 單趟運送時間＝進場時間 − 出場時間（分鐘）
+    if "進場時間" in d.columns:
+        _arr = d["進場時間"].fillna("").astype(str).str.strip()
+        d["arr"] = pd.to_datetime(_arr.where(_arr != ""), errors="coerce")
+    else:
+        d["arr"] = pd.NaT
+    _mins = (d["arr"] - d["dt"]).dt.total_seconds() / 60
+    d["transit_raw"] = _mins
+    d["transit_state"] = "ok"
+    d.loc[d["arr"].isna(), "transit_state"] = "缺進場時間"
+    d.loc[d["arr"].notna() & ((_mins <= 0) | (_mins > TRANSIT_MAX_MIN)), "transit_state"] = "時間異常"
+    d.loc[(d["transit_state"] == "ok") & d["is_backfill"], "transit_state"] = "官方補登"
+    d["transit"] = _mins.where(d["transit_state"] == "ok")
     d["hour"] = d["dt"].dt.hour
     d["shift"] = d["hour"].apply(_shift_of)
     dd = pd.to_datetime(d["日期"])
@@ -127,6 +143,60 @@ def _driver_of(g):
 
 def _fmt_min(x):
     return "-" if pd.isna(x) else f"{x:.1f} 分"
+
+
+def _fmt_dur(x):
+    """分鐘 → 「2 時 49 分」；不到 1 小時就只顯示分鐘。"""
+    if pd.isna(x):
+        return "-"
+    m = int(round(x))
+    return f"{m // 60} 時 {m % 60} 分" if m >= 60 else f"{m} 分"
+
+
+def _transit_section(rng, key):
+    """單趟運送時間（出場時間 → 進場時間）：平均、中位數、最短、最長、逐日趨勢、時段與車輛比較。"""
+    st.markdown("##### 單趟運送時間（出場時間 → 進場時間）")
+    n_all = len(rng)
+    ok = rng[rng["transit"].notna()]
+    if "進場時間" not in rng.columns or rng["arr"].isna().all():
+        st.info("📎 雲端 dispatch_logs 還沒有「進場時間」。請到「🧾 官方聯單對帳」分頁最上面的「補充官方欄位」上傳官方CSV一次，"
+                "系統會依聯單序號把官方的進場日期寫進雲端新欄位「進場時間」；之後每次對帳也會自動帶入。")
+        return
+    c = st.columns(5)
+    c[0].metric("平均單趟運送時間", _fmt_dur(ok["transit"].mean()), help="進場時間（抵達台北港）− 出場時間（離開工地），單位分鐘。")
+    c[1].metric("中位數", _fmt_dur(ok["transit"].median()))
+    c[2].metric("最短", _fmt_dur(ok["transit"].min()))
+    c[3].metric("最長", _fmt_dur(ok["transit"].max()))
+    c[4].metric("有效趟次", f"{len(ok):,} / {n_all:,}")
+    st_cnt = rng["transit_state"].value_counts()
+    skip = [f"{k} {int(st_cnt[k])} 筆" for k in ["缺進場時間", "官方補登", "時間異常"] if k in st_cnt.index]
+    st.caption("單趟運送時間＝進場時間 − 出場時間。不納入平均的紀錄：" + ("、".join(skip) if skip else "無")
+               + f"（官方補登是人工補打的時間、時間異常是進場早於出場或超過 {TRANSIT_MAX_MIN // 60} 小時，都會讓平均失真）。")
+    if ok.empty:
+        return
+    a, b = st.columns(2)
+    with a:
+        dm = ok.groupby("日期")["transit"].mean().reset_index()
+        fig = go.Figure(go.Scatter(x=dm["日期"], y=dm["transit"], mode="lines+markers", line=dict(color="#8e44ad")))
+        fig.update_layout(title="每日平均單趟運送時間（分）", height=290, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
+        st.plotly_chart(fig, use_container_width=True, key=f"{key}_daily")
+    with b:
+        hm = ok.dropna(subset=["hour"]).groupby("hour")["transit"].mean().reset_index()
+        fig = go.Figure(go.Bar(x=hm["hour"].astype(int).astype(str) + " 時", y=hm["transit"], marker_color="#16a085"))
+        fig.update_layout(title="各出場時段平均運送時間（分）", height=290, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
+        st.plotly_chart(fig, use_container_width=True, key=f"{key}_hour")
+    rows = []
+    for truck, g in ok[ok["truck"] != ""].groupby("truck"):
+        rows.append({"車號": truck, "司機": _driver_of(g), "有效趟次": len(g), "平均": g["transit"].mean(),
+                     "最短": g["transit"].min(), "最長": g["transit"].max()})
+    if rows:
+        tdf = pd.DataFrame(rows).sort_values("平均").reset_index(drop=True)
+        for col in ["平均", "最短", "最長"]:
+            tdf[col] = tdf[col].apply(_fmt_dur)
+        if (tdf["司機"] == "").all():
+            tdf = tdf.drop(columns=["司機"])
+        tdf = tdf.rename(columns={"平均": "平均單趟運送", "最短": "最短", "最長": "最長"})
+        _show_table(tdf, 360)
 
 
 def _range_picker(label, dates, key):
@@ -185,7 +255,8 @@ def _view_daily(port):
     else:
         rows = []
         for truck, g in tr.groupby("truck"):
-            r = {"車號": truck, "司機": _driver_of(g), "區間總趟次": int(g["trips"].sum()), "平均完成時間(單趟)": g["cycle"].mean()}
+            r = {"車號": truck, "司機": _driver_of(g), "區間總趟次": int(g["trips"].sum()), "平均完成時間(單趟)": g["cycle"].mean(),
+                 "平均運送時間(出場→進場)": g["transit"].mean()}
             for n, _, _ in SHIFTS:
                 r[n.split(" ")[0] + "平均"] = g.loc[g["shift"] == n, "cycle"].mean()
             rows.append(r)
@@ -198,10 +269,17 @@ def _view_daily(port):
         show.insert(0, "排名", range(1, len(show) + 1))
         for c in ["平均完成時間(單趟)", "早班平均", "午班平均", "晚班平均"]:
             show[c] = show[c].apply(_fmt_min)
+        show["平均運送時間(出場→進場)"] = show["平均運送時間(出場→進場)"].apply(_fmt_dur)
+        if "進場時間" not in tr.columns or tr["arr"].isna().all():
+            show = show.drop(columns=["平均運送時間(出場→進場)"])
         if (show["司機"] == "").all():
             show = show.drop(columns=["司機"])
         _show_table(show, 420)
-        st.caption("平均完成時間＝同一台車同一天相鄰兩趟的出場時間差；每台車每天第一趟沒有前一趟可比，不納入平均。")
+        st.caption("平均完成時間＝同一台車同一天相鄰兩趟的出場時間差（含回工地裝土的整個循環）；每台車每天第一趟沒有前一趟可比，不納入平均。"
+                   "平均運送時間＝進場時間 − 出場時間（單程，工地到台北港）。")
+
+    st.divider()
+    _transit_section(port[(port["日期"] >= s_str) & (port["日期"] <= e_str)], "ana_transit")
 
     st.divider()
     st.markdown("##### 每日歷史總表")
@@ -242,9 +320,10 @@ def _view_weekly(port, alltp):
     st.plotly_chart(fig, use_container_width=True, key="ana_weekly_trend")
 
     abn = int((wa["is_void"] | wa["is_backfill"]).sum())
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m2b, m3 = st.columns(4)
     m1.metric("區間實際出土量 (台北港)", f"{w['vol'].sum():,.1f} m³")
-    m2.metric("區間平均運載時間 (單趟)", _fmt_min(w["cycle"].mean()))
+    m2.metric("區間平均完成時間", _fmt_min(w["cycle"].mean()), help="同一台車同一天相鄰兩趟的出場時間差。")
+    m2b.metric("區間平均單趟運送時間", _fmt_dur(w["transit"].mean()), help="進場時間 − 出場時間（單程）。需要先在「補充官方欄位」補進場時間。")
     m3.metric("區間異常與補登率", f"{(abn / len(wa) * 100 if len(wa) else 0):.1f}%", help="（已作廢 + 官方出場/進場補登的紀錄）÷ 區間全部台北港紀錄。補登只看官方CSV的旗標。")
 
     l, r = st.columns(2)
@@ -292,10 +371,11 @@ def _view_monthly(port, alltp, fda):
     st.plotly_chart(fig, use_container_width=True, key="ana_monthly_trend")
 
     abn = int((ma["is_void"] | ma["is_backfill"]).sum())
-    a, b, c, d, e = st.columns(5)
+    a, b, c, c2, d, e = st.columns(6)
     a.metric("區間總車次 (台北港)", f"{int(m['trips'].sum()):,}")
     b.metric("區間出土量 (台北港)", f"{m['vol'].sum():,.1f} m³")
     c.metric("區間平均完成時間", _fmt_min(m["cycle"].mean()))
+    c2.metric("區間平均單趟運送時間", _fmt_dur(m["transit"].mean()), help="進場時間 − 出場時間（單程）。")
     d.metric("區間總異常率", f"{(abn / len(ma) * 100 if len(ma) else 0):.1f}%")
     e.metric("FDA土方交換方量", f"{(mf['vol'].sum() if len(mf) else 0):,.1f} m³", help="FDA不計入車次，另列方量供參考")
 
