@@ -11,9 +11,9 @@ def render(df_results, global_stage_choice):
     st.write("### 🧾 官方聯單時間序列精準對帳與校正")
     st.info("💡 演算法說明：系統會自動尋找時間最接近的紀錄綁定並寫入聯單序號（保留分區），多出的自動剔除，少按的會依官方時序自動補齊。上傳CSV後按一次按鈕即可完成比對並直接寫入雲端，不需要再分兩步驟。")
 
-    with st.expander("📎 補充官方欄位（補登／司機／土質）— 只填欄位，不動車次、不新增、不刪除", expanded=False):
+    with st.expander("📎 補充官方欄位（補登／司機／土質／進場時間）— 只填欄位，不動車次、不新增、不刪除", expanded=False):
         st.caption("官方CSV裡的「是否為出場補登」才是真正的補登；雲端舊備註的「官方聯單補登」只是系統自動補上資料的註記，不是官方補登。"
-                   "把CSV（可一次選多份、整個月的都可以）上傳一次，系統會依「聯單序號」把官方的補登旗標與原因、司機姓名、土質填進雲端 dispatch_logs 對應的紀錄，"
+                   "把CSV（可一次選多份、整個月的都可以）上傳一次，系統會依「聯單序號」把官方的補登旗標與原因、司機姓名、土質、進場時間填進雲端 dispatch_logs 對應的紀錄，"
                    "「🔬 聯單進階分析」的補登異常率就會用這個真實數字。以後每次做日常對帳也會自動帶入，不必每個月重傳。")
         enrich_files = st.file_uploader("上傳官方CSV（可多選）", type=["csv"], accept_multiple_files=True, key="enrich_csv_files")
         if enrich_files and st.button("📎 只補充官方欄位（不改動車次）", key="btn_enrich_official"):
@@ -250,7 +250,7 @@ def render(df_results, global_stage_choice):
                             f"另有 {already_reconciled} 筆官方聯單先前已對過帳（序號已存在）維持不動，"
                             f"{protected_count} 筆已有官方聯單序號的紀錄因受保護而沒有被刪除。"
                             + (f"另外清除了 {extra_cleaned} 筆不在任何CSV裡、也沒有官方聯單序號的殘留紀錄。" if extra_cleaned else "")
-                            + f"（同時依聯單序號補上 {enriched_n} 筆的官方補登／司機／土質欄位。）"
+                            + f"（同時依聯單序號補上 {enriched_n} 筆的官方補登／司機／土質／進場時間欄位。）"
                         )
                         if final_csv_of_day and sync_off_df.empty:
                             st.warning("⚠️ 這份CSV裡沒有你選的這一天的資料，所以已略過「清除殘留紀錄」，避免誤刪。請確認對帳日期是否選對。")
