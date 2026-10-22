@@ -20,9 +20,10 @@ def _opaque(rgba):
 
 
 def build_dig_days(logs, df_zones, stage_idx, stage_label, max_days=400):
-    """把派車紀錄整理成「一天一筆」的動畫資料。回傳 (zones_info, palette, days)。"""
+    """把派車紀錄整理成「一天一筆」的動畫資料。回傳 (zones_info, palette, days, slab_day)。
+    slab_day＝第一挖（各分區第1階累計方量）全部挖完的那一天的序號（0 起算），沒挖完則為 None。"""
     if logs is None or logs.empty or df_zones is None or df_zones.empty:
-        return [], [], []
+        return [], [], [], None
     d = logs.copy()
     d["_date"] = pd.to_datetime(d["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
     d = d[d["_date"].notna()]
@@ -41,7 +42,9 @@ def build_dig_days(logs, df_zones, stage_idx, stage_label, max_days=400):
         zrows.append(r); areas.append(area); totals.append(total)
     codes = [str(r["分區代號"]) for r in zrows]
     cum = {c: 0.0 for c in codes}
-    palette, pidx, days = [], {}, []
+    th0 = [float((r.get("各階累計方量", []) or [0])[0]) if len(r.get("各階累計方量", []) or []) else 0.0 for r in zrows]
+    th0_sum = sum(th0)
+    palette, pidx, days, slab_day = [], {}, [], None
     dates = sorted(d["_date"].unique())[-max_days:]
     # 如果被截掉前面的日子，要先把之前累計進去
     for dt_ in sorted(d["_date"].unique())[:-max_days]:
@@ -63,6 +66,8 @@ def build_dig_days(logs, df_zones, stage_idx, stage_label, max_days=400):
             dep.append(round(min(cum[c], totals[k]) / areas[k], 3) if areas[k] > 0 and totals[k] > 0 else 0.0)
             col.append(pidx[rgb])
             dl.append(round(float(delta.get(c, 0.0)), 1))
+        if slab_day is None and th0_sum > 0 and sum(min(cum[codes[k]], th0[k]) for k in range(len(codes))) >= 0.995 * th0_sum:
+            slab_day = len(days)
         days.append({
             "date": dt_, "trips": int(g.loc[~g["_fda"], "_trips"].sum()), "fda": int(g.loc[g["_fda"], "_trips"].sum()),
             "vol": round(float(g["_vol"].sum()), 1), "cum": round(float(sum(cum.values())), 1),
@@ -70,7 +75,40 @@ def build_dig_days(logs, df_zones, stage_idx, stage_label, max_days=400):
         })
     zinfo = [{"c": codes[k], "x0": float(r["x_min"]), "x1": float(r["x_max"]), "y0": float(r["y_min"]), "y1": float(r["y_max"])}
              for k, r in enumerate(zrows)]
-    return zinfo, palette, days
+    return zinfo, palette, days, slab_day
+
+
+def default_site(df_zones):
+    """歷建、地磅站、洗車台、警衛室、大門的預設位置（圖資座標，公尺）。
+    依你給的描述＋配置圖推算：歷建在 B4~B6 下方、C3 與 E'7 之間的缺口；大門在西側（唯一出入口）；
+    地磅站在歷建西南側，土車出場一定先過磅。位置不準的話改這裡的數字即可（或把正確座標給我）。"""
+    z = {str(r["分區代號"]): r for _, r in df_zones.iterrows()}
+    X0, X1 = float(df_zones["x_min"].min()), float(df_zones["x_max"].max())
+    Y0, Y1 = float(df_zones["y_min"].min()), float(df_zones["y_max"].max())
+    size = max(X1 - X0, Y1 - Y0)
+
+    def g(code, col, default):
+        return float(z[code][col]) if code in z else default
+    nx0 = g("C3", "x_max", X0 + 0.35 * (X1 - X0))          # 缺口左緣
+    nx1 = g("E'7", "x_min", nx0 + 27.6)                     # 缺口右緣
+    ny1 = g("B4", "y_min", Y1 - 0.4 * (Y1 - Y0))            # 缺口上緣
+    ny0 = g("E3", "y_min", Y0 + 0.2 * (Y1 - Y0))            # 缺口下緣
+    hx, hy = (nx0 + nx1) / 2, (ny0 + ny1) / 2
+    hw, hd = min(10.0, (nx1 - nx0) - 6), min(22.0, (ny1 - ny0) - 6)
+    west = df_zones[df_zones["x_min"] <= X0 + 1.0]
+    gate_y = float((west["y_min"].min() + west["y_max"].max()) / 2) if len(west) else (Y0 + Y1) / 2
+    gate_x = X0 - 0.12 * size * 0.55
+    road_y = Y0 - 3.0                                        # 場區南側環場便道
+    wx = nx0 - 14.0                                          # 地磅站中心（歷建西南側）
+    return {
+        "hist": [hx - hw / 2, hx + hw / 2, hy - hd / 2, hy + hd / 2],
+        "fence": 3.0,
+        "weigh": [wx - 9.0, wx + 9.0, road_y - 3.5, road_y + 3.5],
+        "gate": [gate_x, gate_y],
+        "wash": [gate_x + 2.0, gate_x + 11.0, gate_y - 3.5, gate_y + 3.5],
+        "road_y": road_y,
+        "lane_x": gate_x + 6.0,                              # 洗車台前南北向便道
+    }
 
 
 _HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -91,20 +129,23 @@ _HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
 </head><body><div id="wrap"><div id="title"></div><div id="info"></div>
 <div id="bar"><button id="play">⏸ 暫停</button><button id="rst">⏮ 重播</button>
 <span>速度</span><select id="spd"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
-<input id="sl" type="range" min="0" max="0" value="0" step="1"><span id="dl"></span></div><div id="err"></div></div>
+<input id="sl" type="range" min="0" max="0" value="0" step="1"><span id="dl"></span>
+<label><input type="checkbox" id="ckHist" checked>歷建</label>
+<span>復工版</span><select id="slabMode"><option value="auto" selected>第一挖完成後</option><option value="on">一律顯示</option><option value="off">隱藏</option></select></div><div id="err"></div></div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const D=__DATA__;
 document.getElementById('title').textContent=D.title;
 try{
-const zs=D.zones,days=D.days,zex=D.zex,pal=D.palette.map(s=>{const m=s.match(/[\d.]+/g);return [m[0]/255,m[1]/255,m[2]/255];});
+const S=D.site,slabDay=D.slabDay,zs=D.zones,days=D.days,zex=D.zex,pal=D.palette.map(s=>{const m=s.match(/[\d.]+/g);return [m[0]/255,m[1]/255,m[2]/255];});
 const nz=zs.length,nd=days.length;
 let X0=1e18,X1=-1e18,Y0=1e18,Y1=-1e18;
 zs.forEach(z=>{X0=Math.min(X0,z.x0);X1=Math.max(X1,z.x1);Y0=Math.min(Y0,z.y0);Y1=Math.max(Y1,z.y1);});
 const W=X1-X0,H=Y1-Y0,size=Math.max(W,H),cx=(X0+X1)/2,cy=(Y0+Y1)/2,step=size/170,pad=size*0.12;
 const gx0=X0-pad,gy0=Y0-pad,nx=Math.ceil((W+2*pad)/step),ny=Math.ceil((H+2*pad)/step),NV=(nx+1)*(ny+1);
 const zi=new Int16Array(NV).fill(-1);
+const Wd=(x,y)=>[x-cx,-(y-cy)];
 zs.forEach((z,k)=>{
   const i0=Math.max(0,Math.ceil((z.x0-gx0)/step)),i1=Math.min(nx,Math.ceil((z.x1-gx0)/step)-1);
   const j0=Math.max(0,Math.ceil((z.y0-gy0)/step)),j1=Math.min(ny,Math.ceil((z.y1-gy0)/step)-1);
@@ -117,6 +158,11 @@ const vn=(x,y)=>{const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi,u=xf*xf
 const fbm=(x,y)=>0.5*vn(x,y)+0.3*vn(x*2.3,y*2.3)+0.2*vn(x*5.1,y*5.1);
 const noise=new Float32Array(NV);
 for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++)noise[j*(nx+1)+i]=0.82+0.36*fbm((gx0+i*step)*0.9,(gy0+j*step)*0.9);
+const slabMask=new Uint8Array(NV);
+{const f=S.fence;for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){const n=j*(nx+1)+i;if(zi[n]>=0)continue;
+  const X=gx0+i*step,Y=gy0+j*step;
+  if(X>=S.hist[0]-f&&X<=S.hist[1]+f&&Y>=S.hist[2]-f&&Y<=S.hist[3]+f)continue;
+  slabMask[n]=1;}}
 const pos=new Float32Array(NV*3),col=new Float32Array(NV*3),hts=new Float32Array(NV);
 for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){const n=j*(nx+1)+i;pos[n*3]=gx0+i*step-cx;pos[n*3+2]=-(gy0+j*step-cy);}
 const idx=[];for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){const a=j*(nx+1)+i,b=a+1,c=a+nx+1,d=c+1;idx.push(a,b,c,b,d,c);}
@@ -126,16 +172,18 @@ geo.setIndex(idx);
 const strata=d=>d<1?[.33,.22,.12]:d<3?[.62,.46,.28]:d<6?[.55,.5,.42]:[.45,.45,.46];
 const ground=[.62,.55,.4];
 // 目前（插值後）每區深度與顏色
-const curDep=new Float32Array(nz),curCol=new Array(nz).fill(0);
+const curDep=new Float32Array(nz),curCol=new Array(nz).fill(0);let slabCur=0;const SLAB_H=0.35,slabCol=[.98,.72,.04];
 function updateTerrain(){
-  for(let n=0;n<NV;n++){const k=zi[n];hts[n]=k>=0?-curDep[k]*zex:0;}
+  for(let n=0;n<NV;n++){const k=zi[n];hts[n]=k>=0?-curDep[k]*zex:(slabMask[n]?SLAB_H*slabCur:0);}
   for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){
     const n=j*(nx+1)+i;pos[n*3+1]=hts[n];
     let hm=0;
     if(i>0)hm=Math.max(hm,Math.abs(hts[n-1]-hts[n]));if(i<nx)hm=Math.max(hm,Math.abs(hts[n+1]-hts[n]));
     if(j>0)hm=Math.max(hm,Math.abs(hts[n-nx-1]-hts[n]));if(j<ny)hm=Math.max(hm,Math.abs(hts[n+nx+1]-hts[n]));
     const k=zi[n];let c;
-    if(hm>step*0.4)c=strata(-hts[n]/zex);else if(k>=0&&curDep[k]>0.01)c=pal[curCol[k]];else c=ground;
+    if(k<0&&slabMask[n]&&slabCur>0.02){const i2=n%(nx+1),j2=Math.floor(n/(nx+1)),st=(((i2+j2)>>2)&1)?0.88:1,m=slabCur;
+      c=[ground[0]*(1-m)+slabCol[0]*st*m,ground[1]*(1-m)+slabCol[1]*st*m,ground[2]*(1-m)+slabCol[2]*st*m];}
+    else if(hm>step*0.4)c=strata(-hts[n]/zex);else if(k>=0&&curDep[k]>0.01)c=pal[curCol[k]];else c=ground;
     const f=noise[n];col[n*3]=Math.min(1,c[0]*f);col[n*3+1]=Math.min(1,c[1]*f);col[n*3+2]=Math.min(1,c[2]*f);
   }
   geo.attributes.position.needsUpdate=true;geo.attributes.color.needsUpdate=true;geo.computeVertexNormals();
@@ -156,14 +204,40 @@ const terrain=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({vertexColors:tr
  const shp=new THREE.Shape();shp.moveTo(-R,-R);shp.lineTo(R,-R);shp.lineTo(R,R);shp.lineTo(-R,R);shp.lineTo(-R,-R);
  const hole=new THREE.Path();hole.moveTo(hx0,hy0);hole.lineTo(hx0,hy1);hole.lineTo(hx1,hy1);hole.lineTo(hx1,hy0);hole.lineTo(hx0,hy0);shp.holes.push(hole);
  const far=new THREE.Mesh(new THREE.ShapeGeometry(shp),new THREE.MeshStandardMaterial({color:0x8f8466,roughness:1}));far.rotation.x=-Math.PI/2;far.position.y=-.01;far.receiveShadow=true;scene.add(far);}
-function label(t){const cv=document.createElement('canvas');cv.width=128;cv.height=48;const g=cv.getContext('2d');g.font='bold 30px sans-serif';g.textAlign='center';g.textBaseline='middle';
- g.lineWidth=6;g.strokeStyle='rgba(255,255,255,.9)';g.strokeText(t,64,24);g.fillStyle='#1b1b1b';g.fillText(t,64,24);
- const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),transparent:true}));sp.scale.set(size*0.055,size*0.021,1);return sp;}
+function label(t){const cv=document.createElement('canvas');cv.width=256;cv.height=64;const g=cv.getContext('2d');g.font='bold 34px sans-serif';g.textAlign='center';g.textBaseline='middle';
+ g.lineWidth=7;g.strokeStyle='rgba(255,255,255,.92)';g.strokeText(t,128,32);g.fillStyle='#1b1b1b';g.fillText(t,128,32);
+ const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),transparent:true}));sp.scale.set(size*0.09,size*0.0225,1);return sp;}
 const labels=zs.map(z=>{const s=label(z.c);scene.add(s);return s;});
-// ---- 便道（出口在西側）----
-const gate={x:gx0-cx-pad*0.1,z:0},beyond={x:gate.x-size*0.45,z:0};
-{const road=new THREE.Mesh(new THREE.PlaneGeometry(size*0.5,size*0.05),new THREE.MeshStandardMaterial({color:0x6b6b6b,roughness:1}));
- road.rotation.x=-Math.PI/2;road.position.set(gate.x-size*0.25,0.03,0);road.receiveShadow=true;scene.add(road);}
+// ---- 場區設施：大門(西側唯一出入口)、洗車台、警衛室、地磅站、歷建、環場便道 ----
+const box=(w,h,d,color,x,y,z,sh=true)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color,roughness:.85}));m.position.set(x,y,z);if(sh){m.castShadow=true;m.receiveShadow=true;}scene.add(m);return m;};
+const [gX,gZ]=Wd(S.gate[0],S.gate[1]),laneX=S.lane_x-cx,roadZ=-(S.road_y-cy);
+const wc=Wd((S.weigh[0]+S.weigh[1])/2,(S.weigh[2]+S.weigh[3])/2),wW=S.weigh[1]-S.weigh[0],wD=S.weigh[3]-S.weigh[2];
+const hcx=(S.hist[0]+S.hist[1])/2-cx,hcz=-((S.hist[2]+S.hist[3])/2-cy),hW=S.hist[1]-S.hist[0],hD=S.hist[3]-S.hist[2];
+const beyond={x:gX-size*0.45,z:gZ};
+const roadMat=0x5c5c5c;
+function strip(x0,z0,x1,z1,w){const l=Math.hypot(x1-x0,z1-z0),m=box(l,0.5,w,roadMat,(x0+x1)/2,0.25,(z0+z1)/2,false);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);m.receiveShadow=true;}
+{const rx0=Math.min(...zs.map(z=>z.wx))-size*0.02, rx1=Math.max(...zs.map(z=>z.wx))+size*0.35;
+ strip(rx1,roadZ,laneX,roadZ,6);strip(laneX,roadZ,laneX,gZ,6);strip(laneX,gZ,beyond.x,gZ,6);
+ // 洗車台
+ const wsx=(S.wash[0]+S.wash[1])/2-cx,wsz=-((S.wash[2]+S.wash[3])/2-cy);
+ box(S.wash[1]-S.wash[0],.7,S.wash[3]-S.wash[2],0x7fb6d8,wsx,.35,wsz);
+ box(S.wash[1]-S.wash[0],1.2,.4,0x2c7fb8,wsx,.8,wsz-(S.wash[3]-S.wash[2])/2+.2);box(S.wash[1]-S.wash[0],1.2,.4,0x2c7fb8,wsx,.8,wsz+(S.wash[3]-S.wash[2])/2-.2);
+ // 警衛室 + 大門柱
+ box(4,3,4,0xeeeeee,gX+2.5,1.5,gZ-6.5);box(4.4,.4,4.4,0x555555,gX+2.5,3.2,gZ-6.5);
+ box(.8,4,.8,0x444444,gX,2,gZ-3.2);box(.8,4,.8,0x444444,gX,2,gZ+3.2);box(.5,.5,6.4,0xd04a1a,gX,4.2,gZ);
+ // 地磅站
+ box(wW,.6,wD,0x9a9a9a,wc[0],.3,wc[1]);box(wW-1.2,.62,wD-1.2,0x3b3b3b,wc[0],.31,wc[1]);
+ box(3,2.6,3,0xdddddd,wc[0],1.3,wc[1]-wD/2-2.2);
+ // 歷建：兩層樓保留建物 + 藍色圍籬
+ var histG=new THREE.Group();scene.add(histG);
+ const hb=(w,h,d,c,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.8}));m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;histG.add(m);};
+ hb(hW,7.2,hD,0xc7926b,hcx,3.6,hcz);hb(hW+1.2,.5,hD+1.2,0x7a5a4a,hcx,7.45,hcz);hb(hW*.7,1.4,hD+1.0,0x6b4b3c,hcx,8.4,hcz);hb(hW*.3,1.2,hD+.6,0x6b4b3c,hcx,9.4,hcz);
+ for(let r=0;r<4;r++)for(const sx of[-1,1])hb(.15,1.6,1.4,0x3a5f7a,hcx+sx*(hW/2+.02),2.2,hcz-hD*.36+r*hD*.24),hb(.15,1.6,1.4,0x3a5f7a,hcx+sx*(hW/2+.02),5.4,hcz-hD*.36+r*hD*.24);
+ const f=S.fence,fw=hW+2*f,fd=hD+2*f;
+ hb(fw,1.6,.15,0x1f4fd8,hcx,.8,hcz-fd/2);hb(fw,1.6,.15,0x1f4fd8,hcx,.8,hcz+fd/2);hb(.15,1.6,fd,0x1f4fd8,hcx-fw/2,.8,hcz);hb(.15,1.6,fd,0x1f4fd8,hcx+fw/2,.8,hcz);
+ const lh=label('歷建（保留）');lh.position.set(hcx,12.5,hcz);histG.add(lh);
+ for(const [t,x,z] of [['地磅站',wc[0],wc[1]+wD/2+3],['洗車台',wsx,wsz+(S.wash[3]-S.wash[2])/2+2.5],['大門・警衛室',gX+1,gZ-11]]){const l=label(t);l.position.set(x,5,z);scene.add(l);}
+}
 // ---- 怪手 ----
 const mk=c=>new THREE.MeshStandardMaterial({color:c,roughness:.6,metalness:.2});
 const ex=new THREE.Group(),exBody=new THREE.Group();ex.add(exBody);
@@ -200,7 +274,7 @@ const targets=days.map(d=>{const a=[];d.dl.forEach((v,k)=>{if(v>0)a.push({k,v});
 let exK=-1,exX=0,exZ=0;
 for(let i=0;i<nd&&exK<0;i++)if(targets[i].length){exK=targets[i][0].k;}
 if(exK>=0){exX=zs[exK].wx;exZ=zs[exK].wz;}
-const dirTo=(x,z)=>{const dx=gate.x-x,dz=gate.z-z,l=Math.hypot(dx,dz)||1;return [dx/l,dz/l];};
+const RAMP_DIR=[0,1]; // 坑內斜坡一律往南（朝環場便道）
 function depthAt(wx,wz){const i=Math.round((wx+cx-gx0)/step),j=Math.round((-wz+cy-gy0)/step);if(i<0||j<0||i>nx||j>ny)return 0;return -hts[j*(nx+1)+i];}
 function floorY(){return -(exK>=0?curDep[exK]:0)*zex;}
 function sched(i){ // 第 i 天的土車出發時間（天為單位）
@@ -208,26 +282,28 @@ function sched(i){ // 第 i 天的土車出發時間（天為單位）
   for(let a=0;a<n;a++)out.push({t:i+(a+.5)/n*0.85,fda:false,slot:a});
   for(let a=0;a<m;a++)out.push({t:i+(a+.5)/m*0.85+0.04,fda:true,slot:MAXT+a});
   return out;}
-const live=new Map();
+const live=new Map(),DWELL=0.10;
+function buildPath(px,pz,fy){ // 坑底 → 斜坡 → 南側便道 → 地磅站(停) → 洗車台前 → 大門 → 場外
+  const L=Math.min(Math.max(8,Math.abs(fy)*3.2),Math.max(2,roadZ-pz-3));
+  const N=[{x:px,z:pz,y:fy},{x:px+RAMP_DIR[0]*L,z:pz+RAMP_DIR[1]*L,y:0.55},{x:px+RAMP_DIR[0]*L,z:roadZ,y:0.55},{x:wc[0],z:roadZ,y:0.55,weigh:true},
+    {x:laneX,z:roadZ,y:0.55},{x:laneX,z:gZ,y:0.55},{x:gX,z:gZ,y:0.55},{x:beyond.x,z:beyond.z,y:0.55}];
+  let tot=0,sw=0;N[0].s=0;
+  for(let i=1;i<N.length;i++){tot+=Math.hypot(N[i].x-N[i-1].x,N[i].z-N[i-1].z);N[i].s=tot;if(N[i].weigh)sw=tot;}
+  return {N,tot,sw};}
+function posOn(P,u){ // u∈[0,1]，在地磅站停 DWELL 的比例時間
+  const a=(1-DWELL)*P.sw/P.tot,b=a+DWELL;let sd;
+  if(u<a)sd=u/a*P.sw;else if(u<b)sd=P.sw;else sd=P.sw+(u-b)/(1-b)*(P.tot-P.sw);
+  const N=P.N;let k=1;while(k<N.length-1&&N[k].s<sd)k++;
+  const A=N[k-1],B=N[k],q=(sd-A.s)/((B.s-A.s)||1);
+  return {x:A.x+(B.x-A.x)*q,z:A.z+(B.z-A.z)*q,y:A.y+(B.y-A.y)*q,dx:B.x-A.x,dz:B.z-A.z,weighing:(u>=a&&u<b)};}
 function updateTrucks(){
   const di=Math.floor(T);
   for(const k of Array.from(live.keys())){const o=live.get(k);if(T-o.t>LIFE||T<o.t-0.01){trucks[o.slot].g.visible=false;live.delete(k);}}
   for(let i=Math.max(0,di-1);i<=Math.min(nd-1,di);i++)for(const s of sched(i)){
     const u=(T-s.t)/LIFE;if(u<0||u>1)continue;const key=i+'_'+s.slot;
-    if(!live.has(key)){const [dx,dz]=dirTo(exX,exZ);const fy=floorY();
-      const L=Math.max(8,Math.abs(fy)*3.2);const rim=Math.min(L,Math.hypot(gate.x-exX,gate.z-exZ)*0.9);
-      live.set(key,{t:s.t,slot:s.slot,sx:exX,sz:exZ,sy:fy,dx,dz,L:rim});}
-    const o=live.get(key),tk=trucks[o.slot].g;tk.visible=true;
-    const ramp_end={x:o.sx+o.dx*o.L,z:o.sz+o.dz*o.L};
-    const seg1=o.L,seg2=Math.hypot(gate.x-ramp_end.x,gate.z-ramp_end.z),seg3=Math.hypot(beyond.x-gate.x,beyond.z-gate.z),tot=seg1+seg2+seg3;
-    let d=sm(u)*tot,x,z,y;
-    if(d<seg1){const q=d/seg1;x=o.sx+o.dx*o.L*q;z=o.sz+o.dz*o.L*q;y=o.sy*(1-q)+0.15;}
-    else if(d<seg1+seg2){const q=(d-seg1)/seg2;x=ramp_end.x+(gate.x-ramp_end.x)*q;z=ramp_end.z+(gate.z-ramp_end.z)*q;y=0.1;}
-    else{const q=(d-seg1-seg2)/seg3;x=gate.x+(beyond.x-gate.x)*q;z=gate.z+(beyond.z-gate.z)*q;y=0.1;}
-    tk.position.set(x,y,z);tk.rotation.y=Math.atan2(o.dx,o.dz)-Math.PI/2+(d>=seg1?Math.atan2(-(gate.z-ramp_end.z)*0,1):0);
-    // 車頭朝行進方向（模型車頭在 +x）
-    const ang=Math.atan2(-(d<seg1?o.dz:(d<seg1+seg2?(gate.z-ramp_end.z)/(seg2||1):0)),(d<seg1?o.dx:(d<seg1+seg2?(gate.x-ramp_end.x)/(seg2||1):-1)));
-    tk.rotation.y=ang;
+    if(!live.has(key))live.set(key,{t:s.t,slot:s.slot,P:buildPath(exX,exZ,floorY())});
+    const o=live.get(key),tk=trucks[o.slot].g,r=posOn(o.P,u);
+    tk.visible=true;tk.position.set(r.x,r.y,r.z);tk.rotation.y=Math.atan2(-r.dz,r.dx);
   }
 }
 function setDayState(){
@@ -244,20 +320,22 @@ function setDayState(){
     else if(exK!==pk){exX=exX+(tx-exX)*Math.min(1,mv*0.12+0.0);exZ=exZ+(tz-exZ)*Math.min(1,mv*0.12);}
   }
   const fy=floorY();ex.position.set(exX,fy,exZ);
-  const [dx,dz]=dirTo(exX,exZ);ex.rotation.y=Math.atan2(-dz,dx);
+  ex.rotation.y=Math.atan2(-RAMP_DIR[1],RAMP_DIR[0]);
   const dig=tg.length&&p<0.9,tt=performance.now()/1000;
   boom.rotation.z=dig?-0.35+0.28*Math.sin(tt*3.2):-0.2;stick.rotation.z=dig?0.5+0.3*Math.sin(tt*3.2+1.2):0.3;exBody.rotation.y=dig?0.4*Math.sin(tt*1.6):0;
-  // 便道斜坡
-  const L=Math.max(8,Math.abs(fy)*3.2),rim=Math.min(L,Math.hypot(gate.x-exX,gate.z-exZ)*0.9);
-  if(Math.abs(fy)>0.3&&dig){const ex2=exX+dx*rim,ez2=exZ+dz*rim,len=Math.hypot(rim,fy);
-    ramp.visible=true;ramp.scale.set(len,1,1);ramp.position.set((exX+ex2)/2,fy/2+0.05,(exZ+ez2)/2);
-    ramp.rotation.set(0,Math.atan2(-dz,dx),Math.atan2(-fy,rim)*-1,'YXZ');ramp.rotation.z=Math.atan2(-fy,rim);}
+  // 便道斜坡（坑底 → 坑口，往南）
+  const L=Math.min(Math.max(8,Math.abs(fy)*3.2),Math.max(2,roadZ-exZ-3));
+  if(Math.abs(fy)>0.3&&dig){const v=new THREE.Vector3(RAMP_DIR[0]*L,-fy,RAMP_DIR[1]*L),len=v.length();
+    ramp.visible=true;ramp.scale.set(len,1,1);ramp.position.set(exX+v.x/2,fy+v.y/2+0.05,exZ+v.z/2);ramp.quaternion.setFromUnitVectors(new THREE.Vector3(1,0,0),v.normalize());}
   else ramp.visible=false;
   labels.forEach((s,k)=>s.position.set(zs[k].wx,-curDep[k]*zex+size*0.012,zs[k].wz));
-  if(di!==lastDay||p<0.9){updateTerrain();lastDay=di;}
+  const mode=document.getElementById('slabMode').value,want=(mode==='on'||(mode==='auto'&&slabDay!==null&&T>=slabDay+0.5))?1:0;
+  const ds=want-slabCur;let slabChanged=false;if(Math.abs(ds)>0.001){slabCur+=Math.sign(ds)*Math.min(Math.abs(ds),0.04);slabChanged=true;}
+  histG.visible=document.getElementById('ckHist').checked;
+  if(di!==lastDay||p<0.9||slabChanged){updateTerrain();lastDay=di;}
   const d=days[di];
   const names=tg.map(s=>zs[s.k].c).join('、')||'（當天紀錄未指定分區）';
-  info.innerHTML=`<b>${d.date}</b>　第 ${di+1}/${nd} 天<br>本日車次：${d.trips} 台${d.fda?`（另 FDA ${d.fda} 台）`:''}<br>本日方量：${d.vol.toLocaleString()} m³<br>累計方量：${d.cum.toLocaleString()} m³<br>挖掘分區：${names}`;
+  info.innerHTML=`<b>${d.date}</b>　第 ${di+1}/${nd} 天<br>本日車次：${d.trips} 台${d.fda?`（另 FDA ${d.fda} 台）`:''}<br>本日方量：${d.vol.toLocaleString()} m³<br>累計方量：${d.cum.toLocaleString()} m³<br>挖掘分區：${names}<br>復工版：${slabCur>0.5?'已鋪設':(slabDay===null?'第一挖尚未完成':'第 '+(slabDay+1)+' 天後鋪設')}`;
   sl.value=di;
 }
 function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
@@ -280,8 +358,9 @@ window.__ready=true;
 </script></body></html>"""
 
 
-def render_animation(zinfo, palette, days, title, z_exag, height=720, base_url=THREE_CDN):
-    data = json.dumps({"zones": zinfo, "palette": palette, "days": days, "zex": float(z_exag), "title": title}, ensure_ascii=False)
+def render_animation(zinfo, palette, days, title, z_exag, site, slab_day, height=720, base_url=THREE_CDN):
+    data = json.dumps({"zones": zinfo, "palette": palette, "days": days, "zex": float(z_exag), "title": title,
+                       "site": site, "slabDay": slab_day}, ensure_ascii=False)
     html = _HTML.replace("__BASE__", base_url).replace("__DATA__", data)
     components.html(html, height=height, scrolling=False)
     return html
