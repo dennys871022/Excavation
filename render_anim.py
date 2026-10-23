@@ -5,13 +5,56 @@
 由瀏覽器從 CDN 載入 three.js，伺服器端不用裝任何東西；只有選到這個模式才會執行。
 """
 import json
+import math
 import re
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit.components.v1 as components
 
 from render_3d import THREE_CDN
 from zones import zone_progress_style
+
+# 安全支撐／中間柱／吊車：從 Autodesk Viewer 的「MA-雲端上傳-假設工程 吊裝模擬」(Revit) 幾何讀出來的資料。
+# 座標已換成圖資座標（公尺，＝CAD公分÷100），深度＝設計GL(EL 9.63)以下幾公尺。
+SITE_MODEL_PATH = Path(__file__).with_name("site_model.json")
+STRUT_SEG_LEN = 8.0     # 長支撐切成幾公尺一段，每段依所在分區的開挖深度各自出現
+STRUT_DIG_MARGIN = 0.5  # 分區挖到支撐底下再多 0.5m 才算「架好」該段支撐
+
+
+def load_site_model():
+    try:
+        return json.loads(SITE_MODEL_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def build_model_layer(model, zinfo, gl_off=0.0):
+    """把模型支撐切段並指派到分區，回傳給動畫用的資料。gl_off＝現地GL高程增減（現地地面高於設計GL幾公尺）。
+    segs: [cx, cy, 角度, 段長, 寬, 頂深, 底深, 分區序號, 層別(0~2), 出現門檻深度]"""
+    if not model or not zinfo:
+        return None
+    bx = np.array([[z["x0"], z["x1"], z["y0"], z["y1"]] for z in zinfo], dtype=float)
+
+    def zone_of(x, y):
+        dx = np.maximum(np.maximum(bx[:, 0] - x, 0), x - bx[:, 1])
+        dy = np.maximum(np.maximum(bx[:, 2] - y, 0), y - bx[:, 3])
+        return int(np.argmin(dx * dx + dy * dy))
+
+    segs = []
+    for cx, cy, ang, ln, w, dt, db in model.get("struts", []):
+        lv = 0 if dt < 2.2 else (1 if dt < 5.0 else 2)   # 依設計GL下深度分第1/2/3層
+        dt, db = dt + gl_off, db + gl_off
+        n = max(1, math.ceil(ln / STRUT_SEG_LEN))
+        sl, c, s = ln / n, math.cos(ang), math.sin(ang)
+        for i in range(n):
+            u = -ln / 2 + sl * (i + 0.5)
+            x, y = cx + u * c, cy + u * s
+            segs.append([round(x, 2), round(y, 2), ang, round(sl, 2), w, round(dt, 2), round(db, 2),
+                         zone_of(x, y), lv, round(db + STRUT_DIG_MARGIN, 2)])
+    kps = [[x, y, round(t + gl_off, 2), round(b + gl_off, 2)] for x, y, t, b in model.get("kingposts", [])]
+    return {"segs": segs, "kps": kps, "cranes": model.get("cranes", [])}
 
 
 def _opaque(rgba):
@@ -141,7 +184,8 @@ _HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <span>速度</span><select id="spd"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
 <input id="sl" type="range" min="0" max="0" value="0" step="1"><span id="dl"></span>
 <label><input type="checkbox" id="ckHist" checked>歷建</label>
-<span>復工版</span><select id="slabMode"><option value="auto" selected>第一挖完成後</option><option value="on">一律顯示</option><option value="off">隱藏</option></select></div><div id="err"></div></div>
+<span>復工版</span><select id="slabMode"><option value="auto" selected>第一挖完成後</option><option value="on">一律顯示</option><option value="off">隱藏</option></select>
+<span id="mdCk" style="display:none"><label><input type="checkbox" id="ckStrut" checked>支撐</label> <label><input type="checkbox" id="ckKp" checked>中間柱</label> <label><input type="checkbox" id="ckCrane" checked>吊車</label></span></div><div id="err"></div></div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -294,6 +338,55 @@ function truck(color){const g=new THREE.Group();
  const ch=new THREE.Mesh(new THREE.BoxGeometry(6,.4,1.6),mk(0x222222));ch.position.y=.45;g.add(ch);
  g.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});g.scale.setScalar(vs*1.0);g.visible=false;scene.add(g);return {g,busy:false,load,hasLoad:true};}
 const pools=[[],[]];for(let i=0;i<POOL;i++){pools[0].push(truck(0xe67e22));pools[1].push(truck(0x3498db));}
+// ---- 安全支撐／中間柱／吊車（Revit 吊裝模擬模型）----
+// 支撐切段後各自綁一個分區：該分區挖到「支撐底＋0.5m」以下才出現（＝挖完一層、架一層）。中間柱開挖前就打好，一直都在。
+const MD=D.model,LVN=['第1層','第2層','第3層'];
+let stMesh=null,stMats=null,segVis=null,kpMesh=null,crG=null,cranes=[];const lvTot=[0,0,0],lvOn=[0,0,0];
+const ZERO=new THREE.Matrix4().makeScale(0,0,0);
+if(MD&&MD.segs){
+  document.getElementById('mdCk').style.display='';
+  const dm=new THREE.Object3D(),sg=MD.segs;
+  stMesh=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color:0xd9581e,roughness:.5,metalness:.4}),sg.length);
+  stMesh.castShadow=true;stMesh.receiveShadow=true;stMesh.frustumCulled=false;stMats=[];segVis=new Uint8Array(sg.length);
+  sg.forEach((s,i)=>{const [x,z]=Pw(s[0],s[1]);dm.position.set(x,-(s[5]+s[6])/2*zex,z);dm.rotation.set(0,s[2],0);
+    dm.scale.set(s[3]+0.02,Math.max(.3,s[6]-s[5])*zex,Math.max(.35,s[4]));dm.updateMatrix();stMats.push(dm.matrix.clone());stMesh.setMatrixAt(i,ZERO);lvTot[s[8]]++;});
+  stMesh.instanceMatrix.needsUpdate=true;scene.add(stMesh);
+  const kp=MD.kps||[];
+  kpMesh=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color:0x7b241c,roughness:.5,metalness:.4}),Math.max(1,kp.length));
+  kpMesh.castShadow=true;kpMesh.frustumCulled=false;
+  kp.forEach((k,i)=>{const [x,z]=Pw(k[0],k[1]);dm.position.set(x,-(k[2]+k[3])/2*zex,z);dm.rotation.set(0,0,0);dm.scale.set(.45,(k[3]-k[2])*zex,.45);dm.updateMatrix();kpMesh.setMatrixAt(i,dm.matrix);});
+  if(!kp.length)kpMesh.setMatrixAt(0,ZERO);
+  kpMesh.instanceMatrix.needsUpdate=true;scene.add(kpMesh);
+  crG=new THREE.Group();scene.add(crG);
+  (MD.cranes||[]).forEach(c=>{const [x,z]=Pw(c[0],c[1]),R=c[2],H=c[3];const g=new THREE.Group();g.position.set(x,0,z);crG.add(g);
+    const deck=new THREE.Mesh(new THREE.BoxGeometry(11,.5,11),new THREE.MeshStandardMaterial({color:0x6d7b8a,roughness:.7,metalness:.3}));deck.position.y=-.25;deck.receiveShadow=true;deck.castShadow=true;g.add(deck);
+    const ring=new THREE.Mesh(new THREE.RingGeometry(R-.35,R,72),new THREE.MeshBasicMaterial({color:0xff6fd8,transparent:true,opacity:.75,side:THREE.DoubleSide}));ring.rotation.x=-Math.PI/2;ring.position.y=.08;g.add(ring);
+    const disc=new THREE.Mesh(new THREE.CircleGeometry(R,72),new THREE.MeshBasicMaterial({color:0xffcdff,transparent:true,opacity:.18,side:THREE.DoubleSide,depthWrite:false}));disc.rotation.x=-Math.PI/2;disc.position.y=.06;g.add(disc);
+    const car=new THREE.Mesh(new THREE.BoxGeometry(7,1.3,2.5),mk(0x1f6fb5));car.position.y=1.0;g.add(car);
+    for(const [ox,oz] of [[-2.8,-2.2],[-2.8,2.2],[2.8,-2.2],[2.8,2.2]]){const o=new THREE.Mesh(new THREE.BoxGeometry(.4,1.0,.4),mk(0x333333));o.position.set(ox,.5,oz);g.add(o);}
+    const top=new THREE.Group();top.position.set(-1.2,1.7,0);g.add(top);
+    const cab=new THREE.Mesh(new THREE.BoxGeometry(2.4,1.4,2.0),mk(0x2a8fe0));cab.position.set(0,.7,0);top.add(cab);
+    const L=Math.hypot(R,H),pitch=Math.atan2(H,R);
+    const boom=new THREE.Mesh(new THREE.BoxGeometry(L,.55,.55),mk(0xf2f2f2));boom.position.set(Math.cos(pitch)*L/2,1.2+Math.sin(pitch)*L/2,0);boom.rotation.z=pitch;top.add(boom);
+    const hookY=1.7+1.2+H;const rope=new THREE.Mesh(new THREE.BoxGeometry(.06,1,.06),mk(0x111111));top.add(rope);
+    const load=new THREE.Mesh(new THREE.BoxGeometry(6,.4,.4),mk(0xd9581e));top.add(load);
+    g.traverse(o=>{if(o.isMesh&&o!==ring&&o!==disc){o.castShadow=true;}});
+    cranes.push({g,top,rope,load,R,hookY,ph:Math.random()*6.28});
+  });
+}
+function updateModel(tt){
+  if(!stMesh)return;
+  let ch=false;lvOn[0]=lvOn[1]=lvOn[2]=0;const sg=MD.segs;
+  for(let i=0;i<sg.length;i++){const s=sg[i],v=curDep[s[7]]>=s[9]?1:0;if(v)lvOn[s[8]]++;if(v!==segVis[i]){segVis[i]=v;stMesh.setMatrixAt(i,v?stMats[i]:ZERO);ch=true;}}
+  if(ch)stMesh.instanceMatrix.needsUpdate=true;
+  stMesh.visible=document.getElementById('ckStrut').checked;kpMesh.visible=document.getElementById('ckKp').checked;crG.visible=document.getElementById('ckCrane').checked;
+  for(const c of cranes){const a=c.ph+tt*.35,sw=Math.sin(a);c.top.rotation.y=a;const drop=3+3*(0.5+0.5*Math.sin(a*2.0));
+    c.rope.scale.y=drop;c.rope.position.set(c.R-1.2,c.hookY-1.7-drop/2,0);c.load.position.set(c.R-1.2,c.hookY-1.7-drop-.2,0);}
+}
+function modelInfo(){
+  if(!stMesh)return '';
+  return '<br>支撐架設：'+[0,1,2].filter(l=>lvTot[l]).map(l=>LVN[l]+' '+Math.round(100*lvOn[l]/lvTot[l])+'%').join('｜');
+}
 // ---- 時間軸 ----
 let T=0,playing=true,speed=1,lastDay=-1;const DAYSEC=4.5,LIFE=1.6;
 const sl=document.getElementById('sl'),info=document.getElementById('info'),dl=document.getElementById('dl'),playBtn=document.getElementById('play');
@@ -391,10 +484,11 @@ function setDayState(){
   const mode=document.getElementById('slabMode').value,want=(mode==='on'||(mode==='auto'&&slabDay!==null&&T>=slabDay+0.5))?1:0;
   const ds=want-slabCur;let slabChanged=false;if(Math.abs(ds)>0.001){slabCur+=Math.sign(ds)*Math.min(Math.abs(ds),0.04);slabChanged=true;}
   histG.visible=document.getElementById('ckHist').checked;
+  updateModel(tt);
   if(di!==lastDay||p<0.9||slabChanged){updateTerrain();lastDay=di;}
   const d=days[di];
   const names=tg.map(s=>zs[s.k].c).join('、')||'（當天紀錄未指定分區）';
-  info.innerHTML=`<b>${d.date}</b>　第 ${di+1}/${nd} 天<br>本日車次：${d.trips} 台${d.fda?`（另 FDA ${d.fda} 台）`:''}<br>本日方量：${d.vol.toLocaleString()} m³<br>累計方量：${d.cum.toLocaleString()} m³<br>挖掘分區：${names}<br>復工版：${slabCur>0.5?'已鋪設':(slabDay===null?'第一挖尚未完成':'第 '+(slabDay+1)+' 天後鋪設')}`;
+  info.innerHTML=`<b>${d.date}</b>　第 ${di+1}/${nd} 天<br>本日車次：${d.trips} 台${d.fda?`（另 FDA ${d.fda} 台）`:''}<br>本日方量：${d.vol.toLocaleString()} m³<br>累計方量：${d.cum.toLocaleString()} m³<br>挖掘分區：${names}<br>復工版：${slabCur>0.5?'已鋪設':(slabDay===null?'第一挖尚未完成':'第 '+(slabDay+1)+' 天後鋪設')}${modelInfo()}`;
   sl.value=di;
 }
 function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
@@ -417,9 +511,9 @@ window.__ready=true;
 </script></body></html>"""
 
 
-def render_animation(zinfo, palette, days, title, z_exag, site, slab_day, height=720, base_url=THREE_CDN):
+def render_animation(zinfo, palette, days, title, z_exag, site, slab_day, height=720, base_url=THREE_CDN, model=None):
     data = json.dumps({"zones": zinfo, "palette": palette, "days": days, "zex": float(z_exag), "title": title,
-                       "site": site, "slabDay": slab_day}, ensure_ascii=False)
+                       "site": site, "slabDay": slab_day, "model": model}, ensure_ascii=False)
     html = _HTML.replace("__BASE__", base_url).replace("__DATA__", data)
     components.html(html, height=height, scrolling=False)
     return html
