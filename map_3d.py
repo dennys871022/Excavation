@@ -29,15 +29,24 @@ def view_toggle(key, with_anim=False):
 
 def render_dig_animation(logs, df_map_zones, stage_idx, stage_label, end_date, key="map3d_anim"):
     """3D 開挖順序動畫：一天一天播放怪手挖土、土車運出。"""
-    from render_anim import build_dig_days, default_site, render_animation
+    from render_anim import build_dig_days, build_model_layer, default_site, load_site_model, render_animation
     zinfo, palette, days, slab_day = build_dig_days(logs, df_map_zones, stage_idx, stage_label)
     if not days:
         st.info("目前沒有可播放的出土紀錄。")
         return
     z_exag = st.slider("深度放大倍率", 1.0, 8.0, 2.5, 0.5, key=f"{key}_zoom")
-    render_animation(zinfo, palette, days, f"3D 開挖順序動畫（至 {end_date}）【{stage_label}】", z_exag, default_site(df_map_zones), slab_day)
+    try:
+        gl_off = float(st.session_state.get("current_gl_offset", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        gl_off = 0.0
+    model = build_model_layer(load_site_model(), zinfo, gl_off)
+    render_animation(zinfo, palette, days, f"3D 開挖順序動畫（至 {end_date}）【{stage_label}】", z_exag, default_site(df_map_zones), slab_day,
+                     model=model)
     st.caption("每一天：怪手移到當天出土量最多的分區（最多 3 區）挖土，坑逐漸變深；橘色土車＝台北港車次、藍色＝FDA，一台一台從便道運出。"
                "土車最多同時顯示 14 台，實際車次數看右上角資訊。深度是累計方量 ÷ 分區面積的估算值，怪手與便道位置僅為示意，不代表實際施工動線。")
+    if model:
+        st.caption("安全支撐（三層）、中間柱、吊車與作業半徑取自 Revit 吊裝模擬模型：支撐依所在分區挖到該層支撐底下 0.5m 才出現（挖一層、架一層）；"
+                   "中間柱開挖前就已打設。深度以設計 GL（EL 9.63）加上側邊欄的「現地 GL 高程增減」換算。")
 
 
 def _opaque(rgba):
