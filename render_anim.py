@@ -121,6 +121,41 @@ def build_dig_days(logs, df_zones, stage_idx, stage_label, max_days=400):
     return zinfo, palette, days, slab_day
 
 
+def _diagram_mapper(df_zones):
+    """把「出土動線規劃示意圖」(像素座標) 換算成圖資座標(公尺)。
+    示意圖是示意性的（比例不完全一致），所以用地標做分段對位，而不是單一比例：
+    x：滯洪池B(BC) 左緣→155、右緣→215；實驗棟(第7軸以後)左緣→420、右緣→858；
+    y：圖資格線頂(A軸)→10、實驗棟底→258。回傳 (X(px), Y(py))。"""
+    import re
+    codes = df_zones["分區代號"].astype(str)
+    nums = [(re.match(r"^[A-F]'?(\d+)$", c) or [None, None])[1] if re.match(r"^[A-F]'?(\d+)$", c) else None for c in codes]
+    nums = [int(n) if n is not None else None for n in nums]
+    lab = df_zones[[n is not None and n >= 7 for n in nums]]
+    adm = df_zones[[n is not None and n < 7 for n in nums]]
+    bc = df_zones[codes.str.startswith("滯BC")]
+    X0 = float(df_zones["x_min"].min())
+    xb0 = float(bc["x_min"].min()) if len(bc) else X0
+    xb1 = float(bc["x_max"].max()) if len(bc) else xb0 + 15.1
+    xl0 = float(lab["x_min"].min()) if len(lab) else xb1 + 55.5
+    xl1 = float(lab["x_max"].max()) if len(lab) else xl0 + 86.1
+    tops = [float(d["y_max"].max()) for d in (lab, adm) if len(d)]
+    ytop = max(tops) if tops else float(df_zones["y_max"].max())
+    ybot = float(lab["y_min"].min()) if len(lab) else ytop - 55.65
+    knots = [(155.0, xb0), (215.0, xb1), (420.0, xl0), (858.0, xl1)]
+
+    def X(px):
+        # 分段線性對位；超出最左／最右的地標時，沿用最近一段的比例外推
+        seg = knots[0:2] if px <= knots[1][0] else (knots[-2:] if px >= knots[-2][0] else None)
+        if seg is None:
+            seg = next(knots[i:i + 2] for i in range(len(knots) - 1) if knots[i][0] <= px <= knots[i + 1][0])
+        (p0, v0), (p1, v1) = seg
+        return v0 + (px - p0) / (p1 - p0) * (v1 - v0)
+
+    def Y(py):
+        return ytop - (py - 10.0) / 248.0 * (ytop - ybot)
+    return X, Y
+
+
 def default_site(df_zones):
     """歷建、地磅站、洗車台、警衛室、大門、便道、第一階段土堆的預設位置（圖資座標，公尺）。
     依現場說明推算：大門在西側（唯一出入口），門外是南北向馬路，土車左轉進場、出場右轉（往北）；
@@ -149,15 +184,41 @@ def default_site(df_zones):
     my0 = g("E'9", "y_min", Y0 + 0.1 * (Y1 - Y0)); my1 = g("D'9", "y_max", my0 + 18.6)
     y_w = my0 - 4.0                                          # 土堆南側車道（西行，過磅在這條）
     y_e = Y0 - 3.0                                           # 最南側車道（東行）
-    wx = nx0 - 20.0                                          # 地磅站中心（歷建西南側）
+    try:
+        DX, DY = _diagram_mapper(df_zones)
+    except Exception:  # 分區代號不如預期時，退而求其次：把示意圖等比例鋪滿整個場區
+        DX = lambda px: X0 + (px - 155.0) / 703.0 * (X1 - X0)
+        DY = lambda py: Y1 - (py - 10.0) / 248.0 * (Y1 - Y0)
+    # ---- 依「出土動線規劃示意圖」的相對位置擺放（像素座標 → 圖資座標）----
+    road_x = DX(95); gx = DX(150); gy = DY(200)
+    lane_in, lane_out = DY(185), DY(222)
+    gate_z = [DY(232), DY(168)]
+    guard = [DX(131), DY(162)]
+    wx0 = DX(158)
+    wash = [wx0, wx0 + 11.0, DY(232), DY(210)]
+    wc_x, wc_y = DX(326), DY(221.5)
+    weigh = [wc_x - 8.0, wc_x + 8.0, wc_y - 3.0, wc_y + 3.0]
+    x_w = DX(244)
+    gantry = {
+        "deck_top": 1.2, "ramp_len": 12.0,
+        "n_y": DY(78), "s_y": DY(235), "ex_y": DY(90),
+        "deck_x0": DX(420), "ns_x": DX(697), "jog_x": DX(353), "load_x": DX(625),
+        "decks": [  # [x0, x1, y0(南), y1(北), 名稱]
+            [DX(420), DX(780), DY(108), DY(65), "北側構台"],
+            [DX(422), DX(778), DY(252), DY(218), "南側構台"],
+            [DX(500), DX(537), DY(218), DY(108), "南北向構台①"],
+            [DX(672), DX(722), DY(218), DY(108), "南北向構台②"],
+        ],
+        "keep": [DX(420), DX(535), DY(108), DY(65)],   # 保留通行構台（土車通行段）
+    }
     return {
         "hist": [hx - hw / 2, hx + hw / 2, hy - hd / 2, hy + hd / 2], "fence": fence,
         "ring": [nx0 - 8.0, nx1 + 8.0, y_w, ny1 + 5.0],      # 繞歷建＝走開挖區（鋪鐵板）：x0,x1,下緣,上緣
-        "gate": [gx, gy], "road_x": gx - 12.0, "lane_in": gy - 1.8, "lane_out": gy + 1.8,
-        "gate_z": [gy - 14.5, gy + 4.5], "guard": [gx + 5.5, gy + 7.5],
-        "wash": [x_w - 9.0, x_w + 3.6, gy - 17.7, gy - 9.7],
+        "gate": [gx, gy], "road_x": road_x, "lane_in": lane_in, "lane_out": lane_out,
+        "gate_z": gate_z, "guard": guard,
+        "wash": wash,
         "x_w": x_w, "y_w": y_w, "y_e": y_e,
-        "weigh": [wx - 9.0, wx + 9.0, y_w - 3.0, y_w + 3.0],
+        "weigh": weigh, "gantry": gantry,
         "mound": [mx0, mx1, my0, my1], "mound_h": 5.0,
         "x_u": mx1 + 4.0, "x_f": g("F'16", "x_max", X1) - 3.0, "x_load": mx1 - 8.0,
         "X0": X0, "X1": X1, "Y0": Y0, "Y1": Y1,
@@ -184,6 +245,7 @@ _HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <span>速度</span><select id="spd"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
 <input id="sl" type="range" min="0" max="0" value="0" step="1"><span id="dl"></span>
 <label><input type="checkbox" id="ckHist" checked>歷建</label>
+<label><input type="checkbox" id="ckGantry" checked>構台</label>
 <span>復工版</span><select id="slabMode"><option value="auto" selected>第一挖完成後</option><option value="on">一律顯示</option><option value="off">隱藏</option></select>
 <span id="mdCk" style="display:none"><label><input type="checkbox" id="ckStrut" checked>支撐</label> <label><input type="checkbox" id="ckKp" checked>中間柱</label> <label><input type="checkbox" id="ckCrane" checked>吊車</label></span></div><div id="err"></div></div>
 <script type="module">
@@ -272,19 +334,47 @@ const hcx=(S.hist[0]+S.hist[1])/2-cx,hcz=-((S.hist[2]+S.hist[3])/2-cy),hW=S.hist
 const rgX0=S.ring[0]-cx,rgX1=S.ring[1]-cx,rgZ0=-(S.ring[3]-cy); // 繞歷建＝走開挖區（鋪鐵板）：西側 x0、東側 x1、北側 z0
 const mX0=S.mound[0]-cx,mX1=S.mound[1]-cx,mZ0=-(S.mound[3]-cy),mZ1=-(S.mound[2]-cy),mXc=(mX0+mX1)/2,mZc=(mZ0+mZ1)/2;
 const xF=S.x_f-cx,xU=S.x_u-cx,xLoad=S.x_load-cx;
+// 構台動線（依出土動線規劃示意圖）：二挖起土車走構台，怪手站在構台上裝土
+const G=S.gantry,GX=v=>v-cx,GZ=v=>-(v-cy);
+const xJog=GX(G.jog_x),zN=GZ(G.n_y),zS=GZ(G.s_y),xD0=GX(G.deck_x0),xNS=GX(G.ns_x),xLG=GX(G.load_x),zEx=GZ(G.ex_y),DT=G.deck_top,RL=G.ramp_len;
 const roadMat=0x5c5c5c;
 function strip(x0,z0,x1,z1,w){const l=Math.hypot(x1-x0,z1-z0)+w*0.5,m=box(l,0.5,w,roadMat,(x0+x1)/2,0.25,(z0+z1)/2,false);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);m.receiveShadow=true;}
 {
  // 門外南北向馬路（雙向）
  strip(roadX,gZ-70,roadX,gZ+70,9);
  const mk2=(x0,z0,x1,z1)=>strip(x0,z0,x1,z1,6);
- strip(roadX,(zIn+zOut)/2,xW,(zIn+zOut)/2,8.5);     // 門內進出車道
- mk2(xW,zOut,xW,zE);mk2(xW,zE,xF,zE);mk2(xF,zE,xF,zW);mk2(xF,zW,xW,zW);
+ strip(roadX,zIn,xW,zIn,6.5);                       // 進場車道（左轉進場）
+ strip(roadX,zOut,xJog,zOut,6.5);                   // 出場車道（過地磅 → 洗車台 → 出大門，右轉往北）
+ mk2(xW,zIn,xW,zE);mk2(xW,zE,xF,zE);mk2(xF,zE,xF,zW);mk2(xF,zW,xJog,zW);mk2(xJog,zW,xJog,zOut);
  // 鋪鐵板便道：繞歷建（開挖區）＋土堆南側車道穿過開挖區的路段
  const plate=(x0,z0,x1,z1)=>{const l=Math.hypot(x1-x0,z1-z0),m=box(l,0.62,6.4,0x8895a3,(x0+x1)/2,0.31,(z0+z1)/2,false);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);m.receiveShadow=true;m.castShadow=false;
    const n=Math.floor(l/4);for(let k=1;k<n;k++){const q=k/n,sm=box(.12,.64,6.5,0x5d6672,x0+(x1-x0)*q,.32,z0+(z1-z0)*q,false);sm.rotation.y=m.rotation.y;}};
- plate(rgX0,zW,rgX0,rgZ0);plate(rgX0,rgZ0,rgX1,rgZ0);plate(rgX1,rgZ0,rgX1,zW);
- plate(rgX1,zW,xU,zW);plate(xU,zW,xU,zE);plate(rgX0,zE,rgX0,zW);plate(rgX1,zE,rgX1,zW);
+ const p1Objs=(()=>{const n0=scene.children.length;
+  plate(rgX0,zW,rgX0,rgZ0);plate(rgX0,rgZ0,rgX1,rgZ0);plate(rgX1,rgZ0,rgX1,zW);
+  plate(rgX1,zW,xU,zW);plate(xU,zW,xU,zE);plate(rgX0,zE,rgX0,zW);plate(rgX1,zE,rgX1,zW);
+  return scene.children.slice(n0);})();
+ window.__p1Objs=p1Objs;
+ // ---- 構台（二挖起才出現）：北側構台（含保留通行段）、南北向構台①②、南側構台，以及進出構台的坡道與連接便道 ----
+ var gantryG=new THREE.Group();scene.add(gantryG);
+ const gb=(w,h,d,c,x,y,z,sh=true)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.7,metalness:.25}));m.position.set(x,y,z);if(sh){m.castShadow=true;m.receiveShadow=true;}gantryG.add(m);return m;};
+ for(const [x0,x1,y0,y1,nm] of G.decks){
+   const a0=GX(x0),a1=GX(x1),b0=GZ(y1),b1=GZ(y0),w=a1-a0,d=b1-b0,mxx=(a0+a1)/2,mzz=(b0+b1)/2;
+   gb(w,.8,d,0x8d99a6,mxx,DT-.4,mzz);
+   gb(w,.35,.25,0xf1c40f,mxx,DT+.17,b0+.15,false);gb(w,.35,.25,0xf1c40f,mxx,DT+.17,b1-.15,false); // 護欄
+   const nx_=Math.max(2,Math.round(w/11)),nz_=Math.max(2,Math.round(d/11));
+   for(let i=0;i<=nx_;i++)for(let j=0;j<=nz_;j++){if(i%1===0&&(i===0||i===nx_||j===0||j===nz_))gb(.7,5,.7,0x5d6672,a0+w*i/nx_,DT-3.2,b0+d*j/nz_,false);} // 構台柱
+   const lb=label(nm);lb.position.set(mxx,DT+4,mzz);gantryG.add(lb);
+ }
+ {const [kx0,kx1,ky0,ky1]=G.keep,a0=GX(kx0),a1=GX(kx1),b0=GZ(ky1),b1=GZ(ky0),oc=0xe67e22;
+  gb(a1-a0,.15,.4,oc,(a0+a1)/2,DT+.1,b0,false);gb(a1-a0,.15,.4,oc,(a0+a1)/2,DT+.1,b1,false);gb(.4,.15,b1-b0,oc,a0,DT+.1,(b0+b1)/2,false);gb(.4,.15,b1-b0,oc,a1,DT+.1,(b0+b1)/2,false);
+  const lk=label('保留通行構台');lk.position.set((a0+a1)/2,DT+8,(b0+b1)/2);gantryG.add(lk);}
+ // 坡道：地面便道 → 構台（北側、南側各一）
+ const rampTo=(zc)=>{const ang=Math.atan2(DT-.5,RL),len=Math.hypot(RL,DT-.5),m=gb(len,.4,6.4,0x8895a3,xD0-RL/2,(DT+.5)/2-.1,zc);m.rotation.z=ang;};
+ rampTo(zN);rampTo(zS);
+ // 構台西側連接的地面鐵板便道：北側（進場）、南側（出場）
+ const gplate=(x0,z0,x1,z1)=>{const l=Math.hypot(x1-x0,z1-z0),m=gb(l,0.62,6.4,0x8895a3,(x0+x1)/2,0.31,(z0+z1)/2,false);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);m.receiveShadow=true;};
+ gplate(xW,zIn,xW,zN);gplate(xW,zN,xD0-RL,zN);gplate(xD0-RL,zS,xJog,zS);
+ const lg=label('構台出入動線');lg.position.set(xW,6,zN);gantryG.add(lg);
  // 洗車台（出場車道往北通過，設在大門東側、洗車後轉西出門）
  const wsx=(S.wash[0]+S.wash[1])/2-cx,wsz=-((S.wash[2]+S.wash[3])/2-cy),wl=S.wash[1]-S.wash[0],ww=S.wash[3]-S.wash[2];
  box(wl,.7,ww,0x7fb6d8,wsx,.4,wsz);box(.4,1.4,ww,0x2c7fb8,wsx-wl/2+.2,1.1,wsz);box(.4,1.4,ww,0x2c7fb8,wsx+wl/2-.2,1.1,wsz);
@@ -415,18 +505,24 @@ const phase1=()=>slabDay===null||T<slabDay+0.5;
 //  → 地磅站（停）→ 往北過洗車台（停）→ 出場車道往西 → 大門 → 右轉往北
 function buildPath(variant,px,pz,fy,p1){
   const N=[],add=(x,z,y,st)=>{N.push({x,z,y:(y===undefined?0.55:y),stop:st||0});};
-  const lx=xW-1.8,rx=xW+1.8,wsz2=-((S.wash[2]+S.wash[3])/2-cy);
-  add(roadX-2,gZ-70);add(roadX-2,zIn-5);add(roadX+1.5,zIn);add(lx,zIn);add(lx,zE);
-  const ringA=()=>{add(rgX0,zE);add(rgX0,rgZ0);add(rgX1,rgZ0);add(rgX1,zE);};
+  const wsx2=(S.wash[0]+S.wash[1])/2-cx,YD=DT+0.05;
+  add(roadX-2,gZ-70);add(roadX-2,zIn-5);add(roadX+1.5,zIn);add(xW,zIn);
   if(p1){
+    // 第一階段：土方堆在土堆，土車直接在土堆旁裝土
+    add(xW,zE);
+    const ringA=()=>{add(rgX0,zE);add(rgX0,rgZ0);add(rgX1,rgZ0);add(rgX1,zE);};
     if(variant===0){ringA();add(xU,zE);add(xU,zW);}else{add(xF,zE);add(xF,zW);}
     add(xLoad,zW,0.55,0.08);
+    add(xJog,zW);add(xJog,zOut);
   }else{
-    const L=Math.min(Math.max(8,Math.abs(fy)*3.2),Math.max(2,zE-pz-3));
-    add(px,zE);add(px,pz+L,0.55);add(px,pz+2.0,fy,0.07);add(px,pz+L,0.55);add(px,zE);
-    if(variant===0){add(rgX1,zE);add(rgX1,rgZ0);add(rgX0,rgZ0);add(rgX0,zW);}else{add(xF,zE);add(xF,zW);}
+    // 二挖起：進場後上北側構台（經保留通行段）→ 構台上的長臂怪手裝土 → 東行轉南北向構台②往南
+    //         → 南側構台往西 → 下坡 → 回到地面便道 → 地磅 → 洗車台 → 出大門
+    add(xW,zN);add(xD0-RL,zN);add(xD0,zN,YD);
+    add(xLG,zN,YD,0.08);
+    add(xNS,zN,YD);add(xNS,zS,YD);add(xD0,zS,YD);add(xD0-RL,zS);
+    add(xJog,zS);add(xJog,zOut);
   }
-  add(wc[0]+9,zW);add(wc[0],zW,0.55,0.1);add(rx,zW);add(rx,wsz2,0.55,0.06);add(rx,zOut);add(roadX+2,zOut);add(roadX+2,gZ-70);
+  add(wc[0]+9,zOut);add(wc[0],zOut,0.55,0.1);add(wsx2,zOut,0.55,0.06);add(roadX+2,zOut);add(roadX+2,gZ-70);
   let tot=0,D=0;N[0].s=0;
   for(let i=1;i<N.length;i++){tot+=Math.hypot(N[i].x-N[i-1].x,N[i].z-N[i-1].z);N[i].s=tot;}
   const stops=[];for(const n of N)if(n.stop){stops.push({s:n.s,f:n.stop});D+=n.stop;}
@@ -466,13 +562,17 @@ function setDayState(){
     if(exK<0){exK=pk;exX=tx;exZ=tz;}
     else if(exK!==pk){exX=exX+(tx-exX)*Math.min(1,mv*0.12+0.0);exZ=exZ+(tz-exZ)*Math.min(1,mv*0.12);}
   }
-  const fy=floorY();ex.position.set(exX,fy,exZ);
+  const p2=!phase1();
+  const fy=p2?DT:floorY();ex.position.set(p2?xLG:exX,fy,p2?zEx:exZ);
   ex.rotation.y=Math.atan2(-RAMP_DIR[1],RAMP_DIR[0]);
+  boom.scale.x=p2?1.7:1;  // 構台上的長臂怪手
+  gantryG.visible=p2&&document.getElementById('ckGantry').checked;
+  for(const o of window.__p1Objs)o.visible=!p2;
   const dig=tg.length&&p<0.9,tt=performance.now()/1000;
   boom.rotation.z=dig?-0.35+0.28*Math.sin(tt*3.2):-0.2;stick.rotation.z=dig?0.5+0.3*Math.sin(tt*3.2+1.2):0.3;exBody.rotation.y=dig?0.4*Math.sin(tt*1.6):0;
   // 便道斜坡（坑底 → 坑口，往南）
   const L=Math.min(Math.max(8,Math.abs(fy)*3.2),Math.max(2,roadZ-exZ-3));
-  if(Math.abs(fy)>0.3&&dig){const v=new THREE.Vector3(RAMP_DIR[0]*L,-fy,RAMP_DIR[1]*L),len=v.length();
+  if(!p2&&Math.abs(fy)>0.3&&dig){const v=new THREE.Vector3(RAMP_DIR[0]*L,-fy,RAMP_DIR[1]*L),len=v.length();
     ramp.visible=true;ramp.scale.set(len,1,1);ramp.position.set(exX+v.x/2,fy+v.y/2+0.05,exZ+v.z/2);ramp.quaternion.setFromUnitVectors(new THREE.Vector3(1,0,0),v.normalize());}
   else ramp.visible=false;
   // 第一階段土堆與土堆旁的裝土怪手（二挖以後土堆清空）
@@ -488,7 +588,7 @@ function setDayState(){
   if(di!==lastDay||p<0.9||slabChanged){updateTerrain();lastDay=di;}
   const d=days[di];
   const names=tg.map(s=>zs[s.k].c).join('、')||'（當天紀錄未指定分區）';
-  info.innerHTML=`<b>${d.date}</b>　第 ${di+1}/${nd} 天<br>本日車次：${d.trips} 台${d.fda?`（另 FDA ${d.fda} 台）`:''}<br>本日方量：${d.vol.toLocaleString()} m³<br>累計方量：${d.cum.toLocaleString()} m³<br>挖掘分區：${names}<br>復工版：${slabCur>0.5?'已鋪設':(slabDay===null?'第一挖尚未完成':'第 '+(slabDay+1)+' 天後鋪設')}${modelInfo()}`;
+  info.innerHTML=`<b>${d.date}</b>　第 ${di+1}/${nd} 天<br>本日車次：${d.trips} 台${d.fda?`（另 FDA ${d.fda} 台）`:''}<br>本日方量：${d.vol.toLocaleString()} m³<br>累計方量：${d.cum.toLocaleString()} m³<br>挖掘分區：${names}<br>動線：${p2?'走構台（怪手站構台上裝土）':'土堆直接裝車'}<br>復工版：${slabCur>0.5?'已鋪設':(slabDay===null?'第一挖尚未完成':'第 '+(slabDay+1)+' 天後鋪設')}${modelInfo()}`;
   sl.value=di;
 }
 function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
