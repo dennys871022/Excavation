@@ -141,6 +141,24 @@ def _driver_of(g):
     return ds.mode().iloc[0] if len(ds) else ""
 
 
+def _on():
+    """進階分析的「顯示資料標籤」開關。"""
+    return bool(st.session_state.get("ana_labels", False))
+
+
+def _bar_text(values, fmt="{:,.0f}", hide_zero=True):
+    out = []
+    for v in values:
+        try:
+            if v is None or pd.isna(v) or (hide_zero and float(v) == 0):
+                out.append("")
+            else:
+                out.append(fmt.format(float(v)))
+        except Exception:
+            out.append("")
+    return out
+
+
 def _fmt_min(x):
     return "-" if pd.isna(x) else f"{x:.1f} 分"
 
@@ -174,12 +192,14 @@ def _transit_section(rng, key):
     a, b = st.columns(2)
     with a:
         dm = ok.groupby("日期")["transit"].mean().reset_index()
-        fig = go.Figure(go.Scatter(x=dm["日期"], y=dm["transit"], mode="lines+markers", line=dict(color="#8e44ad")))
+        fig = go.Figure(go.Scatter(x=dm["日期"], y=dm["transit"], mode="lines+markers+text" if _on() else "lines+markers", line=dict(color="#8e44ad"),
+                                   text=_bar_text(dm["transit"], "{:.1f}", False) if _on() else None, textposition="top center", textfont=dict(size=10), cliponaxis=False))
         fig.update_layout(title="每日平均單趟運送時間（分）", height=290, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
         st.plotly_chart(fig, use_container_width=True, key=f"{key}_daily")
     with b:
         hm = ok.dropna(subset=["hour"]).groupby("hour")["transit"].mean().reset_index()
-        fig = go.Figure(go.Bar(x=hm["hour"].astype(int).astype(str) + " 時", y=hm["transit"], marker_color="#16a085"))
+        fig = go.Figure(go.Bar(x=hm["hour"].astype(int).astype(str) + " 時", y=hm["transit"], marker_color="#16a085",
+                               text=_bar_text(hm["transit"], "{:.1f}", False) if _on() else None, textposition="outside", cliponaxis=False))
         fig.update_layout(title="各出場時段平均運送時間（分）", height=290, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
         st.plotly_chart(fig, use_container_width=True, key=f"{key}_hour")
     rows = []
@@ -232,15 +252,22 @@ def _view_daily(port):
         with p1:
             tot = by.sum()
             fig = go.Figure(go.Pie(labels=shift_names, values=[tot[n] for n in shift_names], hole=0.5,
-                                   marker=dict(colors=SHIFT_COLORS), sort=False))
+                                   marker=dict(colors=SHIFT_COLORS), sort=False,
+                                   textinfo="value+percent" if _on() else "percent"))
             fig.update_layout(title="區間班別比例", height=300, margin=dict(l=10, r=10, t=40, b=10))
             st.plotly_chart(fig, use_container_width=True, key="ana_pie")
         with p2:
             fig = go.Figure()
             for n, col in zip(shift_names, SHIFT_COLORS):
-                fig.add_bar(x=by.index, y=by[n], name=n, marker_color=col)
-            fig.update_layout(barmode="stack", title="每日出車趨勢", height=300, margin=dict(l=10, r=10, t=40, b=10),
-                              xaxis=dict(type="category"))
+                fig.add_bar(x=by.index, y=by[n], name=n, marker_color=col,
+                            text=_bar_text(by[n]) if _on() else None, textposition="inside", insidetextanchor="middle",
+                            textfont=dict(size=9, color="#fff"))
+            day_tot = by.sum(axis=1)
+            fig.add_trace(go.Scatter(x=list(by.index), y=list(day_tot), mode="text", text=[f"{int(v)}" for v in day_tot],
+                                     textposition="top center", textfont=dict(size=11, color="#1f3a5f"),
+                                     showlegend=False, hoverinfo="skip", cliponaxis=False))
+            fig.update_layout(barmode="stack", title="每日出車趨勢（柱頂為當日總車數）", height=300, margin=dict(l=10, r=10, t=40, b=10),
+                              xaxis=dict(type="category"), yaxis=dict(range=[0, float(day_tot.max()) * 1.15 if len(day_tot) else 1]))
             st.plotly_chart(fig, use_container_width=True, key="ana_bar")
 
     st.divider()
@@ -259,7 +286,8 @@ def _view_daily(port):
             rows.append(r)
         tdf = pd.DataFrame(rows).sort_values("區間總趟次", ascending=False).reset_index(drop=True)
         top = tdf.head(15)
-        fig = go.Figure(go.Bar(x=top["車號"], y=top["區間總趟次"], marker_color="#e67e22"))
+        fig = go.Figure(go.Bar(x=top["車號"], y=top["區間總趟次"], marker_color="#e67e22",
+                               text=_bar_text(top["區間總趟次"]) if _on() else None, textposition="outside", cliponaxis=False))
         fig.update_layout(title="區間車輛趟次排行 (前15名)", height=280, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
         st.plotly_chart(fig, use_container_width=True, key="ana_truck_rank")
         show = tdf.copy()
@@ -309,8 +337,11 @@ def _view_weekly(port, alltp):
     wa = alltp[(alltp["week"] >= ws) & (alltp["week"] <= we)]
     trend = w.groupby("week").agg(vol=("vol", "sum"), trips=("trips", "sum")).reset_index()
     fig = go.Figure()
-    fig.add_bar(x=trend["week"], y=trend["vol"], name="實際出土量(m³)", marker_color="#3498db", yaxis="y")
-    fig.add_trace(go.Scatter(x=trend["week"], y=trend["trips"], name="總趟次", mode="lines+markers", line=dict(color="#e74c3c"), yaxis="y2"))
+    fig.add_bar(x=trend["week"], y=trend["vol"], name="實際出土量(m³)", marker_color="#3498db", yaxis="y",
+                text=_bar_text(trend["vol"], "{:,.0f}") if _on() else None, textposition="inside", insidetextanchor="end")
+    fig.add_trace(go.Scatter(x=trend["week"], y=trend["trips"], name="總趟次", mode="lines+markers+text" if _on() else "lines+markers",
+                             line=dict(color="#e74c3c"), yaxis="y2", text=_bar_text(trend["trips"]) if _on() else None,
+                             textposition="top center", textfont=dict(color="#e74c3c"), cliponaxis=False))
     fig.update_layout(title="週度出土量與趟次趨勢比較", height=340, margin=dict(l=10, r=10, t=40, b=10),
                       yaxis=dict(title="出土量 (m³)"), yaxis2=dict(title="趟次", overlaying="y", side="right", showgrid=False),
                       xaxis=dict(type="category"))
@@ -362,9 +393,13 @@ def _view_monthly(port, alltp, fda):
     vol_m = m.groupby("month")["vol"].sum()
     months_x = sorted(set(vol_m.index) | set(tm.index if len(tm) else []))
     fig = go.Figure()
-    fig.add_bar(x=months_x, y=[vol_m.get(x, 0) for x in months_x], name="實際出土量(m³)", marker_color="#2980b9", yaxis="y")
-    fig.add_trace(go.Scatter(x=months_x, y=[(tm.loc[x, "abn"] / tm.loc[x, "n"] * 100) if x in tm.index else 0 for x in months_x],
-                             name="異常補登率(%)", mode="lines+markers", line=dict(color="#e74c3c"), yaxis="y2"))
+    _vols = [vol_m.get(x, 0) for x in months_x]
+    _abn_rate = [(tm.loc[x, "abn"] / tm.loc[x, "n"] * 100) if x in tm.index else 0 for x in months_x]
+    fig.add_bar(x=months_x, y=_vols, name="實際出土量(m³)", marker_color="#2980b9", yaxis="y",
+                text=_bar_text(_vols, "{:,.0f}") if _on() else None, textposition="inside", insidetextanchor="end")
+    fig.add_trace(go.Scatter(x=months_x, y=_abn_rate, name="異常補登率(%)", mode="lines+markers+text" if _on() else "lines+markers",
+                             line=dict(color="#e74c3c"), yaxis="y2", text=_bar_text(_abn_rate, "{:.1f}%", False) if _on() else None,
+                             textposition="top center", textfont=dict(color="#e74c3c"), cliponaxis=False))
     fig.update_layout(title="月度出土量與異常率趨勢比較", height=340, margin=dict(l=10, r=10, t=40, b=10),
                       yaxis=dict(title="出土量 (m³)"), yaxis2=dict(title="異常率 (%)", overlaying="y", side="right", showgrid=False),
                       xaxis=dict(type="category"))
@@ -385,19 +420,22 @@ def _view_monthly(port, alltp, fda):
     l, r = st.columns(2)
     with l:
         by_t = m.groupby("ticket_type")["vol"].sum()
-        fig = go.Figure(go.Pie(labels=list(by_t.index), values=list(by_t.values), hole=0.4))
+        fig = go.Figure(go.Pie(labels=list(by_t.index), values=list(by_t.values), hole=0.4,
+                                   textinfo="label+value+percent" if _on() else "percent"))
         fig.update_layout(title="聯單類型出土量分佈（原土質分佈）", height=300, margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig, use_container_width=True, key="ana_pie_type")
     with r:
         by_d = {"台北港": float(m["vol"].sum())}
         if len(mf):
             by_d["FDA"] = float(mf["vol"].sum())
-        fig = go.Figure(go.Pie(labels=list(by_d), values=list(by_d.values()), hole=0.4))
+        fig = go.Figure(go.Pie(labels=list(by_d), values=list(by_d.values()), hole=0.4,
+                                   textinfo="label+value+percent" if _on() else "percent"))
         fig.update_layout(title="運送目的地方量比例（原土資場比例）", height=300, margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig, use_container_width=True, key="ana_pie_dest")
 
     by_z = m.groupby("zone")["vol"].sum().sort_values(ascending=False)
-    fig = go.Figure(go.Bar(x=list(by_z.index), y=list(by_z.values), marker_color="#16a085"))
+    fig = go.Figure(go.Bar(x=list(by_z.index), y=list(by_z.values), marker_color="#16a085",
+                           text=_bar_text(by_z.values, "{:,.0f}") if _on() else None, textposition="outside", cliponaxis=False))
     fig.update_layout(title="各出土分區出土量（區間累計，台北港）", height=280, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
     st.plotly_chart(fig, use_container_width=True, key="ana_bar_zone")
 
@@ -432,6 +470,7 @@ def render(df_results=None, global_stage_choice=None):
         st.info("目前沒有有效的台北港紀錄可分析。")
         return
 
+    st.toggle("顯示資料標籤", value=False, key="ana_labels", help="開啟後所有圖表都會標出數值；每日出車趨勢柱頂的當日總車數則一律顯示。")
     view = st.radio("分析項目", ["日報表與車輛分析", "週度趨勢與分析", "月度結算與比較"], horizontal=True, key="analytics_view")
     if view == "日報表與車輛分析":
         _view_daily(port)
