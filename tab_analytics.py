@@ -227,22 +227,23 @@ def _range_picker(label, dates, key):
 
 
 def _view_daily(port):
-    total_trips = int(port["trips"].sum())
-    days = port.groupby("日期")["trips"].sum().sort_index()
     all_dates = sorted(pd.to_datetime(port["日期"]).dt.date.unique())
     # 班別圖表與車輛分析共用同一個區間
     s, e = _range_picker("選取分析區間（班別圖表與車輛分析共用）", all_dates, "ana_daily_range")
     s_str, e_str = s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")
+    port_rng = port[(port["日期"] >= s_str) & (port["日期"] <= e_str)]
+    total_trips = int(port_rng["trips"].sum())
+    days = port_rng.groupby("日期")["trips"].sum().sort_index()
     c1, c2 = st.columns([1, 2])
     with c1:
-        st.metric("累計出土總車次", f"{total_trips:,}")
+        st.metric("區間出土總車次", f"{total_trips:,}", help=f"{s_str} ～ {e_str} 的台北港車次合計。")
         if len(days) >= 1:
             last_d, last_n = days.index[-1], int(days.iloc[-1])
             if len(days) >= 2:
                 prev_d, prev_n = days.index[-2], int(days.iloc[-2])
-                st.metric(f"最新進度比對（{last_d}）", f"{last_n} 車次", delta=f"{last_n - prev_n:+d}（對比 {prev_d} 的 {prev_n} 車次）")
+                st.metric(f"區間最新進度比對（{last_d}）", f"{last_n} 車次", delta=f"{last_n - prev_n:+d}（對比 {prev_d} 的 {prev_n} 車次）")
             else:
-                st.metric(f"最新進度（{last_d}）", f"{last_n} 車次")
+                st.metric(f"區間最新進度（{last_d}）", f"{last_n} 車次")
     with c2:
         st.markdown("##### 出車班別區間分析")
         rng = port[(port["日期"] >= s_str) & (port["日期"] <= e_str)]
