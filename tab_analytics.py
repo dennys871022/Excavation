@@ -9,11 +9,12 @@
 車次/趟次一律只算台北港（FDA不併入車次，跟全站規則一致）；已作廢的紀錄不計入車次與出土量，只列入異常分析。
 """
 import html as _html
+import re
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from data_store import _is_voided, load_sheet_data
+from data_store import _is_voided, is_demo_mode, load_sheet_data, save_sheet_data
 
 SHIFTS = [("早班 (05-08)", 5, 8), ("午班 (08-12)", 8, 12), ("晚班 (12-18)", 12, 18)]
 SHIFT_COLORS = ["#3498db", "#f1c40f", "#2c3e50", "#95a5a6"]
@@ -451,6 +452,136 @@ def _view_monthly(port, alltp, fda):
     _show_table(perf, 420)
 
 
+# ───────────────────────── 宜蘭車隊（名單存雲端 fleet_yilan 分頁） ─────────────────────────
+FLEET_SHEET = "fleet_yilan"
+FLEET_COLS = ["車頭車號", "車斗車號", "駕駛姓名", "噸數"]      # 不存身分證字號
+
+
+def _norm_plate(x):
+    """車號比對用：轉大寫並去掉符號與空白（KLM-1608、klm 1608 視為同一台）。"""
+    if x is None or (not isinstance(x, str) and pd.isna(x)):
+        return ""
+    return re.sub(r"[^0-9A-Z]", "", str(x).upper())
+
+
+def _clean_fleet(df):
+    if df is None or df.empty or "車頭車號" not in df.columns:
+        return pd.DataFrame(columns=FLEET_COLS)
+    out = pd.DataFrame({c: (df[c] if c in df.columns else "") for c in FLEET_COLS})
+    for c in ["車頭車號", "車斗車號", "駕駛姓名"]:
+        out[c] = out[c].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+    out["噸數"] = pd.to_numeric(out["噸數"], errors="coerce")
+    out = out[out["車頭車號"] != ""].copy()
+    out["_k"] = out["車頭車號"].map(_norm_plate)
+    out = out[out["_k"] != ""].drop_duplicates("_k", keep="last").drop(columns="_k")
+    return out.reset_index(drop=True)
+
+
+def _read_roster_file(f):
+    name = (getattr(f, "name", "") or "").lower()
+    if name.endswith(".csv"):
+        raw = pd.read_csv(f, dtype=str, encoding="utf-8-sig")
+    else:
+        raw = pd.read_excel(f, sheet_name=0, dtype=str)
+    raw.columns = [str(c).strip() for c in raw.columns]
+    if "車頭車號" not in raw.columns:
+        return None
+    return _clean_fleet(raw)
+
+
+def _fleet_manager(fleet):
+    """名單管理：上傳 Excel/CSV（取代或合併）、表格直接增刪修改，存回雲端。"""
+    ver = st.session_state.get("yl_ver", 0)
+    with st.expander(f"🚛 宜蘭車隊名單管理（目前 {len(fleet)} 台）", expanded=fleet.empty):
+        st.caption(f"名單存在雲端試算表的「{FLEET_SHEET}」分頁（欄位：{'、'.join(FLEET_COLS)}）。為保護個資，上傳的身分證字號不會存進雲端。"
+                   "車號比對不分大小寫、不看「-」與空白。")
+        up = st.file_uploader("上傳名單檔（Excel 或 CSV，需有「車頭車號」欄）", type=["xlsx", "csv"], key=f"yl_up_{ver}")
+        if up is not None:
+            try:
+                new = _read_roster_file(up)
+            except Exception as e:
+                new = None
+                st.error(f"讀取失敗：{e}")
+            if new is None:
+                st.error("找不到「車頭車號」欄，請確認檔案第一列是欄位名稱。")
+            else:
+                st.write(f"檔案內共 {len(new)} 台。")
+                mode = st.radio("套用方式", ["取代整份名單（以上傳檔為準）", "合併（只新增／更新上傳檔內的車號，其他保留）"], key=f"yl_mode_{ver}")
+                if st.button("✅ 套用上傳名單並存到雲端", key=f"yl_apply_{ver}", type="primary"):
+                    merged = new if mode.startswith("取代") else _clean_fleet(pd.concat([fleet, new], ignore_index=True))
+                    if save_sheet_data(FLEET_SHEET, merged[FLEET_COLS]):
+                        st.session_state["yl_ver"] = ver + 1
+                        st.success(f"已儲存，名單共 {len(merged)} 台。")
+                        st.rerun()
+        st.markdown("**直接編輯名單**（可新增列、修改、刪除列；改完要按下方儲存）")
+        edited = st.data_editor(
+            fleet[FLEET_COLS], num_rows="dynamic", use_container_width=True, hide_index=True, key=f"yl_edit_{ver}",
+            column_config={"噸數": st.column_config.NumberColumn("噸數", format="%g")},
+        )
+        if st.button("💾 儲存名單到雲端", key=f"yl_save_{ver}"):
+            clean = _clean_fleet(edited)
+            if save_sheet_data(FLEET_SHEET, clean[FLEET_COLS] if not clean.empty else pd.DataFrame(columns=FLEET_COLS)):
+                st.session_state["yl_ver"] = ver + 1
+                st.success(f"已儲存，名單共 {len(clean)} 台。")
+                st.rerun()
+        if is_demo_mode():
+            st.caption("👀 目前為訪客模式：儲存只會模擬，不會寫入雲端。")
+
+
+def _view_yilan(port):
+    fleet = _clean_fleet(load_sheet_data(FLEET_SHEET))
+    _fleet_manager(fleet)
+    if fleet.empty:
+        st.info(f"還沒有宜蘭車隊名單。請在上方上傳名單檔，或先在雲端試算表新增一個名為「{FLEET_SHEET}」的分頁（第一列填 {'、'.join(FLEET_COLS)}）。")
+        return
+    keys = set(fleet["車頭車號"].map(_norm_plate))
+    all_dates = sorted(pd.to_datetime(port["日期"]).dt.date.unique())
+    s, e = _range_picker("選取分析區間", all_dates, "ana_yl_range")
+    s_str, e_str = s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")
+    rng = port[(port["日期"] >= s_str) & (port["日期"] <= e_str)].copy()
+    rng["is_yl"] = rng["truck"].map(_norm_plate).isin(keys)
+    yl = rng[rng["is_yl"]]
+    tot_trips = int(rng["trips"].sum())
+    yl_trips = int(yl["trips"].sum())
+    c = st.columns(5)
+    c[0].metric("宜蘭車隊車次", f"{yl_trips:,}", help="只算台北港、未作廢的紀錄，車號在名單內即計入。")
+    c[1].metric("宜蘭車隊出土量", f"{yl['vol'].sum():,.1f} m³")
+    c[2].metric("佔區間總車次", f"{(yl_trips / tot_trips * 100 if tot_trips else 0):.1f}%", help=f"區間全場車次 {tot_trips:,}")
+    c[3].metric("出車台數", f"{yl['truck'].map(_norm_plate).nunique()} / {len(fleet)}")
+    c[4].metric("出車天數", f"{yl['日期'].nunique()}")
+    if yl.empty:
+        st.info("此區間沒有宜蘭車隊的出車紀錄。")
+        return
+
+    dd = rng.groupby("日期").apply(lambda g: pd.Series({
+        "宜蘭車次": int(g.loc[g["is_yl"], "trips"].sum()), "宜蘭方量": float(g.loc[g["is_yl"], "vol"].sum()),
+        "全場車次": int(g["trips"].sum())}), include_groups=False).sort_index()
+    dd = dd[dd["宜蘭車次"] > 0]
+    fig = go.Figure(go.Bar(x=list(dd.index), y=list(dd["宜蘭車次"]), marker_color="#27ae60",
+                           text=_bar_text(dd["宜蘭車次"]) if _on() else None, textposition="outside", cliponaxis=False))
+    fig.update_layout(title="宜蘭車隊每日車次（僅列有出車的日子）", height=300, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
+    st.plotly_chart(fig, use_container_width=True, key="ana_yl_daily")
+
+    rows = []
+    yl_k = yl.assign(_k=yl["truck"].map(_norm_plate))
+    for _, r in fleet.iterrows():
+        g = yl_k[yl_k["_k"] == _norm_plate(r["車頭車號"])]
+        rows.append({"車頭車號": r["車頭車號"], "駕駛": r["駕駛姓名"], "區間趟次": int(g["trips"].sum()),
+                     "出土量(m³)": round(float(g["vol"].sum()), 1), "出車天數": int(g["日期"].nunique())})
+    tdf = pd.DataFrame(rows).sort_values("區間趟次", ascending=False).reset_index(drop=True)
+    tdf.insert(0, "排名", range(1, len(tdf) + 1))
+    if (tdf["駕駛"] == "").all():
+        tdf = tdf.drop(columns=["駕駛"])
+    st.markdown("##### 宜蘭車隊各車趟次（含區間內沒出車的車）")
+    _show_table(tdf, 420)
+
+    st.markdown("##### 宜蘭車隊每日明細")
+    dd2 = dd.copy()
+    dd2["佔當日全場"] = (dd2["宜蘭車次"] / dd2["全場車次"] * 100).round(1).astype(str) + "%"
+    dd2["宜蘭方量"] = dd2["宜蘭方量"].round(1)
+    _show_table(dd2.sort_index(ascending=False).reset_index(), 420)
+
+
 def render(df_results=None, global_stage_choice=None):
     st.write("### 🔬 聯單進階分析")
     st.caption("直接讀取雲端 dispatch_logs，不需要上傳CSV。車次只算台北港（FDA不併入車次）；已作廢的紀錄不計入車次與出土量，只列入異常分析。")
@@ -472,10 +603,12 @@ def render(df_results=None, global_stage_choice=None):
         return
 
     st.toggle("顯示資料標籤", value=False, key="ana_labels", help="開啟後所有圖表都會標出數值；每日出車趨勢柱頂的當日總車數則一律顯示。")
-    view = st.radio("分析項目", ["日報表與車輛分析", "週度趨勢與分析", "月度結算與比較"], horizontal=True, key="analytics_view")
+    view = st.radio("分析項目", ["日報表與車輛分析", "週度趨勢與分析", "月度結算與比較", "宜蘭車隊"], horizontal=True, key="analytics_view")
     if view == "日報表與車輛分析":
         _view_daily(port)
     elif view == "週度趨勢與分析":
         _view_weekly(port, alltp)
-    else:
+    elif view == "月度結算與比較":
         _view_monthly(port, alltp, fda)
+    else:
+        _view_yilan(port)
