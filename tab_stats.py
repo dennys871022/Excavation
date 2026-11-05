@@ -149,11 +149,20 @@ def render(df_results, global_stage_choice):
 
             m_types = ["B1", "B2-3", "B4", "B5"]
             breakdown_lines = []
+            # 累計（到統計結束日為止，全部已出的）各聯單類型台數與方量
+            cum_serials = cumul_logs['聯單序號'].fillna('').astype(str).str.strip().str.upper() if '聯單序號' in cumul_logs.columns else pd.Series(dtype=str)
+            cum_vols = pd.to_numeric(cumul_logs['載運方量(m³)'], errors='coerce').fillna(0) if '載運方量(m³)' in cumul_logs.columns else pd.Series(dtype=float)
+            cum_all_trips, cum_all_vol = 0, 0.0
             for m_type in m_types:
                 mask = range_serials.str.contains(m_type.upper(), regex=False)
                 m_trips = mask.sum()
                 m_vol = range_vols[mask].sum()
+                cmask = cum_serials.str.contains(m_type.upper(), regex=False)
+                c_trips, c_vol = int(cmask.sum()), float(cum_vols[cmask].sum())
+                cum_all_trips += c_trips; cum_all_vol += c_vol
                 breakdown_lines.append(f"* {m_type} 聯單： {m_trips} 台 / {m_vol:,.0f} m³")
+                breakdown_lines.append(f"   └ 累計已出： {c_trips} 台 / {c_vol:,.0f} m³")
+            breakdown_lines.append(f"* 累計已出合計： {cum_all_trips} 台 / {cum_all_vol:,.0f} m³")
             manifest_breakdown_str = "\n".join(breakdown_lines)
 
         manifest_total = 79692.0
