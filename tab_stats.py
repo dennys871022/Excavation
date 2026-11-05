@@ -93,11 +93,10 @@ def render(df_results, global_stage_choice):
         period_days = range_logs['ParsedDate'].nunique() if not range_logs.empty and 'ParsedDate' in range_logs.columns else 0
         period_rate = round(range_trips / period_days, 1) if period_days > 0 else 0
 
-        # 累計總天數：改用日曆天數（從第一筆出土紀錄那天算到統計結束日，含中間沒出土的日期），
-        # 跟「階段總覽」的「目前作業工期」算法一致，不再只算「有出土紀錄」的天數
+        # 累計出土天數：只算「有出土紀錄」的日期（沒出土的日子、台北港無收土的日子不算），
+        # 總出土功率 = 累計總車次 ÷ 累計出土天數
         if not cumul_logs.empty and 'ParsedDate' in cumul_logs.columns:
-            earliest_log_date = cumul_logs['ParsedDate'].min()
-            total_days = (end_date - earliest_log_date).days + 1
+            total_days = int(cumul_logs['ParsedDate'].nunique())
         else:
             total_days = 0
         total_rate = round(total_all_trips / total_days, 1) if total_days > 0 else 0
@@ -186,7 +185,7 @@ def render(df_results, global_stage_choice):
 {period_label}車次： {range_trips} 台
 {period_label}出土功率： {period_rate} 台/天
 {period_label}出土方量： {range_vol:,.0f} m³
-累計總天數： {total_days} 天
+累計出土天數： {total_days} 天
 累計總車次： {total_all_trips} 台
 總出土功率： {total_rate} 台/天
 累計實挖方量： {total_excavated:,.0f} m³ (另計開挖前土方: {pre_excavated:,.0f} m³)
