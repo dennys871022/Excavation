@@ -10,6 +10,8 @@ from pdf_reports import generate_backend_map, generate_daily_report_pdf
 from stage_calc import compute_stage_overview, get_stage_index, sync_stage_daily_log
 from zone_picker import zone_map_picker
 from map_3d import VIEW_ANIM, VIEW_BLOCK, VIEW_PIT, VIEW_RENDER, render_dig_animation, render_progress_3d, render_progress_pit, view_toggle
+from config import LOOSE_SOIL_FACTOR
+from reflow import render_reflow
 from zones import allocate_trucks_by_capacity, filter_zones_for_stage, get_stage_remaining_capacity, zone_progress_style
 
 
@@ -120,7 +122,10 @@ def render(df_results, global_stage_choice):
                 zone_grouped.rename(columns={'載運方量(m³)': '累計實挖方量'}, inplace=True)
 
                 baseline_dict = df_results.set_index('分區代號')['預估總土方'].to_dict() if not df_results.empty else {}
-                zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict)
+                # 聯單載運方量（每車12m³）是鬆方；圖資的各區方量與地圖門檻是實方。
+                # 地圖/容量判斷用「累計實方」（鬆方÷係數）；完成率表的基準量換成鬆方，兩邊比值一致。
+                zone_grouped['累計實方'] = zone_grouped['累計實挖方量'] / LOOSE_SOIL_FACTOR
+                zone_grouped['預估基準方量'] = zone_grouped['出土分區'].map(baseline_dict) * LOOSE_SOIL_FACTOR
                 zone_grouped['完成率數值'] = (zone_grouped['累計實挖方量'] / zone_grouped['預估基準方量'] * 100).round(1)
 
                 zone_grouped['累計實挖方量_顯示'] = zone_grouped['累計實挖方量'].apply(lambda x: f"{x:,.0f}")
@@ -205,7 +210,7 @@ def render(df_results, global_stage_choice):
             if not df_results.empty:
                 vol_dict = {}
                 if not zone_grouped.empty:
-                    vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+                    vol_dict = zone_grouped.set_index('出土分區')['累計實方'].to_dict()
 
                 stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict()
 
@@ -236,7 +241,7 @@ def render(df_results, global_stage_choice):
                             y=[row['y_min'], row['y_min'], row['y_max'], row['y_max'], row['y_min']],
                             mode='lines', line=dict(color='gray', width=1),
                             fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
-                            text=f"{grid_id}<br>{stage_text}<br>已挖: {current_vol:,.0f} m³"
+                            text=f"{grid_id}<br>{stage_text}<br>已挖(實方): {current_vol:,.0f} m³"
                         ))
                         fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
 
@@ -317,7 +322,7 @@ def render(df_results, global_stage_choice):
         with st.expander("🗺️ 用地圖點選分區", expanded=True):
             zone_map_picker(
                 df_results, "fda_entry_zones", get_stage_index(global_stage_choice),
-                zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict() if not zone_grouped.empty else {},
+                zone_grouped.set_index('出土分區')['累計實方'].to_dict() if not zone_grouped.empty else {},
                 chart_key="fda_zone_map",
             )
         fda_zones = st.multiselect(
@@ -328,14 +333,14 @@ def render(df_results, global_stage_choice):
 
         # 顯示選定分區在本階段的剩餘容量，跟批量設定出土分區那邊共用同一套參考資訊
         _fda_cap_stage_idx = get_stage_index(global_stage_choice)
-        _fda_excavated_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict() if not zone_grouped.empty else {}
+        _fda_excavated_dict = zone_grouped.set_index('出土分區')['累計實方'].to_dict() if not zone_grouped.empty else {}
         if fda_zones and _fda_cap_stage_idx is not None:
             fda_cap_rows = []
             for z in fda_zones:
                 cap = get_stage_remaining_capacity(z, df_results, _fda_cap_stage_idx, _fda_excavated_dict)
                 fda_cap_rows.append({
                     "分區": z,
-                    f"【{global_stage_choice}】剩餘可挖 (m³)": f"{cap:,.0f}" if cap is not None else "無上限（本階段無目標）",
+                    f"【{global_stage_choice}】剩餘可挖 (實方 m³)": f"{cap:,.0f}" if cap is not None else "無上限（本階段無目標）",
                 })
             st.caption(f"📏 目前選定分區在【{global_stage_choice}】的剩餘容量：")
             st.dataframe(pd.DataFrame(fda_cap_rows), use_container_width=True, hide_index=True)
@@ -354,7 +359,7 @@ def render(df_results, global_stage_choice):
                 # 把「總台數+總方量」拆成一台一台的方量清單，交給跟批量設定出土分區同一套容量感知分配演算法，
                 # 完成的分區會自動跳過，再把分配結果依分區彙總回集計列（維持FDA簡化輸入的精神，不逐台存成一列）
                 per_truck_vol = fda_vol / fda_trucks if fda_trucks > 0 else 0
-                truck_vol_list = [per_truck_vol] * int(fda_trucks)
+                truck_vol_list = [per_truck_vol / LOOSE_SOIL_FACTOR] * int(fda_trucks)   # 鬆方 → 實方，跟分區容量同單位
 
                 if len(fda_zones) == 1:
                     assigned_list = [fda_zones[0]] * len(truck_vol_list)
@@ -433,7 +438,7 @@ def render(df_results, global_stage_choice):
             with st.expander("🗺️ 用地圖點選分區", expanded=True):
                 zone_map_picker(
                     df_results, "bulk_zone_select", get_stage_index(global_stage_choice),
-                    zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict() if not zone_grouped.empty else {},
+                    zone_grouped.set_index('出土分區')['累計實方'].to_dict() if not zone_grouped.empty else {},
                     chart_key="bulk_zone_map",
                 )
             col_z1, col_z2 = st.columns([2, 1])
@@ -452,14 +457,14 @@ def render(df_results, global_stage_choice):
             _cap_stage_idx = get_stage_index(global_stage_choice)
             _excavated_dict = {}
             if not zone_grouped.empty:
-                _excavated_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+                _excavated_dict = zone_grouped.set_index('出土分區')['累計實方'].to_dict()
             if selected_zones and _cap_stage_idx is not None:
                 cap_rows = []
                 for z in selected_zones:
                     cap = get_stage_remaining_capacity(z, df_results, _cap_stage_idx, _excavated_dict)
                     cap_rows.append({
                         "分區": z,
-                        f"【{global_stage_choice}】剩餘可挖 (m³)": f"{cap:,.0f}" if cap is not None else "無上限（本階段無目標）",
+                        f"【{global_stage_choice}】剩餘可挖 (實方 m³)": f"{cap:,.0f}" if cap is not None else "無上限（本階段無目標）",
                     })
                 st.caption(f"📏 目前選定分區在【{global_stage_choice}】的剩餘容量（依此自動判斷何時跳過）：")
                 st.dataframe(pd.DataFrame(cap_rows), use_container_width=True, hide_index=True)
@@ -482,7 +487,7 @@ def render(df_results, global_stage_choice):
                                 truck_vols = pd.to_numeric(
                                     checked_rows.get('載運方量(m³)', pd.Series([12.0] * len(checked_rows))),
                                     errors='coerce'
-                                ).fillna(12.0).tolist()
+                                ).fillna(12.0).div(LOOSE_SOIL_FACTOR).tolist()   # 鬆方 → 實方，跟分區容量同單位
                                 assigned_zones, unassigned_count = allocate_trucks_by_capacity(
                                     truck_vols, selected_zones, df_results, _cap_stage_idx, _excavated_dict
                                 )
@@ -515,6 +520,8 @@ def render(df_results, global_stage_choice):
                             st.warning("⚠️ 請至少勾選一筆要套用的紀錄。")
         else:
             st.success("目前所有有效紀錄皆已分配分區。")
+
+        render_reflow(df_results, global_stage_choice)
 
         st.divider()
         st.markdown("#### 📍 各分區挖掘進度總表")
