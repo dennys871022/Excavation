@@ -229,6 +229,7 @@ def render(df_results, global_stage_choice):
                 elif _map_view in (VIEW_PIT, VIEW_RENDER):
                     render_progress_pit(df_map_zones, vol_dict, _stats_stage_idx, global_stage_choice, end_date, realistic=(_map_view == VIEW_RENDER))
                 else:
+                    _ann_x, _ann_y, _ann_t = [], [], []
                     for idx, row in df_map_zones.iterrows():
                         grid_id = row['分區代號']
                         current_vol = vol_dict.get(grid_id, 0)
@@ -243,7 +244,10 @@ def render(df_results, global_stage_choice):
                             fill='toself', fillcolor=fill_color, showlegend=False, hoverinfo='text',
                             text=f"{grid_id}<br>{stage_text}<br>已挖(實方): {current_vol:,.0f} m³"
                         ))
-                        fig_map.add_annotation(x=row['x_center'], y=row['y_center'], text=grid_id, showarrow=False, font=dict(color="black", size=10))
+                        _ann_x.append(row['x_center']); _ann_y.append(row['y_center']); _ann_t.append(grid_id)
+                    # 分區代號文字合併成一條 trace（逐區 add_annotation 很慢）
+                    fig_map.add_trace(go.Scatter(x=_ann_x, y=_ann_y, mode="text", text=_ann_t, textfont=dict(color="black", size=10),
+                                                 hoverinfo="skip", showlegend=False))
 
                     fig_map.update_layout(title=f"各區階數開挖狀態 (截至 {end_date})　【{global_stage_choice}】", dragmode='pan', xaxis_title="", yaxis_title="", yaxis=dict(scaleanchor="x", scaleratio=1), height=500, margin=dict(l=0, r=0, t=30, b=0))
                     st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': False})
