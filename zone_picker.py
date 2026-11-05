@@ -40,9 +40,16 @@ def zone_map_picker(df_results, target_key, stage_idx=None, excavated_dict=None,
     stat = [_status(c, df_results, stage_idx, excavated_dict) for c in codes]
 
     fig = go.Figure()
+    # 底色方塊：同顏色的分區合併成一條 trace（用 None 分隔），比逐區 add_shape 快很多（每次點選都會重畫）
+    by_color = {}
     for (_, r), (color, _txt) in zip(df_results.iterrows(), stat):
-        fig.add_shape(type="rect", x0=r["x_min"], x1=r["x_max"], y0=r["y_min"], y1=r["y_max"],
-                      line=dict(color=color, width=1), fillcolor=color, opacity=0.25, layer="below")
+        xs, ys = by_color.setdefault(color, ([], []))
+        xs += [r["x_min"], r["x_max"], r["x_max"], r["x_min"], r["x_min"], None]
+        ys += [r["y_min"], r["y_min"], r["y_max"], r["y_max"], r["y_min"], None]
+    for color, (xs, ys) in by_color.items():
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=color, width=1), fill="toself",
+                                 fillcolor=color, opacity=0.25, hoverinfo="skip", showlegend=False))
+    marker_curve = len(by_color)
     fig.add_trace(go.Scatter(
         x=df_results["x_center"], y=df_results["y_center"], mode="markers+text",
         text=codes, textposition="middle center", textfont=dict(size=9, color="black"),
@@ -66,7 +73,7 @@ def zone_map_picker(df_results, target_key, stage_idx=None, excavated_dict=None,
         )
         pts = (ev or {}).get("selection", {}).get("points", []) if ev else []
         picked = [codes[p["point_index"]] for p in pts
-                  if p.get("curve_number") == 0 and p.get("point_index") is not None and p["point_index"] < len(codes)]
+                  if p.get("curve_number") == marker_curve and p.get("point_index") is not None and p["point_index"] < len(codes)]
     except TypeError:
         st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
         st.caption("⚠️ 目前的 Streamlit 版本不支援地圖點選，請改用下方清單選擇分區。")
