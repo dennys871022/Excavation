@@ -28,7 +28,7 @@ def generate_backend_map(df_results, zone_grouped, stage_choice=None):
 
     vol_dict = {}
     if not zone_grouped.empty:
-        vol_dict = zone_grouped.set_index('出土分區')['累計實挖方量'].to_dict()
+        vol_dict = zone_grouped.set_index('出土分區')['累計實方'].to_dict()
     stage_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
 
     stage_idx = get_stage_index(stage_choice) if stage_choice else None
