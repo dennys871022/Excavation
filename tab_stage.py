@@ -332,7 +332,7 @@ def render(df_results, global_stage_choice):
     if not df_logs_for_map.empty and '出土分區' in df_logs_for_map.columns and '載運方量(m³)' in df_logs_for_map.columns:
         tmp_map_logs = df_logs_for_map[df_logs_for_map['出土分區'] != '未指定'].copy()
         tmp_map_logs['載運方量(m³)'] = pd.to_numeric(tmp_map_logs['載運方量(m³)'], errors='coerce')
-        zone_vol_dict = tmp_map_logs.groupby('出土分區')['載運方量(m³)'].sum().to_dict()
+        zone_vol_dict = (tmp_map_logs.groupby('出土分區')['載運方量(m³)'].sum() / LOOSE_SOIL_FACTOR).to_dict()   # 鬆方 → 實方，跟門檻同單位
 
     stage_idx = get_stage_index(stage_choice)
     stage_thresholds_dict = df_results.set_index('分區代號')['各階累計方量'].to_dict() if not df_results.empty else {}
