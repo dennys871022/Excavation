@@ -87,6 +87,9 @@ def render_reflow(df_results, global_stage_choice):
             f"目前換算係數 {LOOSE_SOIL_FACTOR}（鬆方÷係數＝實方）。系統會把【{global_stage_choice}】範圍內已指定分區的車次"
             "（不含作廢、不含「開挖前土方」）依日期時間順序，從挖掘順序的第一區開始逐區填到該區在本階段的目標，再換下一區。"
             "會直接改寫雲端 dispatch_logs 的「出土分區」欄，所以按確認前請先下載備份。")
+        if not st.checkbox("開始計算並顯示預覽", value=False, key="reflow_open",
+                           help="預覽需要逐筆模擬分配，會拖慢每次點選的速度，所以預設不計算；要用時再勾選。"):
+            return
         raw = load_sheet_data("dispatch_logs")
         if raw is None or raw.empty or "出土分區" not in raw.columns:
             st.info("目前沒有派車紀錄。")
