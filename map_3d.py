@@ -22,8 +22,9 @@ VIEW_2D, VIEW_BLOCK, VIEW_PIT, VIEW_RENDER, VIEW_ANIM = "2D", "3D 方塊", "3D �
 
 
 def view_toggle(key, with_anim=False):
-    """地圖呈現方式切換：2D／3D 方塊／3D 挖掘實景／3D 渲染實景（有出土紀錄的頁面再加「3D 開挖動畫」）。"""
-    opts = [VIEW_2D, VIEW_BLOCK, VIEW_PIT, VIEW_RENDER] + ([VIEW_ANIM] if with_anim else [])
+    """地圖呈現方式切換：2D（有出土紀錄的頁面再加「3D 開挖動畫」）。"""
+    # 3D 方塊／挖掘實景／渲染實景已由「🏗️ 3D 工地管理中心」分頁取代，這裡只留 2D 與開挖動畫
+    opts = [VIEW_2D] + ([VIEW_ANIM] if with_anim else [])
     return st.radio("地圖呈現方式", opts, horizontal=True, key=key)
 
 
