@@ -29,7 +29,7 @@ STRUT_PROGRESS = [
     ("2026-10-06", None),     # 開始施作（從最西側開始）
     ("2026-10-14", "A7"),     # 做到 A6 與 A7 中間（剛過歷建）
 ]
-FRONT_GANTRY_DONE = "2026-10-14"   # 前段構台（北側構台靠大門的保留通行段）完成日
+FRONT_GANTRY_DONE = "2026-10-14"   # 前段構台（滯洪池B東側南北向＋北側東西向，L 形）完成日
 
 
 def _num(v, default=0.0):
@@ -123,12 +123,23 @@ def build_twin_payload(logs, df_results, stage_idx, gl_off=0.0, title="CDC 工�
                     west_day = i
                     break
 
+    # 前段構台（L 形）：滯洪池B 東側一條南北向（土車由大門進來往北上構台）＋北側一條東西向接到北側構台
+    front = []
+    try:
+        bc = [z for z in zones if z["c"].startswith("滯BC")]
+        hist, G = site["hist"], site["gantry"]
+        bx1, ytop = max(z["x1"] for z in bc), max(z["y1"] for z in bc)
+        sx, sy = (hist[0] - bx1) / 220.0, (hist[3] - hist[2]) / 82.0      # 圖上像素 → 公尺
+        vx1, nyb, vyb = bx1 + 77 * sx, ytop - 62 * sy, hist[3] - 135 * sy
+        front = [[bx1, vx1, vyb, nyb, "前段構台（西側南北向）"], [bx1, G["deck_x0"], nyb, ytop, "前段構台（北側）"]]
+    except Exception:
+        front = []
     xmin = {z["c"]: z["x0"] for z in zones}
     west_x = min(z["x0"] for z in zones) - 1.0
     strut_plan = [[d, (xmin.get(c, west_x) if c else west_x)] for d, c in STRUT_PROGRESS]
 
     return {
-        "strutPlan": strut_plan, "frontGantry": FRONT_GANTRY_DONE,
+        "strutPlan": strut_plan, "frontGantry": FRONT_GANTRY_DONE, "frontDecks": front,
         "title": title, "zones": zones, "days": days, "stage": stage_idx, "stageNames": STAGE_NAMES,
         "loose": LOOSE_SOIL_FACTOR, "model": model, "site": site, "slabDay": slab_day, "westDay": west_day,
     }
@@ -470,8 +481,8 @@ if(S){try{
   signAt(['歷史建物','保留・不開挖'],(hx0+hx1)/2,(hy0+hy1)/2,11,siteGrp,{bar:'#f2a07b'});
   // 洗車台：淺藍底＋薄荷綠棚架
   const [wx0,wx1,wy0,wy1]=S.wash;WASH=[(wx0+wx1)/2,(wy0+wy1)/2];siteGrp.add(at(box(wx1-wx0,0.3,wy1-wy0,0x9fd8f0,{r:0.4}),wx0,wx1,wy0,wy1,0.15));
-  [[wx0,wy0],[wx1,wy0],[wx0,wy1],[wx1,wy1]].forEach(([x,y])=>{const p=box(0.3,3.6,0.3,0xffffff);p.position.set(WX(x),1.8,WZ(y));siteGrp.add(p);});
-  siteGrp.add(at(box(wx1-wx0+0.8,0.3,wy1-wy0+0.8,0x5fd3a4),wx0,wx1,wy0,wy1,3.7));signAt(['洗車台'],WASH[0],WASH[1],6,siteGrp,{bar:'#5fd3a4'});
+  [-1,1].forEach(sd=>{const w=box(wx1-wx0,0.9,0.25,0x5fd3a4);w.position.set(WX(WASH[0]),0.75,WZ(WASH[1]+sd*(wy1-wy0)/2));siteGrp.add(w);});  // 兩側擋水板，沒有頂棚
+  signAt(['洗車台'],WASH[0],WASH[1],4,siteGrp,{bar:'#5fd3a4'});
   // 地磅
   const [mx0,mx1,my0,my1]=S.weigh;WEIGH=[(mx0+mx1)/2,(my0+my1)/2];siteGrp.add(at(box(mx1-mx0,0.3,my1-my0,0xc9d0da,{r:0.5,m:0.2}),mx0,mx1,my0,my1,0.15));
   const kiosk=box(2.2,2.4,2.2,0xffffff);kiosk.position.set(WX(mx1)+1.6,1.2,WZ(WEIGH[1]));siteGrp.add(kiosk);signAt(['地磅站'],WEIGH[0],WEIGH[1],5,siteGrp,{bar:'#8a94a6'});
@@ -531,14 +542,21 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
   const PL=0xb9c3cf;[[R.rgX0,R.zE,R.rgX0,R.rgZ0],[R.rgX0,R.rgZ0,R.rgX1,R.rgZ0],[R.rgX1,R.rgZ0,R.rgX1,R.zW],[R.rgX1,R.zW,R.xL1+3,R.zW]]
     .forEach(a=>lane(...a,6.4,PL,p1aGrp,0.6));
   // 構台出入：地面鐵板＋坡道（二挖起）
-  lane(R.xW,R.zIn,R.xW,R.zN,6.4,PL,gantryGrp,0.6);lane(R.xW,R.zN,R.xD0-R.RL,R.zN,6.4,PL,gantryGrp,0.6);lane(R.xD0-R.RL,R.zS,R.xJog,R.zS,6.4,PL,gantryGrp,0.6);lane(R.xJog,R.zS,R.xJog,R.zOut,6,LC,gantryGrp);
-  [R.zN,R.zS].forEach(zc=>{const ang=Math.atan2(R.DT-0.5,R.RL),len=Math.hypot(R.RL,R.DT-0.5),m=box(len,0.4,6.4,PL);m.position.set(R.xD0-R.RL/2,(R.DT+0.5)/2-0.1,zc);m.rotation.z=ang;gantryGrp.add(m);});
-  if(G.keep){const [a,b,c,d]=G.keep;const k=at(box(Math.abs(b-a),0.08,Math.abs(d-c),0xffb84d,{op:0.55}),a,b,c,d,R.DT+0.25);k.castShadow=false;gantryGrp.add(k);signAt(['保留通行構台'],(a+b)/2,(c+d)/2,R.DT+7,gantryGrp,{bar:'#ffb84d'});
-    // 前段構台：在全區構台之前就先完成（日期見 FRONT_GANTRY_DONE）
-    const x0=Math.min(a,b),x1=Math.max(a,b),y0=Math.min(c,d),y1=Math.max(c,d);frontGrp.add(at(box(x1-x0,0.45,y1-y0,0xc9d0da,{r:0.6,op:0.92}),x0,x1,y0,y1,R.DT));
-    const r1=box(x1-x0,0.5,0.15,0xff8f6b);r1.position.set(WX((x0+x1)/2),R.DT+0.5,WZ(y0));frontGrp.add(r1);const r2=r1.clone();r2.position.z=WZ(y1);frontGrp.add(r2);
-    for(const [px,py] of [[x0,y0],[x0,y1],[x1,y0],[x1,y1],[(x0+x1)/2,y0],[(x0+x1)/2,y1]]){const c2=box(0.6,4,0.6,0x8a94a6);c2.position.set(WX(px),R.DT-2,WZ(py));frontGrp.add(c2);}
-    signAt(['前段構台','已完成'],(x0+x1)/2,(y0+y1)/2,R.DT+6,frontGrp,{bar:'#8a94a6'});}
+  lane(R.xD0-R.RL,R.zS,R.xJog,R.zS,6.4,PL,gantryGrp,0.6);lane(R.xJog,R.zS,R.xJog,R.zOut,6,LC,gantryGrp);
+  {const ang=Math.atan2(R.DT-0.5,R.RL),len=Math.hypot(R.RL,R.DT-0.5),m=box(len,0.4,6.4,PL);m.position.set(R.xD0-R.RL/2,(R.DT+0.5)/2-0.1,R.zS);m.rotation.z=ang;gantryGrp.add(m);} // 南側構台下坡
+  if(G.keep){const [a,b,c,d]=G.keep;const k=at(box(Math.abs(b-a),0.08,Math.abs(d-c),0xffb84d,{op:0.55}),a,b,c,d,R.DT+0.25);k.castShadow=false;gantryGrp.add(k);signAt(['保留通行構台'],(a+b)/2,(c+d)/2,R.DT+7,gantryGrp,{bar:'#ffb84d'});}
+  // 前段構台（L 形，10/14 完成）：滯洪池B 東側南北向＋北側東西向
+  if(D.frontDecks&&D.frontDecks.length===2){const [v,n]=D.frontDecks;
+    for(const [x0,x1,y0,y1,nm] of D.frontDecks){frontGrp.add(at(box(x1-x0,0.45,y1-y0,0xc9d0da,{r:0.6,op:0.92}),x0,x1,y0,y1,R.DT));
+      const nxp=Math.max(1,Math.round((x1-x0)/8)),nyp=Math.max(1,Math.round((y1-y0)/8));
+      for(let i=0;i<=nxp;i++)for(let j=0;j<=nyp;j++){if(i>0&&i<nxp&&j>0&&j<nyp)continue;const c2=box(0.6,4,0.6,0x8a94a6);c2.position.set(WX(x0+(x1-x0)*i/nxp),R.DT-2,WZ(y0+(y1-y0)*j/nyp));frontGrp.add(c2);}}
+    const rl=(x0,z0,x1,z1)=>{const l=Math.hypot(x1-x0,z1-z0),m=box(l,0.5,0.15,0xff8f6b);m.position.set((x0+x1)/2,R.DT+0.5,(z0+z1)/2);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);frontGrp.add(m);};
+    rl(WX(v[0]),WZ(v[2]),WX(v[0]),WZ(n[3]));rl(WX(v[1]),WZ(v[2]),WX(v[1]),WZ(n[2]));rl(WX(v[0]),WZ(n[3]),WX(n[1]),WZ(n[3]));rl(WX(v[1]),WZ(n[2]),WX(n[1]),WZ(n[2]));
+    // 西側南北向構台南端的上坡（從大門進場車道往北上去）
+    const xv=(v[0]+v[1])/2;R.xV=WX(xv);R.zVb=WZ(v[2]);R.zNf=WZ((n[2]+n[3])/2);
+    const ang=Math.atan2(R.DT-0.5,R.RL),len=Math.hypot(R.RL,R.DT-0.5),rp=box(6.4,0.4,len,PL);rp.position.set(R.xV,(R.DT+0.5)/2-0.1,R.zVb+R.RL/2);rp.rotation.x=ang;frontGrp.add(rp);
+    lane(R.xW,R.zIn,R.xV,R.zIn,6.4,PL,frontGrp,0.6);lane(R.xV,R.zIn,R.xV,R.zVb+R.RL,6.4,PL,frontGrp,0.6);
+    signAt(['前段構台','10/14 完成'],xv,(v[2]+n[2])/2,R.DT+6,frontGrp,{bar:'#8a94a6'});}
   // 第一階段土堆（D'9、D'14、E'9、E'14 圍起）＋站在土堆上的怪手
   const [mx0,mx1,my0,my1]=S.mound,mh=S.mound_h||5;const mg=new THREE.CylinderGeometry(0.62,1,1,4,1);mg.rotateY(Math.PI/4);
   const mound=new THREE.Mesh(mg,MAT(0xdcb98d,{r:1}));mound.castShadow=true;mound.receiveShadow=true;mound.scale.set((mx1-mx0)/1.4142,mh,(my1-my0)/1.4142);mound.position.set(WX((mx0+mx1)/2),mh/2,WZ((my0+my1)/2));moundGrp.add(mound);
@@ -551,7 +569,8 @@ function routeNodes(variant,p2,fda){const R=RT,N=[],add=(x,z,y=0.6,st=0,ld=0)=>N
     if(variant===0){add(R.rgX0,R.zE);add(R.rgX0,R.rgZ0);add(R.rgX1,R.rgZ0);add(R.rgX1,R.zW);add(R.xL1,R.zW,0.6,0.1,1);}  // 繞歷建 → 往東迴轉、停土堆旁裝土
     else{add(R.xF,R.zE);add(R.xF,R.zW);add(R.xLoad,R.zW,0.6,0.1,1);}                                        // 走到 F16 迴轉 → 土堆旁裝土
     add(R.xJog,R.zW);add(R.xJog,R.zOut);}
-  else{add(R.xW,R.zN);add(R.xD0-R.RL,R.zN);add(R.xD0,R.zN,YD);add(R.xLG,R.zN,YD,0.1,1);add(R.xNS,R.zN,YD);add(R.xNS,R.zS,YD);add(R.xD0,R.zS,YD);add(R.xD0-R.RL,R.zS);add(R.xJog,R.zS);add(R.xJog,R.zOut);}
+  else{if(R.xV!==undefined){add(R.xV,R.zIn);add(R.xV,R.zVb+R.RL);add(R.xV,R.zVb,YD);add(R.xV,R.zNf,YD);add(R.xD0,R.zNf,YD);}  // 從大門往東 → 西側南北向構台往北 → 北側構台往東
+    else{add(R.xW,R.zN);add(R.xD0-R.RL,R.zN);add(R.xD0,R.zN,YD);}add(R.xLG,R.zN,YD,0.1,1);add(R.xNS,R.zN,YD);add(R.xNS,R.zS,YD);add(R.xD0,R.zS,YD);add(R.xD0-R.RL,R.zS);add(R.xJog,R.zS);add(R.xJog,R.zOut);}
   add(R.wcx+9,R.zOut);add(R.wcx,R.zOut,0.6,0.08);add(R.wsx,R.zOut,0.6,0.06);
   if(fda){add(R.roadX+3,R.zOut);add(R.roadX-2,R.zOut+4);add(R.roadX-2,R.gZ+70);}else{add(R.roadX+2,R.zOut);add(R.roadX+2,R.gZ-70);}
   let tot=0;N[0].s=0;for(let i=1;i<N.length;i++){tot+=Math.hypot(N[i].x-N[i-1].x,N[i].z-N[i-1].z);N[i].s=tot;}
@@ -582,7 +601,7 @@ function makeScreener(){// 旋轉篩斗怪手：把盤上來的土篩過再倒�
   const lip=box(1.2,0.16,2.2,fm);lip.position.set(0.9,-1.0,0);lip.rotation.z=-0.25;bk.add(lip);
   for(let i=0;i<6;i++){const t=box(0.45,0.14,0.16,0x3a4252);t.position.set(1.6,-1.15,-0.9+i*0.36);bk.add(t);}
   const drum=new THREE.Group();const core=new THREE.Mesh(new THREE.CylinderGeometry(0.85,0.85,1.9,20,1,true),new THREE.MeshStandardMaterial({color:0x3a4252,roughness:0.6,side:THREE.DoubleSide}));
-  core.rotation.x=Math.PI/2;drum.add(core);const mesh=new THREE.Mesh(new THREE.CylinderGeometry(0.88,0.88,1.92,20,8,true),new THREE.MeshBasicMaterial({color:0xb8c0ca,wireframe:true}));mesh.rotation.x=Math.PI/2;drum.add(mesh);
+  core.rotation.z=Math.PI/2;drum.add(core);const mesh=new THREE.Mesh(new THREE.CylinderGeometry(0.88,0.88,1.92,20,8,true),new THREE.MeshBasicMaterial({color:0xb8c0ca,wireframe:true}));mesh.rotation.z=Math.PI/2;drum.add(mesh);
   bk.add(drum);arm.add(bk);g.userData.drum=drum;return g;}
 function buildPhase(){const p=phaseAt(DAY);if(p===curPhase)return;curPhase=p;
   flowGrp.clear();plantGrp.clear();flows=[];trucks=[];falls=[];screen=null;
@@ -660,7 +679,7 @@ function legend(){const sw=c=>`<span class="sw" style="background:${css(c)}"></s
 const LY={lyLabel:v=>labels.visible=v,lyFlow:v=>{flowGrp.visible=v;digGrp.visible=v;plantGrp.visible=v;},lyPin:v=>pinGrp.visible=v,lyGhost:v=>ghost.visible=v,
   lyS1:v=>strutMesh[0]&&(strutMesh[0].visible=v),lyS2:v=>strutMesh[1]&&(strutMesh[1].visible=v),lyS3:v=>strutMesh[2]&&(strutMesh[2].visible=v),
   lyKp:v=>kpMesh&&(kpMesh.visible=v),lyCrane:v=>craneGrp.visible=v,lySite:v=>{siteGrp.visible=v;p1Grp.visible=v&&curPhase<2;p1aGrp.visible=v&&curPhase===0;},lyGantry:()=>gantryVis()};
-function gantryVis(){const on=$('lyGantry').checked;gantryGrp.visible=on&&D.slabDay!==null&&DAY>=D.slabDay;frontGrp.visible=on&&!gantryGrp.visible&&!!D.frontGantry&&DAYS[DAY].d>=D.frontGantry;}
+function gantryVis(){const on=$('lyGantry').checked;gantryGrp.visible=on&&D.slabDay!==null&&DAY>=D.slabDay;frontGrp.visible=on&&(gantryGrp.visible||!!D.frontGantry&&DAYS[DAY].d>=D.frontGantry);}
 Object.keys(LY).forEach(id=>{const el=$(id);LY[id](el.checked);el.addEventListener('change',()=>{LY[id](el.checked);if(id==='lyGantry')buildFlow();});});
 if(!M)['lyS1','lyS2','lyS3','lyKp','lyCrane'].forEach(id=>$(id).closest('label').style.display='none');
 if(!S)['lySite','lyGantry'].forEach(id=>$(id).closest('label').style.display='none');
@@ -792,7 +811,7 @@ let last=performance.now();const tv=new THREE.Vector3(),tv2=new THREE.Vector3();
       t.userData.soil.visible=r.sd>=d.P.loadS-0.1;});
     diggers.forEach(g=>{g.userData.arm.rotation.z=Math.sin(sec*1.6+g.userData.ph)*0.25;});
     if(screen){const dr=screen.userData.drum;dr.getWorldPosition(tv);
-      const scr=arcs.length>0;falls.forEach(m=>{m.visible=scr;});dr.rotation.z=scr?sec*3:0;
+      const scr=arcs.length>0;falls.forEach(m=>{m.visible=scr;});dr.rotation.x=scr?sec*3:0;
       falls.forEach(m=>{const u=(m.userData.o+sec*0.6)%1;m.position.set(tv.x+0.6+u*2.2,tv.y-0.6-u*(tv.y-2.2),tv.z+Math.sin(m.userData.o*20)*0.6);m.rotation.set(u*3,u*5,0);});
       arcs.forEach(m=>{const f=m.userData.from;if(!f)return;const u=(m.userData.o+sec*0.35)%1,ax=f.position.x,ay=f.position.y+2,az=f.position.z,bx=tv.x,by=tv.y+0.8,bz=tv.z;
         const h=Math.max(ay,by)+8;m.position.set(ax+(bx-ax)*u,(1-u)*(1-u)*ay+2*u*(1-u)*h+u*u*by,az+(bz-az)*u);m.rotation.set(u*4,u*6,0);});}}
