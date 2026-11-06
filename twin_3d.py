@@ -100,9 +100,24 @@ def build_twin_payload(logs, df_results, stage_idx, gl_off=0.0, title="CDC 工�
         if slab_day is None and th0_sum > 0 and sum(min(cum[k], th0[k]) for k in range(len(zones))) >= 0.995 * th0_sum:
             slab_day = i
 
+    # 歷建西側（分區中心在歷建西緣以西）第1挖全部出完的那一天：繞歷建的鐵板收掉，改走到 F16 迴轉
+    west_day = None
+    if site and site.get("hist"):
+        hx0 = site["hist"][0]
+        west = {k: z["th"][z["li"][0]] for k, z in enumerate(zones)
+                if (z["x0"] + z["x1"]) / 2 < hx0 and z["li"][0] >= 0 and z["th"]}
+        if west:
+            cum2 = [0.0] * len(zones)
+            for i, day in enumerate(days):
+                for k, v, _t in day["z"]:
+                    cum2[k] += v
+                if all(cum2[k] >= 0.98 * t for k, t in west.items()):
+                    west_day = i
+                    break
+
     return {
         "title": title, "zones": zones, "days": days, "stage": stage_idx, "stageNames": STAGE_NAMES,
-        "loose": LOOSE_SOIL_FACTOR, "model": model, "site": site, "slabDay": slab_day,
+        "loose": LOOSE_SOIL_FACTOR, "model": model, "site": site, "slabDay": slab_day, "westDay": west_day,
     }
 
 
@@ -223,7 +238,7 @@ canvas#gl{display:block}
 <div id="tl">
   <button id="play" title="播放／暫停（空白鍵）">▶</button>
   <div id="tlMid"><div id="phases"></div><canvas id="chart"></canvas><input type="range" id="day" min="0" value="0"></div>
-  <select id="speed" title="播放速度"><option value="1">1天/秒</option><option value="3" selected>3天/秒</option><option value="7">7天/秒</option><option value="20">20天/秒</option></select>
+  <select id="speed" title="播放速度"><option value="0.125">每天 8 秒</option><option value="0.25" selected>每天 4 秒</option><option value="0.5">每天 2 秒</option><option value="1">每天 1 秒</option><option value="4">快轉</option></select>
   <div id="dateLbl">–</div>
 </div>
 <div id="sheet" class="card"></div>
@@ -272,6 +287,7 @@ for(let d=0;d<ND;d++){
   for(const [k,v,t] of DAYS[d].z){cum[d*NZ+k]+=v;ctr[d*NZ+k]+=t;dly[d*NZ+k]=v;dtr[d*NZ+k]=t;if(v>0)lastDig[d*NZ+k]=d;}
   cT[d]=(d?cT[d-1]:0)+DAYS[d].t;cF[d]=(d?cF[d-1]:0)+DAYS[d].f;cV[d]=(d?cV[d-1]:0)+DAYS[d].v;}
 const depthOf=(d,k)=>(Z[k].a>0&&tot[k]>0)?Math.min(cum[d*NZ+k],tot[k])/Z[k].a:0;
+const curDep=new Float32Array(NZ),cd=k=>curDep[k];
 const planDepth=k=>(Z[k].a>0&&tot[k]>0)?tot[k]/Z[k].a:0;
 // ---- 狀態（規則同 2D 地圖 zones.zone_progress_style），配色改成粉彩 ----
 const C_DONE=[95,211,164],C_RUN=[255,159,110],C_NONE=[226,230,236],C_NA=[208,213,221];
@@ -288,7 +304,10 @@ function status(k,cv,s){const z=Z[k],b=band(k,s);
 function heat(t){const st=[[0,[226,230,236]],[0.33,[122,167,255]],[0.66,[255,209,102]],[1,[95,211,164]]];
   for(let i=1;i<st.length;i++)if(t<=st[i][0]){const a=st[i-1],b=st[i],u=(t-a[0])/(b[0]-a[0]);return a[1].map((v,j)=>v+(b[1][j]-v)*u);}return st[st.length-1][1];}
 function layerIdx(k,cv){const z=Z[k];let last=-1;for(let s=0;s<5;s++){const li=z.li[s];if(li<0)continue;const b0=li>0?z.th[li-1]:0;if(cv>b0+0.01)last=s;}return last;}
-let MODE='prog',STAGE=(D.stage===null||D.stage===undefined)?null:D.stage,DAY=ND-1,ZEX=1.5,SEL=-1,STALL=7,PANEL=null;
+let T=ND-0.0001,MODE='prog',STAGE=(D.stage===null||D.stage===undefined)?null:D.stage,DAY=ND-1,ZEX=1.5,SEL=-1,STALL=7,PANEL=null;
+// 播放時坑深在前一天與當天之間平滑過渡（frac＝當天已過的比例）
+function updateDepth(frac){const e0=Math.min(1,Math.max(0,frac/0.85)),e=e0*e0*(3-2*e0);
+  for(let k=0;k<NZ;k++){const a=DAY>0?depthOf(DAY-1,k):0,b=depthOf(DAY,k);curDep[k]=a+(b-a)*e;}}
 function zoneColor(k){const cv=cum[DAY*NZ+k];
   if(MODE==='heat')return tot[k]>0?heat(Math.min(cv/tot[k],1)):C_NA;
   if(MODE==='layer'){const l=layerIdx(k,cv);return l<0?C_NONE:C_LAYER[l];}
@@ -338,7 +357,7 @@ const tgeo=new THREE.BufferGeometry();tgeo.setAttribute('position',new THREE.Buf
 const terrain=new THREE.Mesh(tgeo,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1}));terrain.receiveShadow=true;terrain.castShadow=true;scene.add(terrain);
 const PAD=[214,242,235];
 const strata=d=>d<1?[238,220,190]:d<3?[232,207,168]:d<6?[222,200,170]:[205,200,192];
-function updateTerrain(){const dep=Z.map((z,k)=>depthOf(DAY,k)),zc=Z.map((z,k)=>zoneColor(k));
+function updateTerrain(){const dep=Z.map((z,k)=>cd(k)),zc=Z.map((z,k)=>zoneColor(k));
   for(let n=0;n<NV;n++){const k=zi[n];hts[n]=k>=0?-dep[k]*ZEX:0;pos[n*3+1]=hts[n];}
   for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){const n=j*(nx+1)+i,k=zi[n];let hm=0;
     if(i>0)hm=Math.max(hm,Math.abs(hts[n-1]-hts[n]));if(i<nx)hm=Math.max(hm,Math.abs(hts[n+1]-hts[n]));
@@ -368,7 +387,7 @@ function updateTerrain(){const dep=Z.map((z,k)=>depthOf(DAY,k)),zc=Z.map((z,k)=>
 // ---- 分區邊線（白色細縫，像磚塊拼接）、標籤 ----
 const outlinePos=new Float32Array(NZ*8*3);
 const outline=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.BufferAttribute(outlinePos,3)),new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.95}));scene.add(outline);
-function updateOutline(){Z.forEach((z,k)=>{const y=-depthOf(DAY,k)*ZEX+0.04,a=WX(z.x0),b=WX(z.x1),c=WZ(z.y0),d=WZ(z.y1);
+function updateOutline(){Z.forEach((z,k)=>{const y=-cd(k)*ZEX+0.04,a=WX(z.x0),b=WX(z.x1),c=WZ(z.y0),d=WZ(z.y1);
   const p=[a,c,b,c,b,c,b,d,b,d,a,d,a,d,a,c];for(let s=0;s<8;s++){outlinePos[(k*8+s)*3]=p[s*2];outlinePos[(k*8+s)*3+1]=y;outlinePos[(k*8+s)*3+2]=p[s*2+1];}});
   outline.geometry.attributes.position.needsUpdate=true;outline.geometry.computeBoundingSphere();}
 function rr(g,x,y,w,h,r){g.beginPath();g.moveTo(x+r,y);g.lineTo(x+w-r,y);g.quadraticCurveTo(x+w,y,x+w,y+r);g.lineTo(x+w,y+h-r);g.quadraticCurveTo(x+w,y+h,x+w-r,y+h);g.lineTo(x+r,y+h);g.quadraticCurveTo(x,y+h,x,y+h-r);g.lineTo(x,y+r);g.quadraticCurveTo(x,y,x+r,y);g.closePath();}
@@ -387,7 +406,7 @@ function card(lines,o={}){// 白色小招牌 sprite
   sp.scale.set(sc*cv.width/cv.height,sc,1);sp.center.set(0.5,0);sp.renderOrder=12;return sp;}
 const labels=new THREE.Group();scene.add(labels);
 const labelSp=Z.map(z=>{const s=card([z.c],{fs:26,scale:size*0.0105});labels.add(s);return s;});
-function updateLabels(){Z.forEach((z,k)=>labelSp[k].position.set(WX((z.x0+z.x1)/2),-depthOf(DAY,k)*ZEX+0.5,WZ((z.y0+z.y1)/2)));}
+function updateLabels(){Z.forEach((z,k)=>labelSp[k].position.set(WX((z.x0+z.x1)/2),-cd(k)*ZEX+0.5,WZ((z.y0+z.y1)/2)));}
 const ghost=new THREE.Group();scene.add(ghost);ghost.visible=false;
 function buildGhost(){ghost.clear();const m=new THREE.LineDashedMaterial({color:0x4b6bfb,dashSize:0.8,gapSize:0.6,transparent:true,opacity:0.55});
   Z.forEach((z,k)=>{const pd=planDepth(k);if(pd<=0)return;const l=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(z.x1-z.x0,pd*ZEX,z.y1-z.y0)),m);
@@ -396,7 +415,7 @@ function buildGhost(){ghost.clear();const m=new THREE.LineDashedMaterial({color:
 const selBox=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)),new THREE.LineBasicMaterial({color:0x4b6bfb,depthTest:false,transparent:true}));selBox.renderOrder=20;selBox.visible=false;scene.add(selBox);
 const selFill=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicMaterial({color:0x4b6bfb,transparent:true,opacity:0.1,depthWrite:false}));selFill.visible=false;scene.add(selFill);
 const hovBox=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)),new THREE.LineBasicMaterial({color:0x1d2433,depthTest:false,transparent:true,opacity:0.35}));hovBox.renderOrder=19;hovBox.visible=false;scene.add(hovBox);
-function placeBox(b,k){if(k<0){b.visible=false;return;}const z=Z[k],d=Math.max(depthOf(DAY,k)*ZEX,0.3),top=1.2;
+function placeBox(b,k){if(k<0){b.visible=false;return;}const z=Z[k],d=Math.max(cd(k)*ZEX,0.3),top=1.2;
   b.scale.set(z.x1-z.x0,d+top,z.y1-z.y0);b.position.set(WX((z.x0+z.x1)/2),(top-d)/2,WZ((z.y0+z.y1)/2));b.visible=true;}
 // ---- 安全支撐／中間柱／吊車 ----
 const M=D.model,strutMesh=[],tmp=new THREE.Object3D();let kpMesh=null;const craneGrp=new THREE.Group();scene.add(craneGrp);craneGrp.visible=false;
@@ -410,7 +429,7 @@ if(M){for(let lv=0;lv<3;lv++){const list=M.segs.filter(s=>s[8]===lv);
     const ring=new THREE.Mesh(new THREE.RingGeometry(Math.max(r-0.3,0.1),r,96),new THREE.MeshBasicMaterial({color:0xffb020,transparent:true,opacity:0.6,side:THREE.DoubleSide,depthWrite:false}));ring.rotation.x=-Math.PI/2;ring.position.y=0.3;g.add(ring);
     const disk=new THREE.Mesh(new THREE.CircleGeometry(r,96),new THREE.MeshBasicMaterial({color:0xffc53d,transparent:true,opacity:0.08,side:THREE.DoubleSide,depthWrite:false}));disk.rotation.x=-Math.PI/2;disk.position.y=0.25;g.add(disk);craneGrp.add(g);});}
 const strutCount=[0,0,0];
-function updateModel(){if(!M)return;const dep=Z.map((z,k)=>depthOf(DAY,k));
+function updateModel(){if(!M)return;const dep=Z.map((z,k)=>cd(k));
   strutMesh.forEach((im,lv)=>{let c=0;im.userData.list.forEach((s,i)=>{const [x,y,ang,len,w,dt,db,k,_l,thr]=s,on=dep[k]>=thr;
     tmp.position.set(WX(x),-(dt+db)/2*ZEX,WZ(y));tmp.rotation.set(0,ang,0);tmp.scale.set(on?len:1e-4,on?Math.max(db-dt,0.3)*ZEX:1e-4,on?Math.max(w,0.4):1e-4);
     tmp.updateMatrix();im.setMatrixAt(i,tmp.matrix);if(on)c++;});im.instanceMatrix.needsUpdate=true;strutCount[lv]=c;});
@@ -427,6 +446,10 @@ if(S){try{
   siteGrp.add(at(box(hw,3.6,hd,0xf2a07b),hx0,hx1,hy0,hy1,1.8));siteGrp.add(at(box(hw-0.4,0.25,hd-0.4,0xffffff),hx0,hx1,hy0,hy1,3.75));
   siteGrp.add(at(box(hw*0.96,3.4,hd*0.96,0xf6b08f),hx0,hx1,hy0,hy1,5.6));siteGrp.add(at(box(hw+0.6,0.5,hd+0.6,0xfdfdfd),hx0,hx1,hy0,hy1,7.5));
   const winM=MAT(0x9fd8f0,{r:0.3});for(let f=0;f<2;f++)for(let i=1;i<6;i++){const w=box(hw/9,1.3,0.12,winM);w.position.set(WX(hx0+hw*i/6),1.9+f*3.8,WZ(hy0)+0.03);w.castShadow=false;siteGrp.add(w);}
+  {const cw=3.6,cz0=hy0+hd*0.15,cz1=hy1-hd*0.15,chh=3.6;
+   siteGrp.add(at(box(cw,0.3,cz1-cz0,0xe8ecf1),hx0-cw,hx0,cz0,cz1,chh));
+   const hm=MAT(0x5d6672,{r:0.5,m:0.4});for(let i=0;i<4;i++){const zc=cz0+(cz1-cz0)*(0.06+0.88*i/3);
+     const fl=box(0.4,chh,0.1,hm),wb=box(0.1,chh,0.4,hm);fl.position.set(WX(hx0-cw+0.35),chh/2,WZ(zc));wb.position.set(WX(hx0-cw+0.35),chh/2,WZ(zc));siteGrp.add(fl);siteGrp.add(wb);}}
   signAt(['歷史建物','保留・不開挖'],(hx0+hx1)/2,(hy0+hy1)/2,11,siteGrp,{bar:'#f2a07b'});
   // 洗車台：淺藍底＋薄荷綠棚架
   const [wx0,wx1,wy0,wy1]=S.wash;WASH=[(wx0+wx1)/2,(wy0+wy1)/2];siteGrp.add(at(box(wx1-wx0,0.3,wy1-wy0,0x9fd8f0,{r:0.4}),wx0,wx1,wy0,wy1,0.15));
@@ -459,7 +482,7 @@ const flowGrp=new THREE.Group();scene.add(flowGrp);
 const dotGeo=new THREE.SphereGeometry(0.42,10,8);
 let flows=[],trucks=[],diggers=[];
 function makeTruck(color){const g=new THREE.Group();const bed=box(4.2,1.5,2.3,color);bed.position.set(-0.9,1.35,0);g.add(bed);
-  const soil=box(3.8,0.5,2.0,0xc9a274);soil.position.set(-0.9,2.2,0);g.add(soil);g.userData.soil=soil;const cab=box(1.8,1.9,2.3,0xffffff);cab.position.set(2.1,1.55,0);g.add(cab);
+  const soil=box(3.8,0.5,2.0,0xc9a274);soil.position.set(-0.9,2.2,0);g.add(soil);g.userData.soil=soil;g.userData.bed=bed;bed.material=bed.material.clone();const cab=box(1.8,1.9,2.3,0xffffff);cab.position.set(2.1,1.55,0);g.add(cab);
   const ws=box(0.08,0.8,1.9,0x9fd8f0);ws.position.set(3.02,1.9,0);ws.castShadow=false;g.add(ws);
   const wm=MAT(0x3a4252);[[-2.2,1.1],[-2.2,-1.1],[0.2,1.1],[0.2,-1.1],[2.1,1.1],[2.1,-1.1]].forEach(([x,z])=>{const w=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.5,0.4,12),wm);w.rotation.x=Math.PI/2;w.position.set(x,0.5,z);g.add(w);});return g;}
 function makeDigger(){const g=new THREE.Group();const tr=box(4,0.9,3.2,0x4a5263);tr.position.y=0.45;g.add(tr);const bd=box(3,1.6,2.6,0xffc53d);bd.position.y=1.7;g.add(bd);
@@ -471,14 +494,14 @@ const TRUCK_COLS=[0xff8f6b,0x7aa7ff,0x5fd3a4,0xb08cff,0xffc53d];
 // 第一挖：門外馬路左轉進場 → 西側便道往南 → 最南側車道往東 →（繞歷建走開挖區鐵板 或 走到 F16 繞一圈）
 //        → 土堆南側車道往西、停在土堆旁裝土 → 地磅 → 洗車台 → 出大門右轉往北
 // 二挖起：進場上北側構台（經保留通行段）→ 構台上長臂怪手裝土 → 南北向構台②往南 → 南側構台往西 → 下坡 → 地磅 → 洗車台 → 出場
-let RT=null;const p1Grp=new THREE.Group(),moundGrp=new THREE.Group();scene.add(p1Grp);scene.add(moundGrp);
+let RT=null;const p1Grp=new THREE.Group(),p1aGrp=new THREE.Group(),moundGrp=new THREE.Group();scene.add(p1Grp);scene.add(p1aGrp);scene.add(moundGrp);
 let longArm=null,moundDig=null;
 if(S&&S.gantry&&S.x_w!==undefined){try{
   const G=S.gantry;
   RT={roadX:WX(S.road_x),gZ:WZ(S.gate[1]),zIn:WZ(S.lane_in),zOut:WZ(S.lane_out),xW:WX(S.x_w),zW:WZ(S.y_w),zE:WZ(S.y_e),
     rgX0:WX(S.ring[0]),rgX1:WX(S.ring[1]),rgZ0:WZ(S.ring[3]),xF:WX(S.x_f),xU:WX(S.x_u),xLoad:WX(S.x_load),
     xJog:WX(G.jog_x),zN:WZ(G.n_y),zS:WZ(G.s_y),xD0:WX(G.deck_x0),xNS:WX(G.ns_x),xLG:WX(G.load_x),zEx:WZ(G.ex_y),DT:G.deck_top||1.2,RL:G.ramp_len||12,
-    wcx:WX((S.weigh[0]+S.weigh[1])/2),wsx:WX((S.wash[0]+S.wash[1])/2)};
+    wcx:WX((S.weigh[0]+S.weigh[1])/2),wsx:WX((S.wash[0]+S.wash[1])/2),xL1:WX(S.mound[0])+6};
   const R=RT;
   // 地面車道（進場／出場、西側便道、最南側車道）
   const lane=(x0,z0,x1,z1,w,c,grp,h=0.08)=>{const l=Math.hypot(x1-x0,z1-z0)+w*0.5,m=box(l,h,w,c,{r:1});m.castShadow=false;m.position.set((x0+x1)/2,h/2,(z0+z1)/2);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);grp.add(m);return m;};
@@ -486,8 +509,9 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
   lane(R.roadX,R.zIn,R.xW,R.zIn,6.5,LC,siteGrp);lane(R.roadX,R.zOut,R.xJog,R.zOut,6.5,LC,siteGrp);
   lane(R.xW,R.zIn,R.xW,R.zE,6,LC,p1Grp);lane(R.xW,R.zE,R.xF,R.zE,6,LC,p1Grp);lane(R.xF,R.zE,R.xF,R.zW,6,LC,p1Grp);lane(R.xF,R.zW,R.xJog,R.zW,6,LC,p1Grp);lane(R.xJog,R.zW,R.xJog,R.zOut,6,LC,p1Grp);
   // 鋪鐵板便道：繞歷建（走開挖區）
-  const PL=0xb9c3cf;[[R.rgX0,R.zW,R.rgX0,R.rgZ0],[R.rgX0,R.rgZ0,R.rgX1,R.rgZ0],[R.rgX1,R.rgZ0,R.rgX1,R.zW],[R.rgX1,R.zW,R.xU,R.zW],[R.xU,R.zW,R.xU,R.zE],[R.rgX0,R.zE,R.rgX0,R.zW],[R.rgX1,R.zE,R.rgX1,R.zW]]
-    .forEach(a=>lane(...a,6.4,PL,p1Grp,0.6));
+  // 繞歷建的鐵板（走開挖區）：西側往北 → 北側往東 → 東側往南 → 土堆旁；歷建西側出完後收掉
+  const PL=0xb9c3cf;[[R.rgX0,R.zE,R.rgX0,R.rgZ0],[R.rgX0,R.rgZ0,R.rgX1,R.rgZ0],[R.rgX1,R.rgZ0,R.rgX1,R.zW],[R.rgX1,R.zW,R.xL1+3,R.zW]]
+    .forEach(a=>lane(...a,6.4,PL,p1aGrp,0.6));
   // 構台出入：地面鐵板＋坡道（二挖起）
   lane(R.xW,R.zIn,R.xW,R.zN,6.4,PL,gantryGrp,0.6);lane(R.xW,R.zN,R.xD0-R.RL,R.zN,6.4,PL,gantryGrp,0.6);lane(R.xD0-R.RL,R.zS,R.xJog,R.zS,6.4,PL,gantryGrp,0.6);lane(R.xJog,R.zS,R.xJog,R.zOut,6,LC,gantryGrp);
   [R.zN,R.zS].forEach(zc=>{const ang=Math.atan2(R.DT-0.5,R.RL),len=Math.hypot(R.RL,R.DT-0.5),m=box(len,0.4,6.4,PL);m.position.set(R.xD0-R.RL/2,(R.DT+0.5)/2-0.1,zc);m.rotation.z=ang;gantryGrp.add(m);});
@@ -501,9 +525,9 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
 function routeNodes(variant,p2,fda){const R=RT,N=[],add=(x,z,y=0.6,st=0,ld=0)=>N.push({x,z,y,st,ld});const YD=R.DT+0.05;
   if(fda){add(R.roadX+2,R.gZ+70);add(R.roadX+2,R.zIn+4);add(R.roadX+4,R.zIn);}else{add(R.roadX-2,R.gZ-70);add(R.roadX-2,R.zIn-5);add(R.roadX+1.5,R.zIn);}add(R.xW,R.zIn);
   if(!p2){add(R.xW,R.zE);
-    if(variant===0){add(R.rgX0,R.zE);add(R.rgX0,R.rgZ0);add(R.rgX1,R.rgZ0);add(R.rgX1,R.zE);add(R.xU,R.zE);add(R.xU,R.zW);}
-    else{add(R.xF,R.zE);add(R.xF,R.zW);}
-    add(R.xLoad,R.zW,0.6,0.1,1);add(R.xJog,R.zW);add(R.xJog,R.zOut);}
+    if(variant===0){add(R.rgX0,R.zE);add(R.rgX0,R.rgZ0);add(R.rgX1,R.rgZ0);add(R.rgX1,R.zW);add(R.xL1,R.zW,0.6,0.1,1);}  // 繞歷建 → 往東迴轉、停土堆旁裝土
+    else{add(R.xF,R.zE);add(R.xF,R.zW);add(R.xLoad,R.zW,0.6,0.1,1);}                                        // 走到 F16 迴轉 → 土堆旁裝土
+    add(R.xJog,R.zW);add(R.xJog,R.zOut);}
   else{add(R.xW,R.zN);add(R.xD0-R.RL,R.zN);add(R.xD0,R.zN,YD);add(R.xLG,R.zN,YD,0.1,1);add(R.xNS,R.zN,YD);add(R.xNS,R.zS,YD);add(R.xD0,R.zS,YD);add(R.xD0-R.RL,R.zS);add(R.xJog,R.zS);add(R.xJog,R.zOut);}
   add(R.wcx+9,R.zOut);add(R.wcx,R.zOut,0.6,0.08);add(R.wsx,R.zOut,0.6,0.06);
   if(fda){add(R.roadX+3,R.zOut);add(R.roadX-2,R.zOut+4);add(R.roadX-2,R.gZ+70);}else{add(R.roadX+2,R.zOut);add(R.roadX+2,R.gZ-70);}
@@ -516,37 +540,57 @@ function posOn(P,u){const mv=1-P.D;let t=0,s0=0,sd=null;
   for(const st of P.stops){const tm=(st.s-s0)/P.tot*mv;if(u<t+tm){sd=s0+(u-t)/tm*(st.s-s0);break;}t+=tm;if(u<t+st.f){sd=st.s;break;}t+=st.f;s0=st.s;}
   if(sd===null){const tm=(P.tot-s0)/P.tot*mv;sd=s0+Math.min(1,(u-t)/(tm||1))*(P.tot-s0);}
   const a=ptAt(P,sd),b1=ptAt(P,sd-3),b2=ptAt(P,sd+3);return {x:a.x,z:a.z,y:a.y,dx:b2.x-b1.x,dz:b2.z-b1.z,sd};}
-const isP2=()=>D.slabDay!==null&&DAY>=D.slabDay;
-function buildFlow(){flowGrp.clear();flows=[];trucks=[];diggers=[];
-  const p2=isP2();p1Grp.visible=!p2&&$('lySite').checked;moundGrp.visible=!p2;
-  const day=DAYS[DAY],trips=day.t+day.f;
-  // 當天有出土的分區：放小怪手（最多 3 區）
-  const act=[];for(let k=0;k<NZ;k++)if(dly[DAY*NZ+k]>0)act.push(k);act.sort((a,b)=>dly[DAY*NZ+b]-dly[DAY*NZ+a]);
-  act.slice(0,3).forEach((k,ai)=>{const z=Z[k],dg=makeDigger();dg.scale.setScalar(0.9);dg.position.set(WX((z.x0+z.x1)/2-2),-depthOf(DAY,k)*ZEX,WZ((z.y0+z.y1)/2));dg.rotation.y=ai*1.3;dg.userData.ph=ai;flowGrp.add(dg);diggers.push(dg);});
-  if(RT){// 裝土怪手：第一挖站在土堆上；二挖起站在北側構台（長臂）
-    const dg=makeDigger();if(p2){dg.scale.set(1.15,1.15,1.15);dg.position.set(RT.xLG,RT.DT+0.25,RT.zEx);dg.userData.arm.scale.set(1.6,1,1);}
-    else{const [mx0,mx1,my0,my1]=S.mound;dg.position.set(RT.xLoad,(S.mound_h||5)*0.55,WZ(my0+(my1-my0)*0.3));}
-    dg.rotation.y=Math.PI/2;dg.userData.ph=7;flowGrp.add(dg);diggers.push(dg);}
-  if(!RT||trips<=0)return;
-  // 台北港：左轉進場、右轉出場（第1挖分繞歷建／F16 兩種）；FDA：右轉進場、左轉出場（藍色）
-  const defs=(p2?[[0,0,0xff8f6b]]:[[0,0,0xff8f6b],[1,0,0xb08cff]]).concat(day.f>0?[[0,1,0x4b6bfb]]:[]);
-  const routes=defs.map(([v,fda,c],i)=>{const P=routeNodes(v,p2,!!fda);P.fda=!!fda;
-    const cp=new THREE.CurvePath();for(let j=1;j<P.N.length;j++){const a=P.N[j-1],b=P.N[j];cp.add(new THREE.LineCurve3(new THREE.Vector3(a.x,a.y+0.25,a.z),new THREE.Vector3(b.x,b.y+0.25,b.z)));}
-    const col=new THREE.Color(c);const tube=new THREE.Mesh(new THREE.TubeGeometry(cp,Math.round(P.tot/1.5),0.3,6,false),new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.42,depthWrite:false}));tube.renderOrder=5;flowGrp.add(tube);
-    const dots=[];const nd=Math.round(P.tot/14);for(let k=0;k<nd;k++){const m=new THREE.Mesh(dotGeo,new THREE.MeshBasicMaterial({color:col}));m.userData.o=k/nd;flowGrp.add(m);dots.push(m);}
-    flows.push({P,dots});return P;});
-  const n=Math.max(1,Math.min(14,Math.round(trips/3))),nF=day.f>0?Math.max(1,Math.round(n*day.f/trips)):0,nT=day.t>0?Math.max(1,n-nF):0;
-  const tpR=routes.filter(r=>!r.fda),fdR=routes.find(r=>r.fda);
-  for(let i=0;i<nT+nF;i++){const fda=i>=nT,P=fda?fdR:tpR[i%tpR.length],m=fda?nF:nT,j=fda?i-nT:i;
-    const t=makeTruck(fda?0x4b6bfb:TRUCK_COLS[i%TRUCK_COLS.length]);t.scale.setScalar(0.85);t.userData.P=P;t.userData.o=j/m+(fda?0.5/m:0);flowGrp.add(t);trucks.push(t);}}
+// 階段：0＝第1挖前段（繞歷建鐵板）、1＝歷建西側出完（走到 F16 迴轉）、2＝第1挖完成（走構台）
+function phaseAt(d){if(D.slabDay!==null&&d>=D.slabDay)return 2;if(D.westDay!==null&&D.westDay!==undefined&&d>=D.westDay)return 1;return 0;}
+const isP2=()=>phaseAt(DAY)===2;
+const PHASE_TXT=['第1挖：繞歷建鐵板 → 土堆旁裝土','第1挖：歷建西側已出完，走到 F16 迴轉 → 土堆旁裝土','二挖起：走構台，構台上長臂怪手裝土'];
+const plantGrp=new THREE.Group(),digGrp=new THREE.Group();scene.add(plantGrp);scene.add(digGrp);
+const NSLOT=14;let curPhase=-1,fdGrp=null,routeTP=null,routeFD=null,screen=null,falls=[],arcs=[];
+const soilM=MAT(0xc9a274),soilGeo=new THREE.BoxGeometry(0.7,0.55,0.7);
+function routeMesh(P,col,grp){const cp=new THREE.CurvePath();for(let j=1;j<P.N.length;j++){const a=P.N[j-1],b=P.N[j];cp.add(new THREE.LineCurve3(new THREE.Vector3(a.x,a.y+0.25,a.z),new THREE.Vector3(b.x,b.y+0.25,b.z)));}
+  const c=new THREE.Color(col),tube=new THREE.Mesh(new THREE.TubeGeometry(cp,Math.max(60,Math.round(P.tot/1.5)),0.3,6,false),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.42,depthWrite:false}));tube.renderOrder=5;grp.add(tube);
+  const dots=[],nd=Math.round(P.tot/14);for(let k=0;k<nd;k++){const m=new THREE.Mesh(dotGeo,new THREE.MeshBasicMaterial({color:c}));m.userData.o=k/nd;grp.add(m);dots.push(m);}flows.push({P,dots});}
+function makeScreener(){// 旋轉篩斗怪手：把盤上來的土篩過再倒到土堆
+  const g=makeDigger(),arm=g.userData.arm;arm.children[arm.children.length-1].visible=false;
+  const drum=new THREE.Group();drum.position.set(3.9,-1.0,0);const cyl=new THREE.Mesh(new THREE.CylinderGeometry(1.0,1.0,1.8,12,1,true),new THREE.MeshStandardMaterial({color:0x4a5263,roughness:0.6,wireframe:false,side:THREE.DoubleSide}));
+  cyl.rotation.x=Math.PI/2;drum.add(cyl);const ribs=new THREE.Mesh(new THREE.CylinderGeometry(1.03,1.03,1.85,12,4,true),new THREE.MeshBasicMaterial({color:0xffc53d,wireframe:true}));ribs.rotation.x=Math.PI/2;drum.add(ribs);
+  arm.add(drum);g.userData.drum=drum;return g;}
+function buildPhase(){const p=phaseAt(DAY);if(p===curPhase)return;curPhase=p;
+  flowGrp.clear();plantGrp.clear();flows=[];trucks=[];falls=[];screen=null;
+  const sv=$('lySite').checked;p1aGrp.visible=p===0&&sv;p1Grp.visible=p<2&&sv;moundGrp.visible=p<2;
+  if(!RT)return;
+  const v=p===0?0:1,p2=p===2;
+  routeTP=routeNodes(v,p2,false);routeFD=routeNodes(v,p2,true);
+  routeMesh(routeTP,0xff8f6b,flowGrp);fdGrp=new THREE.Group();flowGrp.add(fdGrp);routeMesh(routeFD,0x4b6bfb,fdGrp);
+  for(let k=0;k<NSLOT;k++){const t=makeTruck(TRUCK_COLS[k%TRUCK_COLS.length]);t.scale.setScalar(0.85);t.userData.o=k/NSLOT;t.userData.col=TRUCK_COLS[k%TRUCK_COLS.length];t.visible=false;flowGrp.add(t);trucks.push(t);}
+  // 裝土怪手＋旋轉篩斗
+  if(p2){const dg=makeDigger();dg.scale.setScalar(1.15);dg.position.set(RT.xLG,RT.DT+0.25,RT.zEx);dg.userData.arm.scale.set(1.6,1,1);dg.rotation.y=Math.PI/2;dg.userData.ph=7;plantGrp.add(dg);}
+  else{const [mx0,mx1,my0,my1]=S.mound,mh=S.mound_h||5,lx=p===0?RT.xL1+2:RT.xLoad;
+    const ld=makeDigger();ld.position.set(lx,mh*0.45,WZ(my0+(my1-my0)*0.28));ld.rotation.y=-Math.PI/2;ld.userData.ph=7;plantGrp.add(ld);
+    screen=makeScreener();screen.position.set(WX(mx0)-4.5,0,WZ((my0+my1)/2+2));screen.rotation.y=0;screen.userData.ph=3;plantGrp.add(screen);
+    signAt(['旋轉篩斗','篩完倒到土堆'],mx0-6,(my0+my1)/2+6,9,plantGrp,{bar:'#ffc53d'});
+    for(let i=0;i<10;i++){const m=new THREE.Mesh(soilGeo,soilM);m.userData.o=i/10;plantGrp.add(m);falls.push(m);}}}
+function buildFlow(){buildPhase();const p=curPhase,day=DAYS[DAY],trips=day.t+day.f;
+  // 土車：14 個車位沿路線等距排開、一直在跑；當天車次決定有幾台出現（每 3 車畫 1 台）
+  const n=trips>0?Math.max(1,Math.min(NSLOT,Math.round(trips/3))):0,nF=day.f>0&&n?Math.max(1,Math.round(n*day.f/trips)):0;
+  const act=[];for(let k=0;k<NSLOT;k++)if(Math.floor((k+1)*n/NSLOT)>Math.floor(k*n/NSLOT))act.push(k);
+  trucks.forEach(t=>t.visible=false);
+  act.forEach((k,i)=>{const t=trucks[k];if(!t)return;const fda=i>=act.length-nF;t.visible=true;t.userData.P=fda?routeFD:routeTP;t.userData.bed.material.color.setHex(fda?0x4b6bfb:t.userData.col);});
+  if(fdGrp)fdGrp.visible=nF>0;
+  // 當天出土的分區：小怪手把土盤上來（第1挖送到旋轉篩斗）
+  digGrp.clear();diggers=[];arcs=[];
+  const az=[];for(let k=0;k<NZ;k++)if(dly[DAY*NZ+k]>0)az.push(k);az.sort((a,b)=>dly[DAY*NZ+b]-dly[DAY*NZ+a]);
+  az.slice(0,3).forEach((k,ai)=>{const z=Z[k],dg=makeDigger(),x=WX((z.x0+z.x1)/2-2),y=-cd(k)*ZEX,zz=WZ((z.y0+z.y1)/2);dg.scale.setScalar(0.9);dg.position.set(x,y,zz);dg.rotation.y=ai*1.3;dg.userData.ph=ai;dg.userData.k=k;digGrp.add(dg);diggers.push(dg);
+    if(screen&&p<2)for(let i=0;i<7;i++){const m=new THREE.Mesh(soilGeo,soilM);m.userData={o:i/7,from:dg};digGrp.add(m);arcs.push(m);}});
+  plantGrp.children.forEach(c=>{if(c.userData.arm)diggers.push(c);});}
 // ---- 異常標記（紅色浮動大頭針）----
 const pinGrp=new THREE.Group();scene.add(pinGrp);
 function buildPins(list){pinGrp.clear();list.slice(0,12).forEach(a=>{const z=Z[a.k],x=WX((z.x0+z.x1)/2),zz=WZ((z.y0+z.y1)/2),c=a.lv==='red'?0xef4b4b:0xf39a3d,cs=a.lv==='red'?'#ef4b4b':'#e08a25';
   const g=new THREE.Group();g.position.set(x,0,zz);const h=9;
   const ball=new THREE.Mesh(new THREE.SphereGeometry(1.05,16,12),MAT(c,{r:0.4}));ball.position.y=h;g.add(ball);
   const cone=new THREE.Mesh(new THREE.ConeGeometry(0.75,2.2,14),MAT(c,{r:0.4}));cone.rotation.x=Math.PI;cone.position.y=h-1.4;g.add(cone);
-  const line=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,h,6),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.5}));line.position.y=h/2-depthOf(DAY,a.k)*ZEX/2;line.scale.y=(h+depthOf(DAY,a.k)*ZEX)/h;g.add(line);
-  const ring=new THREE.Mesh(new THREE.RingGeometry(1.2,1.6,32),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.6,side:THREE.DoubleSide,depthWrite:false}));ring.rotation.x=-Math.PI/2;ring.position.y=-depthOf(DAY,a.k)*ZEX+0.1;g.add(ring);g.userData.ring=ring;
+  const line=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,h,6),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.5}));line.position.y=h/2-cd(a.k)*ZEX/2;line.scale.y=(h+cd(a.k)*ZEX)/h;g.add(line);
+  const ring=new THREE.Mesh(new THREE.RingGeometry(1.2,1.6,32),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.6,side:THREE.DoubleSide,depthWrite:false}));ring.rotation.x=-Math.PI/2;ring.position.y=-cd(a.k)*ZEX+0.1;g.add(ring);g.userData.ring=ring;
   const lb=card([Z[a.k].c+'　'+a.t],{fs:26,scale:size*0.011,fg:cs,dot:cs});lb.position.y=h+1.6;g.add(lb);g.userData.k=a.k;pinGrp.add(g);});}
 // ================= 互動 =================
 const ray=new THREE.Raycaster(),mp=new THREE.Vector2(),tip=$('tip');
@@ -559,7 +603,7 @@ renderer.domElement.addEventListener('pointerup',e=>{if(!downAt)return;const mv=
 renderer.domElement.addEventListener('pointermove',e=>{const k=pick(e);placeBox(hovBox,k===SEL?-1:k);
   if(k<0){tip.style.display='none';renderer.domElement.style.cursor='';return;}renderer.domElement.style.cursor='pointer';
   const cv=cum[DAY*NZ+k],st=status(k,cv,STAGE);
-  tip.innerHTML=`<b>${Z[k].c}</b>　<span style="color:${css(st.c.map(v=>v*0.7))}">● ${st.t}</span><br>已挖 ${fmt(cv)} / ${fmt(tot[k])} m³（實方）・深 ${depthOf(DAY,k).toFixed(1)} m`;
+  tip.innerHTML=`<b>${Z[k].c}</b>　<span style="color:${css(st.c.map(v=>v*0.7))}">● ${st.t}</span><br>已挖 ${fmt(cv)} / ${fmt(tot[k])} m³（實方）・深 ${cd(k).toFixed(1)} m`;
   const rc=wrap.getBoundingClientRect();tip.style.display='block';tip.style.left=Math.min(e.clientX-rc.left+14,rc.width-280)+'px';tip.style.top=(e.clientY-rc.top+14)+'px';});
 renderer.domElement.addEventListener('pointerleave',()=>{tip.style.display='none';hovBox.visible=false;});
 window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'&&e.target.type==='text')return;
@@ -568,7 +612,7 @@ window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'&&e.target.ty
 // 視角
 let camGoal=null;
 function camTo(p,t,zoom=1){camGoal={p:new THREE.Vector3(...p),t:new THREE.Vector3(...t),z:zoom};}
-function focusZone(k){const z=Z[k],x=WX((z.x0+z.x1)/2),zz=WZ((z.y0+z.y1)/2),y=-depthOf(DAY,k)*ZEX;camTo([x+size,y+size*0.95,zz+size*1.05],[x,y,zz],2.6);}
+function focusZone(k){const z=Z[k],x=WX((z.x0+z.x1)/2),zz=WZ((z.y0+z.y1)/2),y=-cd(k)*ZEX;camTo([x+size,y+size*0.95,zz+size*1.05],[x,y,zz],2.6);}
 const CAMS={iso:[ISO,[0,-2,0],1],top:[[0.01,size*2,0.3],[0,-2,0],1],w:[[-size*1.1,size*0.6,size*0.5],[-size*0.18,-2,0],1.7]};
 document.querySelectorAll('#bl [data-c]').forEach(b=>b.onclick=()=>camTo(...CAMS[b.dataset.c]));
 $('bRot').onclick=e=>{controls.autoRotate=!controls.autoRotate;controls.autoRotateSpeed=0.7;$('bRot').classList.toggle('on',controls.autoRotate);};
@@ -584,9 +628,9 @@ function legend(){const sw=c=>`<span class="sw" style="background:${css(c)}"></s
   else if(STAGE===null)h=sw(C_NONE)+'未開挖　'+C_OVR.map((c,i)=>sw(c)+(i+1)+'挖中').join('　')+'　'+sw(C_DONE)+'完成';
   else h=sw(C_NONE)+'尚未開始　'+sw(C_RUN)+'進行中　'+sw(C_DONE)+'已完成　'+sw(C_NA)+'無此階段';
   $('legend').innerHTML=h;}
-const LY={lyLabel:v=>labels.visible=v,lyFlow:v=>flowGrp.visible=v,lyPin:v=>pinGrp.visible=v,lyGhost:v=>ghost.visible=v,
+const LY={lyLabel:v=>labels.visible=v,lyFlow:v=>{flowGrp.visible=v;digGrp.visible=v;plantGrp.visible=v;},lyPin:v=>pinGrp.visible=v,lyGhost:v=>ghost.visible=v,
   lyS1:v=>strutMesh[0]&&(strutMesh[0].visible=v),lyS2:v=>strutMesh[1]&&(strutMesh[1].visible=v),lyS3:v=>strutMesh[2]&&(strutMesh[2].visible=v),
-  lyKp:v=>kpMesh&&(kpMesh.visible=v),lyCrane:v=>craneGrp.visible=v,lySite:v=>{siteGrp.visible=v;p1Grp.visible=v&&!isP2();},lyGantry:()=>gantryVis()};
+  lyKp:v=>kpMesh&&(kpMesh.visible=v),lyCrane:v=>craneGrp.visible=v,lySite:v=>{siteGrp.visible=v;p1Grp.visible=v&&curPhase<2;p1aGrp.visible=v&&curPhase===0;},lyGantry:()=>gantryVis()};
 function gantryVis(){gantryGrp.visible=$('lyGantry').checked&&D.slabDay!==null&&DAY>=D.slabDay;}
 Object.keys(LY).forEach(id=>{const el=$(id);LY[id](el.checked);el.addEventListener('change',()=>{LY[id](el.checked);if(id==='lyGantry')buildFlow();});});
 if(!M)['lyS1','lyS2','lyS3','lyKp','lyCrane'].forEach(id=>$(id).closest('label').style.display='none');
@@ -616,7 +660,7 @@ function renderZone(){const k=SEL;if(k<0)return;const z=Z[k],cv=cum[DAY*NZ+k],st
   showSheet(`<div class="sh-h"><div class="sh-ic" style="background:${icCol}">⛏️</div><div><div class="sh-t">${z.c} 分區</div><div class="sh-s" style="color:${dotCol}">● ${al?al.t+'・':''}${st.t}</div></div><button class="x">✕</button></div>
    <div class="kv"><span>預估總實方</span><b>${fmt(tot[k])} m³</b></div>
    <div class="kv"><span>累計實挖（實方）</span><b style="color:${dotCol}">${fmt(cv)} m³</b></div>
-   <div class="kv"><span>目前深度／預估深度</span><b>${depthOf(DAY,k).toFixed(2)} / ${planDepth(k).toFixed(2)} m</b></div>
+   <div class="kv"><span>目前深度／預估深度</span><b>${cd(k).toFixed(2)} / ${planDepth(k).toFixed(2)} m</b></div>
    <div class="kv"><span>累計車次</span><b>${fmt(ctr[DAY*NZ+k])} 台</b></div>
    <div class="kv"><span>最近出土</span><b>${ld>=0?DAYS[ld].d.slice(5).replace('-','/'):'–'}${ld===DAY?'（今天）':''}</b></div>
    <div class="fold">收合 ▴</div><div>
@@ -683,7 +727,7 @@ function renderHud(){const d=DAYS[DAY],s0=curStage(DAY),p=STAGE===null?(()=>{let
   const al=alerts(DAY),nr=al.filter(a=>a.lv==='red').length;
   $('chips').innerHTML=`<span class="chip">${STAGE===null?'整體進度':SN[STAGE]+' 進度'} <b>${(p*100).toFixed(1)}%</b></span><span class="chip">累計出土 <b>${fmt(cV[DAY])}</b> m³</span>
     <span class="chip">今日 <b>${d.t}</b> 車${d.f?'＋FDA '+d.f:''}</span><span class="chip amb">${s0<5?'推進中：'+SN[s0]:'開挖完成'}</span>${nr?`<span class="chip red">停滯 ${nr} 區</span>`:''}`;
-  $('nAlert').textContent=al.length;$('nAlert').style.display=al.length?'':'none';buildPins(al);
+  $('nAlert').textContent=al.length;$('eb').textContent+=' · '+(RT?PHASE_TXT[phaseAt(DAY)]:'');$('nAlert').style.display=al.length?'':'none';buildPins(al);
   const wkd='日一二三四五六'[new Date(d.d+'T00:00:00').getDay()];$('dateLbl').innerHTML=`${d.d}<small>週${wkd}・${DAY+1}/${ND} 天</small>`;
   $('phases').innerHTML=['開挖前',...SN].map((n,i)=>{const cls=i===0?'done':(i-1<s0?'done':i-1===s0?'now':'');return (i?'<span class="ar">→</span>':'')+`<span class="ph ${cls}"><i></i>${n}</span>`;}).join('');}
 const slider=$('day');slider.max=ND-1;slider.value=DAY;slider.oninput=e=>setDay(+e.target.value);
@@ -694,11 +738,13 @@ function drawChart(){const r=window.devicePixelRatio||1,w=chart.clientWidth,h=ch
   if(D.slabDay!==null){g.fillStyle='#4b6bfb';g.fillRect(D.slabDay*bw,0,1.5,h);}}
 chart.onclick=e=>{const rc=chart.getBoundingClientRect();setDay(Math.floor((e.clientX-rc.left)/rc.width*ND));};
 chart.onmousemove=e=>{const rc=chart.getBoundingClientRect(),i=Math.min(ND-1,Math.max(0,Math.floor((e.clientX-rc.left)/rc.width*ND))),d=DAYS[i];chart.title=`${d.d}　台北港 ${d.t}・FDA ${d.f} 車・${fmt(d.v)} m³`;};
-let playing=false,acc=0;
-function togglePlay(){playing=!playing;if(playing&&DAY>=ND-1)setDay(0);$('play').textContent=playing?'❚❚':'▶';}
+let playing=false,frameN=0;
+function togglePlay(){playing=!playing;if(playing&&T>=ND-0.01){DAY=-1;T=0;setDay(0,true);}if(!playing){T=DAY+0.9999;geomTick(1);}$('play').textContent=playing?'❚❚':'▶';}
 $('play').onclick=togglePlay;
-function setDay(d){d=Math.max(0,Math.min(ND-1,d|0));if(d===DAY)return;DAY=d;slider.value=d;refresh();}
-function refresh(geom){updateTerrain();updateOutline();updateLabels();updateModel();gantryVis();if(geom||!ghost.children.length)buildGhost();
+function setDay(d,keepT){d=Math.max(0,Math.min(ND-1,d|0));if(!keepT)T=d+(playing?0:0.9999);if(d===DAY)return;DAY=d;slider.value=d;refresh();}
+function geomTick(frac){updateDepth(frac);updateTerrain();updateOutline();updateLabels();updateModel();placeBox(selBox,SEL);placeBox(selFill,SEL);
+  diggers.forEach(g=>{if(g.userData.k!==undefined)g.position.y=-cd(g.userData.k)*ZEX;});}
+function refresh(geom){updateDepth(T-DAY);updateTerrain();updateOutline();updateLabels();updateModel();gantryVis();if(geom||!ghost.children.length)buildGhost();
   buildFlow();renderHud();placeBox(selBox,SEL);placeBox(selFill,SEL);drawChart();legend();
   if(PANEL==='zone')renderZone();else if(PANEL==='today')renderToday();else if(PANEL==='alert')renderAlerts();if(dash.classList.contains('show'))renderDash();}
 // ================= 迴圈 =================
@@ -707,14 +753,19 @@ window.addEventListener('resize',resize);
 refresh(true);resize();
 let last=performance.now();const tv=new THREE.Vector3(),tv2=new THREE.Vector3();
 (function loop(now){const dt=Math.min(0.1,(now-last)/1000);last=now;const sec=now/1000;
-  if(playing){acc+=dt*(+$('speed').value);if(acc>=1){const n=Math.floor(acc);acc-=n;if(DAY+n>=ND-1){setDay(ND-1);togglePlay();}else setDay(DAY+n);}}
+  if(playing){T+=dt*(+$('speed').value);if(T>=ND-0.0001){T=ND-0.0001;}const d=Math.floor(T);if(d!==DAY)setDay(d,true);
+    if((T-DAY)<0.95&&(frameN++&1)===0)geomTick(T-DAY);if(T>=ND-0.0001){geomTick(1);togglePlay();}}
   if(camGoal){camera.position.lerp(camGoal.p,0.09);controls.target.lerp(camGoal.t,0.09);camera.zoom+=(camGoal.z-camera.zoom)*0.09;camera.updateProjectionMatrix();
     if(camera.position.distanceTo(camGoal.p)<0.5&&Math.abs(camera.zoom-camGoal.z)<0.01)camGoal=null;}
   if(flowGrp.visible){const LOOP=34;
     flows.forEach(f=>f.dots.forEach(m=>{const q=ptAt(f.P,((m.userData.o+sec*6/f.P.tot)%1)*f.P.tot);m.position.set(q.x,q.y+0.3,q.z);}));
-    trucks.forEach(t=>{const d=t.userData,r=posOn(d.P,(d.o+sec/LOOP)%1);t.position.set(r.x,r.y-0.55,r.z);if(Math.abs(r.dx)+Math.abs(r.dz)>1e-6)t.rotation.y=Math.atan2(-r.dz,r.dx);
+    trucks.forEach(t=>{if(!t.visible||!t.userData.P)return;const d=t.userData,r=posOn(d.P,(d.o+sec/LOOP)%1);t.position.set(r.x,r.y-0.55,r.z);if(Math.abs(r.dx)+Math.abs(r.dz)>1e-6)t.rotation.y=Math.atan2(-r.dz,r.dx);
       t.userData.soil.visible=r.sd>=d.P.loadS-0.1;});
-    diggers.forEach(g=>{g.userData.arm.rotation.z=Math.sin(sec*1.6+g.userData.ph)*0.25;g.rotation.y+=Math.sin(sec*0.7+g.userData.ph)*0.004;});}
+    diggers.forEach(g=>{g.userData.arm.rotation.z=Math.sin(sec*1.6+g.userData.ph)*0.25;});
+    if(screen){const dr=screen.userData.drum;dr.rotation.z=sec*3;dr.getWorldPosition(tv);
+      falls.forEach(m=>{const u=(m.userData.o+sec*0.6)%1;m.position.set(tv.x+0.6+u*2.2,tv.y-0.6-u*(tv.y-2.2),tv.z+Math.sin(m.userData.o*20)*0.6);m.rotation.set(u*3,u*5,0);});
+      arcs.forEach(m=>{const f=m.userData.from;if(!f)return;const u=(m.userData.o+sec*0.35)%1,ax=f.position.x,ay=f.position.y+2,az=f.position.z,bx=tv.x,by=tv.y+0.8,bz=tv.z;
+        const h=Math.max(ay,by)+8;m.position.set(ax+(bx-ax)*u,(1-u)*(1-u)*ay+2*u*(1-u)*h+u*u*by,az+(bz-az)*u);m.rotation.set(u*4,u*6,0);});}}
   pinGrp.children.forEach((p,i)=>{p.position.y=Math.sin(sec*2+i)*0.4;const r=p.userData.ring;if(r){const s=1+((sec*0.8+i*0.3)%1)*1.6;r.scale.set(s,s,s);r.material.opacity=0.6*(1-((sec*0.8+i*0.3)%1));}});
   selBox.material.opacity=0.6+0.4*Math.sin(now/260);
   controls.update();renderer.render(scene,camera);requestAnimationFrame(loop);})(last);
