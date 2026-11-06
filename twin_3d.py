@@ -29,6 +29,29 @@ STRUT_PROGRESS = [
     ("2026-10-06", None),     # 開始施作（從最西側開始）
     ("2026-10-14", "A7"),     # 做到 A6 與 A7 中間（剛過歷建）
 ]
+# ---- 以下座標取自 Revit「假設工程 吊裝模擬」模型俯視圖（用模型裡 7 台吊車對位換算成圖資座標）----
+# 全區構台（第1挖完成後）：[x0, x1, y0, y1, 名稱]
+MODEL_DECKS = [
+    [-2694.0, -2608.3, -262.7, -248.7, "北側構台"],
+    [-2678.7, -2667.2, -287.6, -262.7, "南北向構台①"],
+    [-2636.4, -2624.2, -287.6, -262.8, "南北向構台②"],
+    [-2695.4, -2613.4, -297.6, -287.6, "南側構台"],
+]
+# 前段構台（L 形，FRONT_GANTRY_DONE 完成）：滯洪池B 東側南北向＋北側東西向（接到北側構台）
+MODEL_FRONT_DECKS = [
+    [-2749.2, -2733.3, -285.3, -248.6, "前段構台（西側南北向）"],
+    [-2749.2, -2694.0, -262.7, -248.7, "前段構台（北側）"],
+]
+# 工地圍籬（多邊形，依序連線）
+MODEL_FENCE = [(-2764.8, -249.2), (-2748.1, -237.7), (-2608.7, -237.8), (-2582.5, -291.3), (-2584.8, -299.8),
+               (-2593.8, -301.7), (-2613.6, -304.0), (-2727.0, -303.9), (-2778.4, -279.8)]
+# 地磅（歷建正南方、東西向）：[x0, x1, y0, y1]；出場車道就沿這條東西線往西 → 洗車台 → 大門
+MODEL_WEIGH = [-2729.0, -2710.9, -293.0, -289.7]
+# 第1挖進場：大門 → 西側車道往南 → 沿西南角斜圍籬內側 → 最南側車道（圍籬內約 2.7m）往東
+MODEL_P1_SOUTH_Y = -301.2
+MODEL_P1_BEND = [(-2741.6, -294.0), (-2726.2, -301.2)]
+# 工務所（綠色屋頂、三層樓，在南側圍籬外）：[x0, x1, y0, y1]
+MODEL_OFFICE = [[-2672.2, -2656.8, -312.0, -304.4], [-2656.9, -2635.4, -310.6, -304.6]]
 FRONT_GANTRY_DONE = "2026-10-14"   # 前段構台（滯洪池B東側南北向＋北側東西向，L 形）完成日
 
 
@@ -123,23 +146,24 @@ def build_twin_payload(logs, df_results, stage_idx, gl_off=0.0, title="CDC 工�
                     west_day = i
                     break
 
-    # 前段構台（L 形）：滯洪池B 東側一條南北向（土車由大門進來往北上構台）＋北側一條東西向接到北側構台
-    front = []
-    try:
-        bc = [z for z in zones if z["c"].startswith("滯BC")]
-        hist, G = site["hist"], site["gantry"]
-        bx1, ytop = max(z["x1"] for z in bc), max(z["y1"] for z in bc)
-        sx, sy = (hist[0] - bx1) / 220.0, (hist[3] - hist[2]) / 82.0      # 圖上像素 → 公尺
-        vx1, nyb, vyb = bx1 + 77 * sx, ytop - 62 * sy, hist[3] - 135 * sy
-        front = [[bx1, vx1, vyb, nyb, "前段構台（西側南北向）"], [bx1, G["deck_x0"], nyb, ytop, "前段構台（北側）"]]
-    except Exception:
-        front = []
+    # 構台位置改用 Revit 模型：覆蓋預設的構台設定，土車路線（北側／南北向②／南側）也跟著走模型位置
+    front = [list(d) for d in MODEL_FRONT_DECKS]
+    if site and site.get("gantry"):
+        g = dict(site["gantry"])
+        n, ns2, so = MODEL_DECKS[0], MODEL_DECKS[2], MODEL_DECKS[3]
+        g.update({"decks": [list(d) for d in MODEL_DECKS], "n_y": (n[2] + n[3]) / 2, "s_y": (so[2] + so[3]) / 2,
+                  "ns_x": (ns2[0] + ns2[1]) / 2, "deck_x0": so[0]})
+        # 覆工板與地面齊平（土車直接開上去，沒有坡道）
+        wx0, wx1, wy0, wy1 = MODEL_WEIGH
+        g.update({"deck_top": 0.15, "ramp_len": 0.0, "jog_x": max(g.get("jog_x", wx1 + 5), wx1 + 5)})
+        site = dict(site, gantry=g, weigh=list(MODEL_WEIGH), lane_out=(wy0 + wy1) / 2,
+                    y_e=MODEL_P1_SOUTH_Y, p1_bend=[list(p) for p in MODEL_P1_BEND])
     xmin = {z["c"]: z["x0"] for z in zones}
     west_x = min(z["x0"] for z in zones) - 1.0
     strut_plan = [[d, (xmin.get(c, west_x) if c else west_x)] for d, c in STRUT_PROGRESS]
 
     return {
-        "strutPlan": strut_plan, "frontGantry": FRONT_GANTRY_DONE, "frontDecks": front,
+        "strutPlan": strut_plan, "frontGantry": FRONT_GANTRY_DONE, "frontDecks": front, "fence": [list(p) for p in MODEL_FENCE], "office": MODEL_OFFICE,
         "title": title, "zones": zones, "days": days, "stage": stage_idx, "stageNames": STAGE_NAMES,
         "loose": LOOSE_SOIL_FACTOR, "model": model, "site": site, "slabDay": slab_day, "westDay": west_day,
     }
@@ -282,7 +306,7 @@ canvas#gl{display:block}
   <label><input type="checkbox" id="lyKp" checked><span class="sw" style="background:#8a94a6"></span>中間柱</label>
   <label><input type="checkbox" id="lyCrane"><span class="sw" style="background:#ffc53d"></span>吊車＋作業半徑</label>
   <label><input type="checkbox" id="lyGantry" checked>構台（前段 10/14 完成，全區第1挖後）</label>
-  <label><input type="checkbox" id="lySite" checked>歷建／大門／洗車台／地磅</label>
+  <label><input type="checkbox" id="lySite" checked>歷建／大門／洗車台／地磅／工務所</label>
   <h5>停滯判定：進行中超過 <b id="stallV">7</b> 天沒出土</h5><input type="range" id="stall" min="3" max="21" value="7">
   <h5>深度放大 <span id="zexV"></span></h5><input type="range" id="zex" min="1" max="5" step="0.25" value="1.5">
   <h5>找分區</h5><input type="text" id="find" list="zlist" placeholder="輸入代號，例如 D'12"><datalist id="zlist"></datalist>
@@ -396,15 +420,23 @@ function updateTerrain(){const dep=Z.map((z,k)=>cd(k)),zc=Z.map((z,k)=>zoneColor
  const sh=new THREE.Shape();sh.moveTo(-R,-R);sh.lineTo(R,-R);sh.lineTo(R,R);sh.lineTo(-R,R);sh.lineTo(-R,-R);
  const ho=new THREE.Path();ho.moveTo(hx0,-hz0);ho.lineTo(hx1,-hz0);ho.lineTo(hx1,-hz1);ho.lineTo(hx0,-hz1);ho.lineTo(hx0,-hz0);sh.holes.push(ho);
  const g=new THREE.Mesh(new THREE.ShapeGeometry(sh),MAT(0xf5f7f9,{r:1}));g.rotation.x=-Math.PI/2;g.position.y=-0.03;g.receiveShadow=true;scene.add(g);
- // 圍籬（工地圍牆，淺紫）
- const fw=W+2*pad,fh=H+2*pad,fx=WX(gx0+fw/2),fz=WZ(gy0+fh/2),fm=MAT(0x8f93ea,{r:0.8});
- [[fw,0.25,fx,fz-fh/2],[fw,0.25,fx,fz+fh/2],[0.25,fh,fx-fw/2,fz],[0.25,fh,fx+fw/2,fz]].forEach(([a,b,x,z])=>{const m=box(a,1.6,b,fm);m.position.set(x,0.8,z);scene.add(m);});}
+ // 圍籬（照 Revit 模型的工地外框；大門進出口留開口）
+ const fm=MAT(0x8f93ea,{r:0.8}),FP=D.fence&&D.fence.length>2?D.fence:null,ST=D.site;
+ const inGate=(x,y)=>ST&&x<ST.gate[0]+16&&y<ST.lane_in+6&&y>ST.lane_out-6;
+ if(FP){for(let i=0;i<FP.length;i++){const [x0,y0]=FP[i],[x1,y1]=FP[(i+1)%FP.length],L=Math.hypot(x1-x0,y1-y0),n=Math.max(1,Math.round(L/2.5));
+   for(let j=0;j<n;j++){const xa=x0+(x1-x0)*j/n,ya=y0+(y1-y0)*j/n,xb=x0+(x1-x0)*(j+1)/n,yb=y0+(y1-y0)*(j+1)/n;if(inGate((xa+xb)/2,(ya+yb)/2))continue;
+     const m=box(Math.hypot(xb-xa,yb-ya)+0.05,1.8,0.22,fm);m.position.set(WX((xa+xb)/2),0.9,WZ((ya+yb)/2));m.rotation.y=Math.atan2(-(WZ(yb)-WZ(ya)),WX(xb)-WX(xa));scene.add(m);}}}
+ else{const fw=W+2*pad,fh=H+2*pad,fx=WX(gx0+fw/2),fz=WZ(gy0+fh/2);
+ [[fw,0.25,fx,fz-fh/2],[fw,0.25,fx,fz+fh/2],[0.25,fh,fx-fw/2,fz],[0.25,fh,fx+fw/2,fz]].forEach(([a,b,x,z])=>{const m=box(a,1.6,b,fm);m.position.set(x,0.8,z);scene.add(m);});}}
+// 工務所（綠色屋頂三層樓）
+const officeGrp=new THREE.Group();scene.add(officeGrp);
 // 樹
 {const tg=new THREE.Group(),trunk=MAT(0xc9a882),leaf=[MAT(0x8fdcb1),MAT(0x6fcf9d),MAT(0xa6e6c2)];
  const hsh=(a,b)=>{const s=Math.sin(a*12.9898+b*78.233)*43758.5453;return s-Math.floor(s);};
  for(let i=0;i<70;i++){const side=i%4,u=hsh(i,1),off=pad+4+hsh(i,2)*size*0.12;let x,y;
    if(side===0){x=X0-pad+u*(W+2*pad);y=Y1+off;}else if(side===1){x=X0-pad+u*(W+2*pad);y=Y0-off;}else if(side===2){x=X1+off;y=Y0+u*H;}else{x=X0-off-size*0.12;y=Y0+u*H;}
    if(D.site&&Math.abs(x-D.site.road_x)<9)continue;
+   if(D.office&&D.office.some(([a0,a1,b0,b1])=>x>a0-4&&x<a1+4&&y>b0-4&&y<b1+4))continue;
    const s=0.8+hsh(i,3)*0.7,t=box(0.5*s,1.6*s,0.5*s,trunk);t.position.set(WX(x),0.8*s,WZ(y));tg.add(t);
    const l=new THREE.Mesh(new THREE.SphereGeometry(1.5*s,10,8),leaf[i%3]);l.position.set(WX(x),2.4*s,WZ(y));l.castShadow=true;tg.add(l);}
  scene.add(tg);}
@@ -505,6 +537,11 @@ if(S){try{
     const rl2=box(b-a,0.5,0.15,0xff8f6b);rl2.position.set(WX((a+b)/2),dt+0.5,WZ(c));gantryGrp.add(rl2);const rl3=rl2.clone();rl3.position.z=WZ(d);gantryGrp.add(rl3);
     signAt([nm],(a+b)/2,(c+d)/2,dt+4,gantryGrp);});}
 }catch(e){console.warn('site',e);}}
+if(D.office&&D.office.length){const wallM=MAT(0xf3efe6),roofM=MAT(0x3cc46b,{r:0.7}),winM2=MAT(0x7fa3c9,{r:0.3});
+  D.office.forEach(([x0,x1,y0,y1],i)=>{const h=9;officeGrp.add(at(box(x1-x0,h,y1-y0,wallM),x0,x1,y0,y1,h/2));officeGrp.add(at(box(x1-x0+0.6,0.5,y1-y0+0.6,roofM),x0,x1,y0,y1,h+0.25));
+    for(let f=0;f<3;f++){const n=Math.max(2,Math.round((x1-x0)/2.4));for(let k=0;k<n;k++){const w=box(1.1,1.2,0.1,winM2);w.castShadow=false;w.position.set(WX(x0+(x1-x0)*(k+0.5)/n),1.6+f*3,WZ(y1)+0.06);officeGrp.add(w);
+      const w2=w.clone();w2.position.z=WZ(y0)-0.06;officeGrp.add(w2);}}});
+  const o=D.office;signAt(['工務所'],(o[0][0]+o[o.length-1][1])/2,(o[0][2]+o[0][3])/2,13,officeGrp,{bar:'#3cc46b'});}
 // ---- 今日出土：動線、流動光點、土車、怪手 ----
 const flowGrp=new THREE.Group();scene.add(flowGrp);
 const dotGeo=new THREE.SphereGeometry(0.42,10,8);
@@ -530,20 +567,21 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
   RT={roadX:WX(S.road_x),gZ:WZ(S.gate[1]),zIn:WZ(S.lane_in),zOut:WZ(S.lane_out),xW:WX(S.x_w),zW:WZ(S.y_w),zE:WZ(S.y_e),
     rgX0:WX(S.ring[0]),rgX1:WX(S.ring[1]),rgZ0:WZ(S.ring[3]),xF:WX(S.x_f),xU:WX(S.x_u),xLoad:WX(S.x_load),
     xJog:WX(G.jog_x),zN:WZ(G.n_y),zS:WZ(G.s_y),xD0:WX(G.deck_x0),xNS:WX(G.ns_x),xLG:WX(G.load_x),zEx:WZ(G.ex_y),DT:G.deck_top||1.2,RL:G.ramp_len||12,
-    wcx:WX((S.weigh[0]+S.weigh[1])/2),wsx:WX((S.wash[0]+S.wash[1])/2),xL1:WX(S.mound[0])+6};
+    wcx:WX((S.weigh[0]+S.weigh[1])/2),wsx:WX((S.wash[0]+S.wash[1])/2),zWs:WZ((S.wash[2]+S.wash[3])/2),wx1:WX(S.weigh[1]),xL1:WX(S.mound[0])+6,
+    bend:(S.p1_bend||[[S.x_w,S.y_e],[S.x_w,S.y_e]]).map(([x,y])=>[WX(x),WZ(y)])};
   const R=RT;
   // 地面車道（進場／出場、西側便道、最南側車道）
   const lane=(x0,z0,x1,z1,w,c,grp,h=0.08)=>{const l=Math.hypot(x1-x0,z1-z0)+w*0.5,m=box(l,h,w,c,{r:1});m.castShadow=false;m.position.set((x0+x1)/2,h/2,(z0+z1)/2);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);grp.add(m);return m;};
   const LC=0xd4d9e1;
-  lane(R.roadX,R.zIn,R.xW,R.zIn,6.5,LC,siteGrp);lane(R.roadX,R.zOut,R.xJog,R.zOut,6.5,LC,siteGrp);
-  lane(R.xW,R.zIn,R.xW,R.zE,6,LC,p1Grp);lane(R.xW,R.zE,R.xF,R.zE,6,LC,p1Grp);lane(R.xF,R.zE,R.xF,R.zW,6,LC,p1Grp);lane(R.xF,R.zW,R.xJog,R.zW,6,LC,p1Grp);lane(R.xJog,R.zW,R.xJog,R.zOut,6,LC,p1Grp);
+  lane(R.roadX,R.zIn,R.xW,R.zIn,6.5,LC,siteGrp);lane(R.roadX,R.zOut,R.xJog,R.zOut,6.5,LC,siteGrp);lane(R.wx1,R.zOut,R.xD0,R.zOut,6.5,LC,gantryGrp);
+  {const [b0,b1]=R.bend;lane(R.xW,R.zIn,R.xW,b0[1],6,LC,p1Grp);lane(b0[0],b0[1],b1[0],b1[1],6,LC,p1Grp);lane(b1[0],b1[1],R.xF,R.zE,6,LC,p1Grp);}lane(R.xF,R.zE,R.xF,R.zW,6,LC,p1Grp);lane(R.xF,R.zW,R.xJog,R.zW,6,LC,p1Grp);lane(R.xJog,R.zW,R.xJog,R.zOut,6,LC,p1Grp);
   // 鋪鐵板便道：繞歷建（走開挖區）
   // 繞歷建的鐵板（走開挖區）：西側往北 → 北側往東 → 東側往南 → 土堆旁；歷建西側出完後收掉
-  const PL=0xb9c3cf;[[R.rgX0,R.zE,R.rgX0,R.rgZ0],[R.rgX0,R.rgZ0,R.rgX1,R.rgZ0],[R.rgX1,R.rgZ0,R.rgX1,R.zW],[R.rgX1,R.zW,R.xL1+3,R.zW]]
+  const PL=0xb9c3cf;[[R.bend[0][0],R.bend[0][1],R.rgX0,R.zE],[R.rgX0,R.zE,R.rgX0,R.rgZ0],[R.rgX0,R.rgZ0,R.rgX1,R.rgZ0],[R.rgX1,R.rgZ0,R.rgX1,R.zW],[R.rgX1,R.zW,R.xL1+3,R.zW]]
     .forEach(a=>lane(...a,6.4,PL,p1aGrp,0.6));
   // 構台出入：地面鐵板＋坡道（二挖起）
-  lane(R.xD0-R.RL,R.zS,R.xJog,R.zS,6.4,PL,gantryGrp,0.6);lane(R.xJog,R.zS,R.xJog,R.zOut,6,LC,gantryGrp);
-  {const ang=Math.atan2(R.DT-0.5,R.RL),len=Math.hypot(R.RL,R.DT-0.5),m=box(len,0.4,6.4,PL);m.position.set(R.xD0-R.RL/2,(R.DT+0.5)/2-0.1,R.zS);m.rotation.z=ang;gantryGrp.add(m);} // 南側構台下坡
+  if(R.RL>1){lane(R.xD0-R.RL,R.zS,R.xJog,R.zS,6.4,PL,gantryGrp,0.6);lane(R.xJog,R.zS,R.xJog,R.zOut,6,LC,gantryGrp);}
+  if(R.RL>1){const ang=Math.atan2(R.DT-0.5,R.RL),len=Math.hypot(R.RL,R.DT-0.5),m=box(len,0.4,6.4,PL);m.position.set(R.xD0-R.RL/2,(R.DT+0.5)/2-0.1,R.zS);m.rotation.z=ang;gantryGrp.add(m);} // 南側構台下坡（覆工板與地面齊平時不用）
   if(G.keep){const [a,b,c,d]=G.keep;const k=at(box(Math.abs(b-a),0.08,Math.abs(d-c),0xffb84d,{op:0.55}),a,b,c,d,R.DT+0.25);k.castShadow=false;gantryGrp.add(k);signAt(['保留通行構台'],(a+b)/2,(c+d)/2,R.DT+7,gantryGrp,{bar:'#ffb84d'});}
   // 前段構台（L 形，10/14 完成）：滯洪池B 東側南北向＋北側東西向
   if(D.frontDecks&&D.frontDecks.length===2){const [v,n]=D.frontDecks;
@@ -554,8 +592,7 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
     rl(WX(v[0]),WZ(v[2]),WX(v[0]),WZ(n[3]));rl(WX(v[1]),WZ(v[2]),WX(v[1]),WZ(n[2]));rl(WX(v[0]),WZ(n[3]),WX(n[1]),WZ(n[3]));rl(WX(v[1]),WZ(n[2]),WX(n[1]),WZ(n[2]));
     // 西側南北向構台南端的上坡（從大門進場車道往北上去）
     const xv=(v[0]+v[1])/2;R.xV=WX(xv);R.zVb=WZ(v[2]);R.zNf=WZ((n[2]+n[3])/2);
-    const ang=Math.atan2(R.DT-0.5,R.RL),len=Math.hypot(R.RL,R.DT-0.5),rp=box(6.4,0.4,len,PL);rp.position.set(R.xV,(R.DT+0.5)/2-0.1,R.zVb+R.RL/2);rp.rotation.x=ang;frontGrp.add(rp);
-    lane(R.xW,R.zIn,R.xV,R.zIn,6.4,PL,frontGrp,0.6);lane(R.xV,R.zIn,R.xV,R.zVb+R.RL,6.4,PL,frontGrp,0.6);
+    // 覆工板與地面齊平：土車從大門進場車道直接轉進西側南北向構台往北
     signAt(['前段構台','10/14 完成'],xv,(v[2]+n[2])/2,R.DT+6,frontGrp,{bar:'#8a94a6'});}
   // 第一階段土堆（D'9、D'14、E'9、E'14 圍起）＋站在土堆上的怪手
   const [mx0,mx1,my0,my1]=S.mound,mh=S.mound_h||5;const mg=new THREE.CylinderGeometry(0.62,1,1,4,1);mg.rotateY(Math.PI/4);
@@ -563,15 +600,15 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
   signAt(['第一階段土堆','土車在這裡裝土'],(mx0+mx1)/2,(my0+my1)/2,mh+6,moundGrp,{bar:'#dcb98d'});
 }catch(e){console.warn('route',e);RT=null;}}
 // fda=true：FDA（隔壁工地）的車從南邊來，沿馬路往北、右轉進場；出場左轉往南回去
-function routeNodes(variant,p2,fda){const R=RT,N=[],add=(x,z,y=0.6,st=0,ld=0)=>N.push({x,z,y,st,ld});const YD=R.DT+0.05;
+function routeNodes(variant,p2,fda){const R=RT,N=[],add=(x,z,y=0.6,st=0,ld=0)=>N.push({x,z,y,st,ld});const YD=R.DT+0.75;
   if(fda){add(R.roadX+2,R.gZ+70);add(R.roadX+2,R.zIn+4);add(R.roadX+4,R.zIn);}else{add(R.roadX-2,R.gZ-70);add(R.roadX-2,R.zIn-5);add(R.roadX+1.5,R.zIn);}add(R.xW,R.zIn);
-  if(!p2){add(R.xW,R.zE);
+  if(!p2){add(R.xW,R.bend[0][1]);if(variant!==0)add(R.bend[1][0],R.bend[1][1]);
     if(variant===0){add(R.rgX0,R.zE);add(R.rgX0,R.rgZ0);add(R.rgX1,R.rgZ0);add(R.rgX1,R.zW);add(R.xL1,R.zW,0.6,0.1,1);}  // 繞歷建 → 往東迴轉、停土堆旁裝土
     else{add(R.xF,R.zE);add(R.xF,R.zW);add(R.xLoad,R.zW,0.6,0.1,1);}                                        // 走到 F16 迴轉 → 土堆旁裝土
     add(R.xJog,R.zW);add(R.xJog,R.zOut);}
-  else{if(R.xV!==undefined){add(R.xV,R.zIn);add(R.xV,R.zVb+R.RL);add(R.xV,R.zVb,YD);add(R.xV,R.zNf,YD);add(R.xD0,R.zNf,YD);}  // 從大門往東 → 西側南北向構台往北 → 北側構台往東
-    else{add(R.xW,R.zN);add(R.xD0-R.RL,R.zN);add(R.xD0,R.zN,YD);}add(R.xLG,R.zN,YD,0.1,1);add(R.xNS,R.zN,YD);add(R.xNS,R.zS,YD);add(R.xD0,R.zS,YD);add(R.xD0-R.RL,R.zS);add(R.xJog,R.zS);add(R.xJog,R.zOut);}
-  add(R.wcx+9,R.zOut);add(R.wcx,R.zOut,0.6,0.08);add(R.wsx,R.zOut,0.6,0.06);
+  else{if(R.xV!==undefined){add(R.xV,R.zIn);add(R.xV,R.zIn-3,YD);add(R.xV,R.zNf,YD);add(R.xD0,R.zNf,YD);}  // 從大門往東 → 西側南北向構台往北 → 北側構台往東
+    else{add(R.xW,R.zN);add(R.xD0-R.RL,R.zN);add(R.xD0,R.zN,YD);}add(R.xLG,R.zN,YD,0.1,1);add(R.xNS,R.zN,YD);add(R.xNS,R.zS,YD);add(R.xD0,R.zS,YD);add(R.xD0-3,R.zOut);}
+  add(R.wx1+2,R.zOut);add(R.wcx,R.zOut,0.6,0.08);add(R.wsx+6,R.zOut);add(R.wsx,R.zWs,0.6,0.06);add(R.wsx-6,R.zOut);  // 過地磅 → 洗車台 → 大門
   if(fda){add(R.roadX+3,R.zOut);add(R.roadX-2,R.zOut+4);add(R.roadX-2,R.gZ+70);}else{add(R.roadX+2,R.zOut);add(R.roadX+2,R.gZ-70);}
   let tot=0;N[0].s=0;for(let i=1;i<N.length;i++){tot+=Math.hypot(N[i].x-N[i-1].x,N[i].z-N[i-1].z);N[i].s=tot;}
   const stops=N.filter(n=>n.st).map(n=>({s:n.s,f:n.st})),D=stops.reduce((a,b)=>a+b.f,0),loadS=(N.find(n=>n.ld)||{s:0}).s;
@@ -678,7 +715,7 @@ function legend(){const sw=c=>`<span class="sw" style="background:${css(c)}"></s
   $('legend').innerHTML=h;}
 const LY={lyLabel:v=>labels.visible=v,lyFlow:v=>{flowGrp.visible=v;digGrp.visible=v;plantGrp.visible=v;},lyPin:v=>pinGrp.visible=v,lyGhost:v=>ghost.visible=v,
   lyS1:v=>strutMesh[0]&&(strutMesh[0].visible=v),lyS2:v=>strutMesh[1]&&(strutMesh[1].visible=v),lyS3:v=>strutMesh[2]&&(strutMesh[2].visible=v),
-  lyKp:v=>kpMesh&&(kpMesh.visible=v),lyCrane:v=>craneGrp.visible=v,lySite:v=>{siteGrp.visible=v;p1Grp.visible=v&&curPhase<2;p1aGrp.visible=v&&curPhase===0;},lyGantry:()=>gantryVis()};
+  lyKp:v=>kpMesh&&(kpMesh.visible=v),lyCrane:v=>craneGrp.visible=v,lySite:v=>{siteGrp.visible=v;officeGrp.visible=v;p1Grp.visible=v&&curPhase<2;p1aGrp.visible=v&&curPhase===0;},lyGantry:()=>gantryVis()};
 function gantryVis(){const on=$('lyGantry').checked;gantryGrp.visible=on&&D.slabDay!==null&&DAY>=D.slabDay;frontGrp.visible=on&&(gantryGrp.visible||!!D.frontGantry&&DAYS[DAY].d>=D.frontGantry);}
 Object.keys(LY).forEach(id=>{const el=$(id);LY[id](el.checked);el.addEventListener('change',()=>{LY[id](el.checked);if(id==='lyGantry')buildFlow();});});
 if(!M)['lyS1','lyS2','lyS3','lyKp','lyCrane'].forEach(id=>$(id).closest('label').style.display='none');
