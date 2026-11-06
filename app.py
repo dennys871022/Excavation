@@ -14,6 +14,7 @@ import tab_sync
 import tab_manifest
 import tab_delivery
 import tab_analytics
+import tab_twin
 
 render_auth()
 
@@ -38,6 +39,7 @@ df_results = build_zone_results(
 # 用單選列取代 st.tabs：st.tabs 每次互動都會把「所有分頁」的程式碼全部跑一遍，
 # 改成只執行目前選到的分頁，其他分頁完全不運算，網頁會快很多。
 TAB_RENDERERS = {
+    "🏗️ 3D 工地管理中心": tab_twin.render,
     "🗺️ 圖資與方量基準": tab_grid.render,
     "📊 出土統計儀表板": tab_stats.render,
     "📈 階段開挖管控": tab_stage.render,
