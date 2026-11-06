@@ -497,14 +497,16 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
   const mound=new THREE.Mesh(mg,MAT(0xdcb98d,{r:1}));mound.castShadow=true;mound.receiveShadow=true;mound.scale.set((mx1-mx0)/1.4142,mh,(my1-my0)/1.4142);mound.position.set(WX((mx0+mx1)/2),mh/2,WZ((my0+my1)/2));moundGrp.add(mound);
   signAt(['第一階段土堆','土車在這裡裝土'],(mx0+mx1)/2,(my0+my1)/2,mh+6,moundGrp,{bar:'#dcb98d'});
 }catch(e){console.warn('route',e);RT=null;}}
-function routeNodes(variant,p2){const R=RT,N=[],add=(x,z,y=0.6,st=0,ld=0)=>N.push({x,z,y,st,ld});const YD=R.DT+0.05;
-  add(R.roadX-2,R.gZ-70);add(R.roadX-2,R.zIn-5);add(R.roadX+1.5,R.zIn);add(R.xW,R.zIn);
+// fda=true：FDA（隔壁工地）的車從南邊來，沿馬路往北、右轉進場；出場左轉往南回去
+function routeNodes(variant,p2,fda){const R=RT,N=[],add=(x,z,y=0.6,st=0,ld=0)=>N.push({x,z,y,st,ld});const YD=R.DT+0.05;
+  if(fda){add(R.roadX+2,R.gZ+70);add(R.roadX+2,R.zIn+4);add(R.roadX+4,R.zIn);}else{add(R.roadX-2,R.gZ-70);add(R.roadX-2,R.zIn-5);add(R.roadX+1.5,R.zIn);}add(R.xW,R.zIn);
   if(!p2){add(R.xW,R.zE);
     if(variant===0){add(R.rgX0,R.zE);add(R.rgX0,R.rgZ0);add(R.rgX1,R.rgZ0);add(R.rgX1,R.zE);add(R.xU,R.zE);add(R.xU,R.zW);}
     else{add(R.xF,R.zE);add(R.xF,R.zW);}
     add(R.xLoad,R.zW,0.6,0.1,1);add(R.xJog,R.zW);add(R.xJog,R.zOut);}
   else{add(R.xW,R.zN);add(R.xD0-R.RL,R.zN);add(R.xD0,R.zN,YD);add(R.xLG,R.zN,YD,0.1,1);add(R.xNS,R.zN,YD);add(R.xNS,R.zS,YD);add(R.xD0,R.zS,YD);add(R.xD0-R.RL,R.zS);add(R.xJog,R.zS);add(R.xJog,R.zOut);}
-  add(R.wcx+9,R.zOut);add(R.wcx,R.zOut,0.6,0.08);add(R.wsx,R.zOut,0.6,0.06);add(R.roadX+2,R.zOut);add(R.roadX+2,R.gZ-70);
+  add(R.wcx+9,R.zOut);add(R.wcx,R.zOut,0.6,0.08);add(R.wsx,R.zOut,0.6,0.06);
+  if(fda){add(R.roadX+3,R.zOut);add(R.roadX-2,R.zOut+4);add(R.roadX-2,R.gZ+70);}else{add(R.roadX+2,R.zOut);add(R.roadX+2,R.gZ-70);}
   let tot=0;N[0].s=0;for(let i=1;i<N.length;i++){tot+=Math.hypot(N[i].x-N[i-1].x,N[i].z-N[i-1].z);N[i].s=tot;}
   const stops=N.filter(n=>n.st).map(n=>({s:n.s,f:n.st})),D=stops.reduce((a,b)=>a+b.f,0),loadS=(N.find(n=>n.ld)||{s:0}).s;
   return {N,tot,stops,D,loadS};}
@@ -526,15 +528,17 @@ function buildFlow(){flowGrp.clear();flows=[];trucks=[];diggers=[];
     else{const [mx0,mx1,my0,my1]=S.mound;dg.position.set(RT.xLoad,(S.mound_h||5)*0.55,WZ(my0+(my1-my0)*0.3));}
     dg.rotation.y=Math.PI/2;dg.userData.ph=7;flowGrp.add(dg);diggers.push(dg);}
   if(!RT||trips<=0)return;
-  const variants=p2?[0]:[0,1],COLS=p2?[0x7aa7ff]:[0xff8f6b,0xb08cff];
-  const routes=variants.map((v,i)=>{const P=routeNodes(v,p2);
+  // 台北港：左轉進場、右轉出場（第1挖分繞歷建／F16 兩種）；FDA：右轉進場、左轉出場（藍色）
+  const defs=(p2?[[0,0,0xff8f6b]]:[[0,0,0xff8f6b],[1,0,0xb08cff]]).concat(day.f>0?[[0,1,0x4b6bfb]]:[]);
+  const routes=defs.map(([v,fda,c],i)=>{const P=routeNodes(v,p2,!!fda);P.fda=!!fda;
     const cp=new THREE.CurvePath();for(let j=1;j<P.N.length;j++){const a=P.N[j-1],b=P.N[j];cp.add(new THREE.LineCurve3(new THREE.Vector3(a.x,a.y+0.25,a.z),new THREE.Vector3(b.x,b.y+0.25,b.z)));}
-    const col=new THREE.Color(COLS[i]);const tube=new THREE.Mesh(new THREE.TubeGeometry(cp,Math.round(P.tot/1.5),0.3,6,false),new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.42,depthWrite:false}));tube.renderOrder=5;flowGrp.add(tube);
+    const col=new THREE.Color(c);const tube=new THREE.Mesh(new THREE.TubeGeometry(cp,Math.round(P.tot/1.5),0.3,6,false),new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.42,depthWrite:false}));tube.renderOrder=5;flowGrp.add(tube);
     const dots=[];const nd=Math.round(P.tot/14);for(let k=0;k<nd;k++){const m=new THREE.Mesh(dotGeo,new THREE.MeshBasicMaterial({color:col}));m.userData.o=k/nd;flowGrp.add(m);dots.push(m);}
     flows.push({P,dots});return P;});
-  const n=Math.max(1,Math.min(14,Math.round(trips/3)));
-  for(let i=0;i<n;i++){const P=routes[i%routes.length],fda=i<Math.round(n*day.f/trips);
-    const t=makeTruck(fda?0x7aa7ff:TRUCK_COLS[i%TRUCK_COLS.length]);t.scale.setScalar(0.85);t.userData.P=P;t.userData.o=i/n;flowGrp.add(t);trucks.push(t);}}
+  const n=Math.max(1,Math.min(14,Math.round(trips/3))),nF=day.f>0?Math.max(1,Math.round(n*day.f/trips)):0,nT=day.t>0?Math.max(1,n-nF):0;
+  const tpR=routes.filter(r=>!r.fda),fdR=routes.find(r=>r.fda);
+  for(let i=0;i<nT+nF;i++){const fda=i>=nT,P=fda?fdR:tpR[i%tpR.length],m=fda?nF:nT,j=fda?i-nT:i;
+    const t=makeTruck(fda?0x4b6bfb:TRUCK_COLS[i%TRUCK_COLS.length]);t.scale.setScalar(0.85);t.userData.P=P;t.userData.o=j/m+(fda?0.5/m:0);flowGrp.add(t);trucks.push(t);}}
 // ---- 異常標記（紅色浮動大頭針）----
 const pinGrp=new THREE.Group();scene.add(pinGrp);
 function buildPins(list){pinGrp.clear();list.slice(0,12).forEach(a=>{const z=Z[a.k],x=WX((z.x0+z.x1)/2),zz=WZ((z.y0+z.y1)/2),c=a.lv==='red'?0xef4b4b:0xf39a3d,cs=a.lv==='red'?'#ef4b4b':'#e08a25';
