@@ -63,6 +63,8 @@ MODEL_GUARD = (-2770.5, -269.0)         # 警衛室（大門北側、圍籬內�
 MODEL_ROAD_DIR = (-13.6, -30.6)         # 外面馬路走向＝西側圍籬方向（北北東 → 南南西）
 # 工務所（綠色屋頂、三層樓，在南側圍籬外）：[x0, x1, y0, y1]
 MODEL_OFFICE = [[-2672.2, -2656.8, -312.0, -304.4], [-2656.9, -2635.4, -310.6, -304.6]]
+# 繞歷建鐵板收掉、改走 F16 迴轉的時機：這幾個分區的第1挖全部出完那一天
+RING_END_ZONES = ["D2", "E2"]
 FRONT_GANTRY_DONE = "2026-10-14"   # 前段構台（滯洪池B東側南北向＋北側東西向，L 形）完成日
 
 
@@ -145,9 +147,8 @@ def build_twin_payload(logs, df_results, stage_idx, gl_off=0.0, title="CDC 工�
     # 歷建西側（分區中心在歷建西緣以西）第1挖全部出完的那一天：繞歷建的鐵板收掉，改走到 F16 迴轉
     west_day = None
     if site and site.get("hist"):
-        hx0 = site["hist"][0]
         west = {k: z["th"][z["li"][0]] for k, z in enumerate(zones)
-                if (z["x0"] + z["x1"]) / 2 < hx0 and z["li"][0] >= 0 and z["th"]}
+                if z["c"] in RING_END_ZONES and z["li"][0] >= 0 and z["th"]}
         if west:
             cum2 = [0.0] * len(zones)
             for i, day in enumerate(days):
@@ -241,7 +242,7 @@ canvas#gl{display:block}
 #day{width:100%;margin:2px 0 0;accent-color:#151a24;height:14px}
 #dateLbl{min-width:112px;text-align:right;font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
 #dateLbl small{display:block;font-size:11px;color:var(--mut);font-weight:500}
-#speed{border:1px solid var(--line);border-radius:8px;padding:4px;font:inherit;font-size:12px;background:#fff;flex:none}
+#speed{border:1px solid var(--line);border-radius:8px;padding:4px;font:inherit;font-size:12px;background:#fff;flex:none;max-width:150px}
 /* 卡片 */
 .card{position:absolute;background:var(--card);border-radius:18px;box-shadow:0 18px 50px rgba(30,40,60,.18),0 2px 6px rgba(30,40,60,.06);border:1px solid #edf0f4}
 #sheet{right:14px;top:62px;width:340px;max-height:calc(100% - 222px);overflow:auto;padding:16px 18px;display:none}
@@ -310,7 +311,7 @@ canvas#gl{display:block}
 <div id="tl">
   <button id="play" title="播放／暫停（空白鍵）">▶</button>
   <div id="tlMid"><div id="phases"></div><canvas id="chart"></canvas><input type="range" id="day" min="0" value="0"></div>
-  <select id="speed" title="播放倍速：當天的車全部出場才換下一天"><option value="2">2 倍速</option><option value="4">4 倍速</option><option value="8" selected>8 倍速</option><option value="16">16 倍速</option><option value="32">快轉 32×</option></select>
+  <select id="speed" title="播放方式"><optgroup label="逐車播放（當天的車全部出場才換日）"><option value="c2">逐車 2 倍速</option><option value="c4">逐車 4 倍速</option><option value="c8" selected>逐車 8 倍速</option><option value="c16">逐車 16 倍速</option><option value="c32">逐車 32 倍速</option></optgroup><optgroup label="固定秒數（每天固定時間）"><option value="d8">每天 8 秒</option><option value="d4">每天 4 秒</option><option value="d2">每天 2 秒</option><option value="d1">每天 1 秒</option><option value="d0.25">快轉（每天 0.25 秒）</option></optgroup></select>
   <div id="dateLbl">–</div>
 </div>
 <div id="sheet" class="card"></div>
@@ -680,7 +681,7 @@ function posOn(P,u){const mv=1-P.D;let t=0,s0=0,sd=null;
 // 階段：0＝第1挖前段（繞歷建鐵板）、1＝歷建西側出完（走到 F16 迴轉）、2＝第1挖完成（走構台）
 function phaseAt(d){if(D.slabDay!==null&&d>=D.slabDay)return 2;if(D.westDay!==null&&D.westDay!==undefined&&d>=D.westDay)return 1;return 0;}
 const isP2=()=>phaseAt(DAY)===2;
-const PHASE_TXT=['第1挖：繞歷建鐵板 → 旋轉篩斗旁裝土 → 右轉上地磅','第1挖：歷建西側已出完，走到 F16 迴轉 → 土堆旁裝土','二挖起：走構台，構台上長臂怪手裝土'];
+const PHASE_TXT=['第1挖：繞歷建鐵板 → 土堆旁裝土 → 右轉上地磅','第1挖：D2、E2 已出完，鐵板收掉、走到 F16 迴轉 → 土堆旁裝土','二挖起：走構台，構台上長臂怪手裝土'];
 const plantGrp=new THREE.Group(),digGrp=new THREE.Group();scene.add(plantGrp);scene.add(digGrp);
 const NSLOT=40,NSTATIC=14;let curPhase=-1,fdGrp=null,routeTP=null,routeFD=null,screen=null,falls=[],arcs=[];
 const soilM=MAT(0xc9a274),soilGeo=new THREE.BoxGeometry(0.7,0.55,0.7);
@@ -715,10 +716,10 @@ function buildPhase(){const p=phaseAt(DAY);if(p===curPhase)return;curPhase=p;
     {const lp=routeTP.N.find(n=>n.ld);if(lp){const sx=lp.x+(lp.ox||0),sz=lp.z+(lp.oz||0);let vx=ld.position.x-sx,vz=ld.position.z-sz,L=Math.hypot(vx,vz)||1;
       if(L<6.5){ld.position.x=sx+vx/L*6.5;ld.position.z=sz+vz/L*6.5;}ld.rotation.y=Math.atan2(-(sz-ld.position.z),sx-ld.position.x);}}
     screen=makeScreener();screen.userData.ph=3;plantGrp.add(screen);
-    if(p===0){// 篩斗站在東側車道旁、手臂朝車道：篩好的土直接落到車斗；土堆上的怪手把土餵給篩斗
-      screen.position.set(RT.rgX1+6.8,0,RT.zScr);screen.rotation.y=Math.PI;screen.userData.dir=-1;
-      ld.position.set(RT.rgX1+12.5,mh*0.45,RT.zScr-4.5);ld.rotation.y=Math.atan2(-(RT.zScr-ld.position.z),(RT.rgX1+6.8)-ld.position.x);
-      signAt(['旋轉篩斗','上車點：篩好直接裝車'],mx0-5,(my0+my1)/2+7,9,plantGrp,{bar:'#ffc53d'});}
+    if(p===0){// 旋轉篩斗站在土堆上、朝土堆篩土；車道旁的怪手從土堆挖篩好的土裝車（上車點在篩斗旁）
+      screen.position.set(WX(mx0+5),mh*0.4,RT.zScr+3);screen.rotation.y=0;screen.userData.dir=1;
+      ld.position.set(RT.rgX1+5.2,0,RT.zScr-3);ld.rotation.y=Math.atan2(-(RT.zScr-ld.position.z),RT.rgX1-ld.position.x);
+      signAt(['旋轉篩斗','在土堆上篩土'],mx0+5,(my0+my1)/2+8,mh+5,plantGrp,{bar:'#ffc53d'});}
     else{screen.position.set(WX(mx0)-4.5,0,WZ((my0+my1)/2+2));screen.rotation.y=0;screen.userData.dir=1;
       for(let i=0;i<10&&routeDist(screen.position.x,screen.position.z)<5;i++)screen.position.z-=1;
       signAt(['旋轉篩斗','篩完倒到土堆'],mx0-6,(my0+my1)/2+6,9,plantGrp,{bar:'#ffc53d'});}
@@ -727,7 +728,7 @@ function buildFlow(){buildPhase();const p=curPhase,day=DAYS[DAY],trips=day.t+day
   // 土車：14 個車位沿路線等距排開、一直在跑；當天車次決定有幾台出現（每 3 車畫 1 台）
   const n=trips>0?Math.max(1,Math.min(NSTATIC,Math.round(trips/3))):0,nF=day.f>0&&n?Math.max(1,Math.round(n*day.f/trips)):0;
   const act=[];for(let k=0;k<NSTATIC;k++)if(Math.floor((k+1)*n/NSTATIC)>Math.floor(k*n/NSTATIC))act.push(k);
-  if(!playing){trucks.forEach(t=>t.visible=false);
+  if(!playing||pmode()==='d'){trucks.forEach(t=>t.visible=false);
   act.forEach((k,i)=>{const t=trucks[k];if(!t)return;const fda=i>=act.length-nF,P=fda?routeFD:routeTP,u=t.userData;
     if(u.P!==P||u.s===undefined){u.s=P.tot*(i/Math.max(1,act.length));u.wait=0;}u.P=P;t.visible=true;u.bed.material.color.setHex(fda?0x4b6bfb:u.col);});}
   if(fdGrp)fdGrp.visible=nF>0;
@@ -893,7 +894,7 @@ function renderHud(){const d=DAYS[DAY],s0=curStage(DAY),p=STAGE===null?(()=>{let
   $('eb').textContent=`CDC SITE · ${s0<5?'STAGE '+(s0+1):'DONE'} · ${d.d}`;$('ttl').textContent=D.title;
   const al=alerts(DAY),nr=al.filter(a=>a.lv==='red').length;
   $('chips').innerHTML=`<span class="chip">${STAGE===null?'整體進度':SN[STAGE]+' 進度'} <b>${(p*100).toFixed(1)}%</b></span><span class="chip">累計出土 <b>${fmt(cV[DAY])}</b> m³</span>
-    <span class="chip">今日 <b>${d.t}</b> 車${d.f?'＋FDA '+d.f:''}</span>${playing?`<span class="chip" id="chipOut">今日出場 <b>${DP.out}</b> / ${DP.total} 車</span>`:''}<span class="chip amb">${s0<5?'推進中：'+SN[s0]:'開挖完成'}</span>${nr?`<span class="chip red">停滯 ${nr} 區</span>`:''}`;
+    <span class="chip">今日 <b>${d.t}</b> 車${d.f?'＋FDA '+d.f:''}</span>${playing&&pmode()==='c'?`<span class="chip" id="chipOut">今日出場 <b>${DP.out}</b> / ${DP.total} 車</span>`:''}<span class="chip amb">${s0<5?'推進中：'+SN[s0]:'開挖完成'}</span>${nr?`<span class="chip red">停滯 ${nr} 區</span>`:''}`;
   $('nAlert').textContent=al.length;$('eb').textContent+=' · '+(RT?PHASE_TXT[phaseAt(DAY)]:'');$('nAlert').style.display=al.length?'':'none';buildPins(al);
   const wkd='日一二三四五六'[new Date(d.d+'T00:00:00').getDay()];$('dateLbl').innerHTML=`${d.d}<small>週${wkd}・${DAY+1}/${ND} 天</small>`;
   $('phases').innerHTML=['開挖前',...SN].map((n,i)=>{const cls=i===0?'done':(i-1<s0?'done':i-1===s0?'now':'');return (i?'<span class="ar">→</span>':'')+`<span class="ph ${cls}"><i></i>${n}</span>`;}).join('');}
@@ -914,17 +915,23 @@ function dispatch(){if(!DP.q.length||!routeTP)return;const fda=DP.q[0],P=fda?rou
   for(const t of trucks)if(t.visible&&t.userData.P){const u=t.userData;if(Math.hypot(u.px-a.x,u.pz-a.z)<TRUCK_GAP+3)return;}
   const t=trucks.find(t=>!t.visible);if(!t)return;DP.q.shift();const u=t.userData;u.P=P;u.s=0;u.wait=0;u.bt=0;u.px=a.x;u.pz=a.z;t.visible=true;
   u.bed.material.color.setHex(fda?0x4b6bfb:u.col);}
-function playStep(dt){const mult=+$('speed').value;let simT=dt*mult;
+const pmode=()=>$('speed').value[0],pval=()=>+$('speed').value.slice(1);
+function playStep(dt){
+  if(pmode()==='d'){// 固定秒數：每天固定時間，土車在場內循環展示
+    T+=dt/pval();if(T>=ND-0.0001)T=ND-0.0001;const d=Math.floor(T);if(d!==DAY)setDay(d,true);geomTick(T-DAY);simTrucks(dt,false);
+    if(T>=ND-0.0001){togglePlay();}return;}
+  const mult=pval();let simT=dt*mult;
   while(simT>1e-6){const h=Math.min(0.05,simT);simT-=h;dispatch();simTrucks(h,true);DP.idle+=h;
     const done=DP.total?DP.out>=DP.total:DP.idle>=1.5;
     if(done){if(DAY>=ND-1){togglePlay();return;}setDay(DAY+1,true);startDay();}}
   T=DAY+(DP.total?DP.out/DP.total:Math.min(1,DP.idle/1.5));geomTick(T-DAY);
   const c=$('chipOut');if(c)c.innerHTML=`今日出場 <b>${DP.out}</b> / ${DP.total} 車`;}
 function togglePlay(){playing=!playing;
-  if(playing){if(DAY>=ND-1&&T>=ND-0.01){DAY=-1;setDay(0,true);}buildFlow();startDay();renderHud();}
+  if(playing){if(DAY>=ND-1&&T>=ND-0.01){DAY=-1;setDay(0,true);}if(pmode()==='d'){T=DAY;buildFlow();renderHud();}else{buildFlow();startDay();renderHud();}}
   else{T=DAY+0.9999;geomTick(1);buildFlow();renderHud();}
   $('play').textContent=playing?'❚❚':'▶';}
 $('play').onclick=togglePlay;
+$('speed').onchange=()=>{if(!playing)return;if(pmode()==='d'){T=DAY;buildFlow();}else{buildFlow();startDay();}renderHud();};
 function setDay(d,keepT){d=Math.max(0,Math.min(ND-1,d|0));if(!keepT){T=d+0.9999;if(playing){playing=false;$('play').textContent='▶';}}if(d===DAY)return;DAY=d;slider.value=d;refresh();}
 function geomTick(frac){updateDepth(frac);updateTerrain(true);updateOutline();updateLabels();updateModel();placeBox(selBox,SEL);placeBox(selFill,SEL);
   diggers.forEach(g=>{if(g.userData.k!==undefined)g.position.y=-cd(g.userData.k)*ZEX;});}
