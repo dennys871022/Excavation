@@ -21,6 +21,8 @@ STAGE_AREA = {
     "第5階段 (油槽開挖)": "油槽開挖",
 }
 HEAD_BG = "#2D3E50"
+COL_PX = (120, 165, 105, 105, 175, 30, 70, 90, 80, 220)   # A～J 欄寬（像素）
+TABLE_PX = sum(COL_PX[:5])
 CHART_DAYS = 21   # 折線圖往前抓的天數（3 週）
 
 
@@ -233,7 +235,7 @@ def save_to_cloud(url, rep, area, end):
     grid = [list(r) + [""] * (5 - len(r)) for r in rows]
     ws.update("A1", grid, value_input_option="USER_ENTERED")
     dvals = [["日期", "台北港車次", "FDA車次", "備註"]] + [
-        [f"{r.日期.month}/{r.日期.day}", int(r.台北港車次), int(r.FDA車次), r.備註] for r in daily.itertuples(index=False)]
+        [f"'{r.日期.month}/{r.日期.day}", int(r.台北港車次), int(r.FDA車次), r.備註] for r in daily.itertuples(index=False)]
     ws.update("G4", dvals, value_input_option="USER_ENTERED")
 
     sid = ws.id
@@ -257,7 +259,7 @@ def save_to_cloud(url, rep, area, end):
                 fmt(rng(r, r + 1, 4, 5), {"textFormat": {"foregroundColor": _rgb("#FF0000")}}, "textFormat")
     fmt(rng(3, 4, 6, 10), head, "backgroundColor,horizontalAlignment,verticalAlignment,textFormat")
     fmt(rng(4, 4 + len(daily), 6, 7), {"horizontalAlignment": "CENTER"}, "horizontalAlignment")
-    for i, px in enumerate((120, 165, 105, 105, 175, 30, 70, 90, 80, 220)):
+    for i, px in enumerate(COL_PX):
         req.append({"updateDimensionProperties": {"range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
                                                   "properties": {"pixelSize": px}, "fields": "pixelSize"}})
     if len(daily):
@@ -268,10 +270,13 @@ def save_to_cloud(url, rep, area, end):
                 "axis": [{"position": "BOTTOM_AXIS", "title": "日期"}, {"position": "LEFT_AXIS", "title": "車次 (台)"}],
                 "domains": [{"domain": {"sourceRange": {"sources": [rng(3, 4 + n, 6, 7)]}}}],
                 "series": [{"series": {"sourceRange": {"sources": [rng(3, 4 + n, 7, 8)]}}, "targetAxis": "LEFT_AXIS",
-                            "dataLabel": {"type": "DATA", "placement": "ABOVE"}},
-                           {"series": {"sourceRange": {"sources": [rng(3, 4 + n, 8, 9)]}}, "targetAxis": "LEFT_AXIS"}]}},
-            "position": {"overlayPosition": {"anchorCell": {"sheetId": sid, "rowIndex": 6 + n, "columnIndex": 6},
-                                             "widthPixels": 560, "heightPixels": 300}}}}})
+                            "dataLabel": {"type": "DATA", "placement": "ABOVE"}, "pointStyle": {"shape": "CIRCLE", "size": 7}},
+                           {"series": {"sourceRange": {"sources": [rng(3, 4 + n, 8, 9)]}}, "targetAxis": "LEFT_AXIS",
+                            "pointStyle": {"shape": "CIRCLE", "size": 7}}]}},
+            # 圖放在兩張表正下方（A 欄起），寬度跟表一樣（A～E 欄寬合計）
+            "position": {"overlayPosition": {"anchorCell": {"sheetId": sid, "rowIndex": pos["tp_last"] + 3, "columnIndex": 0},
+                                             "offsetXPixels": 0, "offsetYPixels": 0,
+                                             "widthPixels": TABLE_PX, "heightPixels": 340}}}}})
     sh.batch_update({"requests": req})
     return title
 
