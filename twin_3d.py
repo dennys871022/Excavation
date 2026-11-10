@@ -310,7 +310,7 @@ canvas#gl{display:block}
 <div id="tl">
   <button id="play" title="播放／暫停（空白鍵）">▶</button>
   <div id="tlMid"><div id="phases"></div><canvas id="chart"></canvas><input type="range" id="day" min="0" value="0"></div>
-  <select id="speed" title="播放速度"><option value="0.125">每天 8 秒</option><option value="0.25" selected>每天 4 秒</option><option value="0.5">每天 2 秒</option><option value="1">每天 1 秒</option><option value="4">快轉</option></select>
+  <select id="speed" title="播放倍速：當天的車全部出場才換下一天"><option value="2">2 倍速</option><option value="4">4 倍速</option><option value="8" selected>8 倍速</option><option value="16">16 倍速</option><option value="32">快轉 32×</option></select>
   <div id="dateLbl">–</div>
 </div>
 <div id="sheet" class="card"></div>
@@ -378,7 +378,7 @@ function heat(t){const st=[[0,[226,230,236]],[0.33,[122,167,255]],[0.66,[255,209
 function layerIdx(k,cv){const z=Z[k];let last=-1;for(let s=0;s<5;s++){const li=z.li[s];if(li<0)continue;const b0=li>0?z.th[li-1]:0;if(cv>b0+0.01)last=s;}return last;}
 let T=ND-0.0001,MODE='prog',STAGE=(D.stage===null||D.stage===undefined)?null:D.stage,DAY=ND-1,ZEX=1.5,SEL=-1,STALL=7,PANEL=null;
 // 播放時坑深在前一天與當天之間平滑過渡（frac＝當天已過的比例）
-function updateDepth(frac){const sp=+($('speed')?$('speed').value:0.25),e0=Math.min(1,Math.max(0,sp>=1?frac:frac/0.85)),e=sp>=1?e0:e0*e0*(3-2*e0);
+function updateDepth(frac){const e=Math.min(1,Math.max(0,frac));
   for(let k=0;k<NZ;k++){const a=DAY>0?depthOf(DAY-1,k):0,b=depthOf(DAY,k);curDep[k]=a+(b-a)*e;}
   // 已架設支撐的分區：畫面上至少挖到支撐底下，支撐才不會被埋在土裡（只影響畫面，統計仍用實際方量）
   if(D.model&&D.model.segs&&typeof strutLimit==='function'){const lims=[0,1,2].map(strutLimit);
@@ -656,8 +656,8 @@ function ptAt(P,sd){const N=P.N;sd=Math.max(0,Math.min(P.tot,sd));let k=1;while(
 function lanePt(P,sd){const N=P.N;sd=Math.max(0,Math.min(P.tot,sd));let k=1;while(k<N.length-1&&N[k].s<sd)k++;const A=N[k-1],B=N[k],q=(sd-A.s)/((B.s-A.s)||1);
   return {x:A.x+A.ox+(B.x+B.ox-A.x-A.ox)*q,z:A.z+A.oz+(B.z+B.oz-A.z-A.oz)*q,y:A.y+(B.y-A.y)*q};}
 // 土車排隊模擬：沿路線前進，前方 7m 內有車就停下等；到地磅、洗車台、裝土點停留
-const TRUCK_V=8,TRUCK_GAP=7.5,LOOP_T=34;
-function simTrucks(dt){const act=trucks.filter(t=>t.visible&&t.userData.P);if(!act.length)return;
+const TRUCK_V=8,TRUCK_GAP=7.5,LOOP_T=20;
+function simTrucks(dt,play){const act=trucks.filter(t=>t.visible&&t.userData.P);if(!act.length)return;
   for(const t of act){const u=t.userData,a=lanePt(u.P,u.s),b=lanePt(u.P,u.s+2),dx=b.x-a.x,dz=b.z-a.z,L=Math.hypot(dx,dz)||1;u.px=a.x;u.pz=a.z;u.py=a.y;u.hx=dx/L;u.hz=dz/L;}
   const blk=new Map();
   for(const t of act){const u=t.userData;let by=null;
@@ -670,8 +670,8 @@ function simTrucks(dt){const act=trucks.filter(t=>t.visible&&t.userData.P);if(!a
     if(blk.has(t)){u.bt=(u.bt||0)+dt;if(u.bt<6)continue;}   // 等太久（6 秒）就慢慢擠過去，避免卡死
     u.bt=0;const ns=u.s+TRUCK_V*dt*(blk.has(t)?0.3:1);
     const st=u.P.stops.find(x=>x.s>u.s+1e-6&&x.s<=ns);if(st){u.s=st.s;u.wait=st.f*LOOP_T;}else u.s=ns;
-    if(u.s>=u.P.tot){u.s=0;u.wait=0;}}
-  for(const t of act){const u=t.userData,a=lanePt(u.P,u.s),b=lanePt(u.P,u.s+3),c=lanePt(u.P,u.s-3);t.position.set(a.x,a.y-0.55,a.z);
+    if(u.s>=u.P.tot){if(play){t.visible=false;u.P=null;DP.out++;}else{u.s=0;u.wait=0;}}}
+  for(const t of act){if(!t.visible)continue;const u=t.userData,a=lanePt(u.P,u.s),b=lanePt(u.P,u.s+3),c=lanePt(u.P,u.s-3);t.position.set(a.x,a.y-0.55,a.z);
     if(Math.abs(b.x-c.x)+Math.abs(b.z-c.z)>1e-6)t.rotation.y=Math.atan2(-(b.z-c.z),b.x-c.x);u.soil.visible=u.s>=u.P.loadS-0.1;}}
 function posOn(P,u){const mv=1-P.D;let t=0,s0=0,sd=null;
   for(const st of P.stops){const tm=(st.s-s0)/P.tot*mv;if(u<t+tm){sd=s0+(u-t)/tm*(st.s-s0);break;}t+=tm;if(u<t+st.f){sd=st.s;break;}t+=st.f;s0=st.s;}
@@ -682,7 +682,7 @@ function phaseAt(d){if(D.slabDay!==null&&d>=D.slabDay)return 2;if(D.westDay!==nu
 const isP2=()=>phaseAt(DAY)===2;
 const PHASE_TXT=['第1挖：繞歷建鐵板 → 旋轉篩斗旁裝土 → 右轉上地磅','第1挖：歷建西側已出完，走到 F16 迴轉 → 土堆旁裝土','二挖起：走構台，構台上長臂怪手裝土'];
 const plantGrp=new THREE.Group(),digGrp=new THREE.Group();scene.add(plantGrp);scene.add(digGrp);
-const NSLOT=14;let curPhase=-1,fdGrp=null,routeTP=null,routeFD=null,screen=null,falls=[],arcs=[];
+const NSLOT=40,NSTATIC=14;let curPhase=-1,fdGrp=null,routeTP=null,routeFD=null,screen=null,falls=[],arcs=[];
 const soilM=MAT(0xc9a274),soilGeo=new THREE.BoxGeometry(0.7,0.55,0.7);
 function routeMesh(P,col,grp){const cp=new THREE.CurvePath();for(let j=1;j<P.N.length;j++){const a=P.N[j-1],b=P.N[j];cp.add(new THREE.LineCurve3(new THREE.Vector3(a.x,a.y+0.25,a.z),new THREE.Vector3(b.x,b.y+0.25,b.z)));}
   const c=new THREE.Color(col),tube=new THREE.Mesh(new THREE.TubeGeometry(cp,Math.max(60,Math.round(P.tot/1.5)),0.3,6,false),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.42,depthWrite:false}));tube.renderOrder=5;grp.add(tube);
@@ -725,11 +725,11 @@ function buildPhase(){const p=phaseAt(DAY);if(p===curPhase)return;curPhase=p;
     for(let i=0;i<10;i++){const m=new THREE.Mesh(soilGeo,soilM);m.userData.o=i/10;plantGrp.add(m);falls.push(m);}}}
 function buildFlow(){buildPhase();const p=curPhase,day=DAYS[DAY],trips=day.t+day.f;
   // 土車：14 個車位沿路線等距排開、一直在跑；當天車次決定有幾台出現（每 3 車畫 1 台）
-  const n=trips>0?Math.max(1,Math.min(NSLOT,Math.round(trips/3))):0,nF=day.f>0&&n?Math.max(1,Math.round(n*day.f/trips)):0;
-  const act=[];for(let k=0;k<NSLOT;k++)if(Math.floor((k+1)*n/NSLOT)>Math.floor(k*n/NSLOT))act.push(k);
-  trucks.forEach(t=>t.visible=false);
+  const n=trips>0?Math.max(1,Math.min(NSTATIC,Math.round(trips/3))):0,nF=day.f>0&&n?Math.max(1,Math.round(n*day.f/trips)):0;
+  const act=[];for(let k=0;k<NSTATIC;k++)if(Math.floor((k+1)*n/NSTATIC)>Math.floor(k*n/NSTATIC))act.push(k);
+  if(!playing){trucks.forEach(t=>t.visible=false);
   act.forEach((k,i)=>{const t=trucks[k];if(!t)return;const fda=i>=act.length-nF,P=fda?routeFD:routeTP,u=t.userData;
-    if(u.P!==P||u.s===undefined){u.s=P.tot*(i/Math.max(1,act.length));u.wait=0;}u.P=P;t.visible=true;u.bed.material.color.setHex(fda?0x4b6bfb:u.col);});
+    if(u.P!==P||u.s===undefined){u.s=P.tot*(i/Math.max(1,act.length));u.wait=0;}u.P=P;t.visible=true;u.bed.material.color.setHex(fda?0x4b6bfb:u.col);});}
   if(fdGrp)fdGrp.visible=nF>0;
   // 當天出土的分區：小怪手把土盤上來（第1挖送到旋轉篩斗）
   // 分區小怪手（最多 3 台，物件重複使用不重建）：位置挑分區內離車道與其他機具最遠的點
@@ -893,7 +893,7 @@ function renderHud(){const d=DAYS[DAY],s0=curStage(DAY),p=STAGE===null?(()=>{let
   $('eb').textContent=`CDC SITE · ${s0<5?'STAGE '+(s0+1):'DONE'} · ${d.d}`;$('ttl').textContent=D.title;
   const al=alerts(DAY),nr=al.filter(a=>a.lv==='red').length;
   $('chips').innerHTML=`<span class="chip">${STAGE===null?'整體進度':SN[STAGE]+' 進度'} <b>${(p*100).toFixed(1)}%</b></span><span class="chip">累計出土 <b>${fmt(cV[DAY])}</b> m³</span>
-    <span class="chip">今日 <b>${d.t}</b> 車${d.f?'＋FDA '+d.f:''}</span><span class="chip amb">${s0<5?'推進中：'+SN[s0]:'開挖完成'}</span>${nr?`<span class="chip red">停滯 ${nr} 區</span>`:''}`;
+    <span class="chip">今日 <b>${d.t}</b> 車${d.f?'＋FDA '+d.f:''}</span>${playing?`<span class="chip" id="chipOut">今日出場 <b>${DP.out}</b> / ${DP.total} 車</span>`:''}<span class="chip amb">${s0<5?'推進中：'+SN[s0]:'開挖完成'}</span>${nr?`<span class="chip red">停滯 ${nr} 區</span>`:''}`;
   $('nAlert').textContent=al.length;$('eb').textContent+=' · '+(RT?PHASE_TXT[phaseAt(DAY)]:'');$('nAlert').style.display=al.length?'':'none';buildPins(al);
   const wkd='日一二三四五六'[new Date(d.d+'T00:00:00').getDay()];$('dateLbl').innerHTML=`${d.d}<small>週${wkd}・${DAY+1}/${ND} 天</small>`;
   $('phases').innerHTML=['開挖前',...SN].map((n,i)=>{const cls=i===0?'done':(i-1<s0?'done':i-1===s0?'now':'');return (i?'<span class="ar">→</span>':'')+`<span class="ph ${cls}"><i></i>${n}</span>`;}).join('');}
@@ -906,9 +906,26 @@ function drawChart(){const r=window.devicePixelRatio||1,w=chart.clientWidth,h=ch
 chart.onclick=e=>{const rc=chart.getBoundingClientRect();setDay(Math.floor((e.clientX-rc.left)/rc.width*ND));};
 chart.onmousemove=e=>{const rc=chart.getBoundingClientRect(),i=Math.min(ND-1,Math.max(0,Math.floor((e.clientX-rc.left)/rc.width*ND))),d=DAYS[i];chart.title=`${d.d}　台北港 ${d.t}・FDA ${d.f} 車・${fmt(d.v)} m³`;};
 let playing=false,frameN=0;
-function togglePlay(){playing=!playing;if(playing&&T>=ND-0.01){DAY=-1;T=0;setDay(0,true);}if(!playing){T=DAY+0.9999;geomTick(1);}$('play').textContent=playing?'❚❚':'▶';}
+// 逐日播放：當天每一車次派一台土車從大門進場，全部跑完（過磅、洗車、出大門）才換下一天；坑深跟著出場車數往下挖
+const DP={q:[],out:0,total:0,idle:0};
+function startDay(){const d=DAYS[DAY],q=[];const n=d.t+d.f;for(let i=0;i<n;i++)q.push(Math.floor((i+1)*d.f/n)>Math.floor(i*d.f/n));
+  DP.q=q;DP.total=n;DP.out=0;DP.idle=0;trucks.forEach(t=>{t.visible=false;t.userData.P=null;});}
+function dispatch(){if(!DP.q.length||!routeTP)return;const fda=DP.q[0],P=fda?routeFD:routeTP,a=lanePt(P,0);
+  for(const t of trucks)if(t.visible&&t.userData.P){const u=t.userData;if(Math.hypot(u.px-a.x,u.pz-a.z)<TRUCK_GAP+3)return;}
+  const t=trucks.find(t=>!t.visible);if(!t)return;DP.q.shift();const u=t.userData;u.P=P;u.s=0;u.wait=0;u.bt=0;u.px=a.x;u.pz=a.z;t.visible=true;
+  u.bed.material.color.setHex(fda?0x4b6bfb:u.col);}
+function playStep(dt){const mult=+$('speed').value;let simT=dt*mult;
+  while(simT>1e-6){const h=Math.min(0.05,simT);simT-=h;dispatch();simTrucks(h,true);DP.idle+=h;
+    const done=DP.total?DP.out>=DP.total:DP.idle>=1.5;
+    if(done){if(DAY>=ND-1){togglePlay();return;}setDay(DAY+1,true);startDay();}}
+  T=DAY+(DP.total?DP.out/DP.total:Math.min(1,DP.idle/1.5));geomTick(T-DAY);
+  const c=$('chipOut');if(c)c.innerHTML=`今日出場 <b>${DP.out}</b> / ${DP.total} 車`;}
+function togglePlay(){playing=!playing;
+  if(playing){if(DAY>=ND-1&&T>=ND-0.01){DAY=-1;setDay(0,true);}buildFlow();startDay();renderHud();}
+  else{T=DAY+0.9999;geomTick(1);buildFlow();renderHud();}
+  $('play').textContent=playing?'❚❚':'▶';}
 $('play').onclick=togglePlay;
-function setDay(d,keepT){d=Math.max(0,Math.min(ND-1,d|0));if(!keepT)T=d+(playing?0:0.9999);if(d===DAY)return;DAY=d;slider.value=d;refresh();}
+function setDay(d,keepT){d=Math.max(0,Math.min(ND-1,d|0));if(!keepT){T=d+0.9999;if(playing){playing=false;$('play').textContent='▶';}}if(d===DAY)return;DAY=d;slider.value=d;refresh();}
 function geomTick(frac){updateDepth(frac);updateTerrain(true);updateOutline();updateLabels();updateModel();placeBox(selBox,SEL);placeBox(selFill,SEL);
   diggers.forEach(g=>{if(g.userData.k!==undefined)g.position.y=-cd(g.userData.k)*ZEX;});}
 let lastPanel=0;
@@ -923,13 +940,12 @@ window.addEventListener('resize',resize);
 refresh(true);resize();
 let last=performance.now();const tv=new THREE.Vector3(),tv2=new THREE.Vector3();
 (function loop(now){const dt=Math.min(0.1,(now-last)/1000);last=now;const sec=now/1000;
-  if(playing){T+=dt*(+$('speed').value);if(T>=ND-0.0001){T=ND-0.0001;}const d=Math.floor(T);if(d!==DAY)setDay(d,true);
-    geomTick(T-DAY);if(T>=ND-0.0001){geomTick(1);togglePlay();refresh();}}
+  if(playing)playStep(dt);
   if(camGoal){camera.position.lerp(camGoal.p,0.09);controls.target.lerp(camGoal.t,0.09);camera.zoom+=(camGoal.z-camera.zoom)*0.09;camera.updateProjectionMatrix();
     if(camera.position.distanceTo(camGoal.p)<0.5&&Math.abs(camera.zoom-camGoal.z)<0.01)camGoal=null;}
   if(flowGrp.visible){const LOOP=34;
     flows.forEach(f=>f.dots.forEach(m=>{const q=ptAt(f.P,((m.userData.o+sec*6/f.P.tot)%1)*f.P.tot);m.position.set(q.x,q.y+0.3,q.z);}));
-    simTrucks(dt);
+    if(!playing)simTrucks(dt,false);
     diggers.forEach(g=>{g.userData.arm.rotation.z=Math.sin(sec*1.6+g.userData.ph)*0.25;});
     if(screen){const dr=screen.userData.drum;dr.getWorldPosition(tv);
       const scr=arcs.length>0||curPhase===0,fd=screen.userData.dir||1;falls.forEach(m=>{m.visible=scr;});dr.rotation.x=scr?sec*3:0;
