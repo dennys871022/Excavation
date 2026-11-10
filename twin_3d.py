@@ -606,10 +606,10 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
   const lane=(x0,z0,x1,z1,w,c,grp,h=0.08)=>{const l=Math.hypot(x1-x0,z1-z0)+w*0.5,m=box(l,h,w,c,{r:1});m.castShadow=false;m.position.set((x0+x1)/2,h/2,(z0+z1)/2);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);grp.add(m);return m;};
   const LC=0xd4d9e1;
   lane(R.wsx,R.zIn,R.xW,R.zIn,6.5,LC,siteGrp);lane(R.xEx,R.zOut,R.xJog,R.zOut,6.5,LC,siteGrp);lane(R.wsx+4,R.zIn,R.xEx,R.zOut,6.5,LC,siteGrp);lane(R.wx1,R.zOut,R.xD0,R.zOut,6.5,LC,gantryGrp);
-  {const [b0,b1]=R.bend;lane(R.xW,R.zIn,R.xW,b0[1],6,LC,p1Grp);lane(b0[0],b0[1],b1[0],b1[1],6,LC,p1Grp);lane(b1[0],b1[1],R.xF,R.zE,6,LC,p1Grp);}lane(R.xF,R.zE,R.xF,R.zW,6,LC,p1Grp);lane(R.xF,R.zW,R.xJog,R.zW,6,LC,p1Grp);lane(R.xJog,R.zW,R.xJog,R.zOut,6,LC,p1Grp);
+  {const b1=R.bend[1];lane(R.xEx,R.zOut,b1[0],b1[1],6,LC,p1Grp);lane(b1[0],b1[1],R.xF,R.zE,6,LC,p1Grp);}lane(R.xF,R.zE,R.xF,R.zW,6,LC,p1Grp);lane(R.xF,R.zW,R.xJog,R.zW,6,LC,p1Grp);lane(R.xJog,R.zW,R.xJog,R.zOut,6,LC,p1Grp);
   // 鋪鐵板便道：繞歷建（走開挖區）
   // 繞歷建的鐵板（走開挖區）：西側往北 → 北側往東 → 東側往南 → 土堆旁；歷建西側出完後收掉
-  const PL=0xb9c3cf;[[R.bend[0][0],R.bend[0][1],R.rgX0,R.zE],[R.rgX0,R.zE,R.rgX0,R.rgZ0],[R.rgX0,R.rgZ0,R.rgX1,R.rgZ0],[R.rgX1,R.rgZ0,R.rgX1,R.zW],[R.rgX1,R.zW,R.xL1+3,R.zW]]
+  const PL=0xb9c3cf;[[R.xEx,R.zOut,R.rgX0,R.zOut],[R.rgX0,R.zOut,R.rgX0,R.rgZ0],[R.rgX0,R.rgZ0,R.rgX1,R.rgZ0],[R.rgX1,R.rgZ0,R.rgX1,R.zW],[R.rgX1,R.zW,R.xL1+3,R.zW]]
     .forEach(a=>lane(...a,6.4,PL,p1aGrp,0.6));
   // 構台出入：地面鐵板＋坡道（二挖起）
   if(R.RL>1){lane(R.xD0-R.RL,R.zS,R.xJog,R.zS,6.4,PL,gantryGrp,0.6);lane(R.xJog,R.zS,R.xJog,R.zOut,6,LC,gantryGrp);}
@@ -636,8 +636,8 @@ function routeNodes(variant,p2,fda){const R=RT,N=[],add=(x,z,y=0.6,st=0,ld=0)=>N
   const P_=k=>R.RD[k],gxw=WX(S.gate[0]);
   if(R.RD){if(fda){add(...P_('nb_s'));add(...P_('nb_g'));}else{add(...P_('sb_n'));add(...P_('sb_g'));}}  // 台北港：南下左轉進場；FDA：北上右轉進場
   add(gxw,R.zIn);add(R.wsx,R.zIn);add(R.xW,R.zIn);
-  if(!p2){add(R.xW,R.bend[0][1]);if(variant!==0)add(R.bend[1][0],R.bend[1][1]);
-    if(variant===0){add(R.rgX0,R.zE);add(R.rgX0,R.rgZ0);add(R.rgX1,R.rgZ0);add(R.rgX1,R.zW);add(R.xL1,R.zW,0.6,0.1,1);}  // 繞歷建 → 往東迴轉、停土堆旁裝土
+  if(!p2){N.pop();add(R.wsx+4,R.zIn);add(R.xEx,R.zOut);if(variant!==0)add(R.bend[1][0],R.bend[1][1]);else add(R.rgX0,R.zOut);
+    if(variant===0){add(R.rgX0,R.rgZ0);add(R.rgX1,R.rgZ0);add(R.rgX1,R.zW);add(R.xL1,R.zW,0.6,0.1,1);}  // 繞歷建 → 往東迴轉、停土堆旁裝土
     else{add(R.xF,R.zE);add(R.xF,R.zW);add(R.xLoad,R.zW,0.6,0.1,1);}                                        // 走到 F16 迴轉 → 土堆旁裝土
     add(R.xJog,R.zW);add(R.xJog,R.zOut);}
   else{if(R.xV!==undefined){add(R.xV,R.zIn);add(R.xV,R.zIn-3,YD);add(R.xV,R.zNf,YD);add(R.xD0,R.zNf,YD);}  // 從大門往東 → 西側南北向構台往北 → 北側構台往東
@@ -668,9 +668,9 @@ function makeScreener(){// 旋轉篩斗怪手：把盤上來的土篩過再倒�
   // 照片的篩斗：灰色斗框（兩側厚側板＋上方背板＋斗口斗齒），中間是會轉的網狀滾筒
   const bk=new THREE.Group();bk.position.set(3.9,-1.25,0);const fm=MAT(0x7b828c,{r:0.5,m:0.5});
   [-1.05,1.05].forEach(z=>{const sp=box(2.4,2.1,0.16,fm);sp.position.set(0,0,z);bk.add(sp);});
-  const top=box(2.0,0.18,2.2,fm);top.position.set(-0.2,1.0,0);bk.add(top);const back=box(0.18,1.6,2.2,fm);back.position.set(-1.1,0.2,0);bk.add(back);
-  const lip=box(1.2,0.16,2.2,fm);lip.position.set(0.9,-1.0,0);lip.rotation.z=-0.25;bk.add(lip);
-  for(let i=0;i<6;i++){const t=box(0.45,0.14,0.16,0x3a4252);t.position.set(1.6,-1.15,-0.9+i*0.36);bk.add(t);}
+  const top=box(2.0,0.18,2.2,fm);top.position.set(0.2,1.0,0);bk.add(top);const back=box(0.18,1.6,2.2,fm);back.position.set(1.1,0.2,0);bk.add(back);
+  const lip=box(1.2,0.16,2.2,fm);lip.position.set(-0.9,-1.0,0);lip.rotation.z=0.25;bk.add(lip);
+  for(let i=0;i<6;i++){const t=box(0.45,0.14,0.16,0x3a4252);t.position.set(-1.6,-1.15,-0.9+i*0.36);bk.add(t);}
   const drum=new THREE.Group();const core=new THREE.Mesh(new THREE.CylinderGeometry(0.85,0.85,1.9,20,1,true),new THREE.MeshStandardMaterial({color:0x3a4252,roughness:0.6,side:THREE.DoubleSide}));
   core.rotation.z=Math.PI/2;drum.add(core);const mesh=new THREE.Mesh(new THREE.CylinderGeometry(0.88,0.88,1.92,20,8,true),new THREE.MeshBasicMaterial({color:0xb8c0ca,wireframe:true}));mesh.rotation.z=Math.PI/2;drum.add(mesh);
   bk.add(drum);arm.add(bk);g.userData.drum=drum;return g;}
