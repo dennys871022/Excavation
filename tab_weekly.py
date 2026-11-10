@@ -355,7 +355,12 @@ def render(df_results, global_stage_choice):
                     save_global_pref(PREF_URL, url)
                 st.session_state["wk_msg"] = ("success", f"已存到雲端試算表的分頁 {t}（同一週重存會整頁覆蓋）。")
             except Exception as e:
-                st.session_state["wk_msg"] = ("error", f"存到雲端失敗：{e}。請確認網址正確、試算表已共用給系統帳號（編輯者）。")
+                if "Office file" in str(e):
+                    st.session_state["wk_msg"] = ("error", "這個網址是上傳到雲端硬碟的 Excel 檔（.xlsx），系統沒辦法直接寫入。"
+                        "請在 Google 雲端硬碟打開它 → 上方選單「檔案」→「另存為 Google 試算表」，"
+                        "把新產生的試算表共用給系統帳號（編輯者），再把新網址貼到上面。")
+                else:
+                    st.session_state["wk_msg"] = ("error", f"存到雲端失敗：{e}。請確認網址正確、試算表已共用給系統帳號（編輯者）。")
     msg = st.session_state.pop("wk_msg", None)
     if msg:
         getattr(st, msg[0])(msg[1])
