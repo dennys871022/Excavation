@@ -7,7 +7,6 @@ import streamlit as st
 from datetime import timedelta
 from config import LOOSE_SOIL_FACTOR
 from data_store import _clear_daily_notes_field_or_drop, _row_has_meaningful_override, _save_daily_notes_sorted, _upsert_daily_notes_field, filter_active_dispatch_logs, load_sheet_data, save_sheet_data
-from pdf_reports import generate_weekly_trend_pdf
 from stage_calc import _migrate_stage_settings_schema, build_stage_overview_html, compute_stage_overview, get_stage_index
 from zones import local_stage_index
 
@@ -255,73 +254,7 @@ def render(df_results, global_stage_choice):
         st.caption(f"📌 FDA累計：**{int(df_fda_view['FDA車次'].sum())} 台** / **{df_fda_view['FDA方量(m³)'].sum():,.0f} m³**")
 
     st.divider()
-    st.markdown("#### 📈 週會資料：區間車次趨勢")
-    st.caption("選一段日期區間，只顯示「日期、實際車次、備註」三欄，並畫出車次折線圖（X軸日期、Y軸車次），方便週會報告直接用。這裡會列出區間內每一天（包含沒出土的日子），讓趨勢圖看得出完整狀況。")
-
-    col_wk1, col_wk2 = st.columns(2)
-    with col_wk1:
-        week_start = st.date_input(
-            "起始日期", value=max(overview["est_start"], overview["today"] - timedelta(days=7)),
-            key=f"week_start_{stage_choice}"
-        )
-    with col_wk2:
-        week_end = st.date_input("結束日期", value=overview["today"], key=f"week_end_{stage_choice}")
-
-    if week_start > week_end:
-        st.error("起始日期不能晚於結束日期。")
-    else:
-        week_start_str = week_start.strftime("%Y-%m-%d")
-        week_end_str = week_end.strftime("%Y-%m-%d")
-        week_df = df_range[(df_range['日期'] >= week_start_str) & (df_range['日期'] <= week_end_str)].copy()
-
-        if week_df.empty:
-            st.info("這個區間內沒有資料。")
-        else:
-            week_display = week_df[['日期', '實際車次', '備註']]
-            st.dataframe(week_display, use_container_width=True, hide_index=True)
-
-            week_df['_date_obj'] = pd.to_datetime(week_df['日期'])
-            week_df['_date_label'] = week_df['_date_obj'].apply(lambda d: f"{d.month}/{d.day}")
-
-            fig_week = go.Figure()
-            fig_week.add_trace(go.Scatter(
-                x=week_df['_date_obj'], y=week_df['實際車次'],
-                mode='lines+markers+text',
-                text=week_df['實際車次'].astype(int).astype(str),
-                textposition='top center',
-                line=dict(color='#3498DB', width=2),
-                marker=dict(size=7),
-                name='實際車次',
-            ))
-            fig_week.update_layout(
-                title=f"【{stage_choice}】{week_start_str} ~ {week_end_str} 車次趨勢",
-                xaxis=dict(
-                    title="日期",
-                    type='date',
-                    tickmode='array',
-                    tickvals=week_df['_date_obj'],
-                    ticktext=week_df['_date_label'],  # 直接用算好的「9/13」格式文字，不靠Plotly解析日期格式字串
-                    tickangle=-45,
-                ),
-                yaxis_title="車次 (台)",
-                height=460, margin=dict(l=20, r=20, t=50, b=60),
-            )
-            st.plotly_chart(fig_week, use_container_width=True)
-
-            if st.button("📥 匯出週會表格 PDF", key=f"export_week_pdf_{stage_choice}"):
-                with st.spinner("PDF 產生中..."):
-                    week_pdf_path = generate_weekly_trend_pdf(
-                        week_display, stage_choice, week_start_str, week_end_str
-                    )
-                with open(week_pdf_path, "rb") as f:
-                    st.download_button(
-                        label=f"✅ 點此下載 週會車次表格 ({week_start_str}~{week_end_str}).pdf",
-                        data=f,
-                        file_name=f"weekly_trend_{stage_choice}_{week_start_str}_{week_end_str}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key=f"download_week_pdf_{stage_choice}",
-                    )
+    st.info("📋 週會用的「剩餘土石方出土紀錄」表格與車次折線圖，已移到上方的「📋 週會簡報」分頁（可下載 Excel 並自動存到雲端試算表）。")
 
     st.divider()
     st.markdown(f"#### 🗺️ 【{stage_choice}】單階段專用地圖（僅顯示本階段挖掘進度）")
