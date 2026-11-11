@@ -15,8 +15,29 @@ from zones import local_stage_index, zone_active_in_stage
 _WEEKDAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
 
 
-def _finish_date(start, work_days, off_weekdays):
-    """從 start 當天開始算，跳過不收土的星期幾，數滿 work_days 個出土日的那一天就是預計出完日。"""
+def _drange(a, b):
+    a, b = datetime.strptime(a, "%Y-%m-%d").date(), datetime.strptime(b, "%Y-%m-%d").date()
+    return [a + timedelta(days=i) for i in range((b - a).days + 1)]
+
+
+# 國定假日（含補假），依人事行政總處公布的 115、116 年政府行政機關辦公日曆表。之後的年度公布後往下加即可。
+TW_HOLIDAYS = set()
+for _a, _b in [
+    # 115 年（2026）
+    ("2026-01-01", "2026-01-01"), ("2026-02-14", "2026-02-22"), ("2026-02-27", "2026-03-01"), ("2026-04-03", "2026-04-06"),
+    ("2026-05-01", "2026-05-01"), ("2026-06-19", "2026-06-19"), ("2026-09-25", "2026-09-25"), ("2026-09-28", "2026-09-28"),
+    ("2026-10-09", "2026-10-11"), ("2026-10-24", "2026-10-26"), ("2026-12-25", "2026-12-25"),
+    # 116 年（2027）
+    ("2027-01-01", "2027-01-01"), ("2027-02-04", "2027-02-10"), ("2027-02-27", "2027-03-01"), ("2027-04-03", "2027-04-06"),
+    ("2027-04-30", "2027-05-01"), ("2027-06-09", "2027-06-09"), ("2027-09-15", "2027-09-15"), ("2027-09-28", "2027-09-28"),
+    ("2027-10-09", "2027-10-11"), ("2027-10-23", "2027-10-25"), ("2027-12-24", "2027-12-26"), ("2027-12-31", "2027-12-31"),
+]:
+    TW_HOLIDAYS.update(_drange(_a, _b))
+TW_HOLIDAYS_LAST = max(TW_HOLIDAYS)
+
+
+def _finish_date(start, work_days, off_weekdays, off_dates=frozenset()):
+    """從 start 當天開始算，跳過不收土的星期幾與指定日期（國定假日等），數滿 work_days 個出土日的那一天就是預計出完日。"""
     if work_days is None or pd.isna(work_days):
         return None
     n = math.ceil(work_days - 1e-9)
@@ -26,7 +47,7 @@ def _finish_date(start, work_days, off_weekdays):
         return None
     d, cnt = start, 0
     while True:
-        if d.weekday() not in off_weekdays:
+        if d.weekday() not in off_weekdays and d not in off_dates:
             cnt += 1
             if cnt >= n:
                 return d
@@ -192,6 +213,19 @@ def render(df_results, global_stage_choice):
             _start = st.date_input("剩餘天數從哪一天開始算", value=_tw_today, key="grid_est_start")
             _off_names = st.multiselect("每週不收土的日子（不算出土日）", _WEEKDAYS, default=["週六", "週日"], key="grid_est_off")
             _off = {_WEEKDAYS.index(n) for n in _off_names}
+            _use_hol = st.checkbox("國定假日不收土（含補假）", value=True, key="grid_est_hol",
+                                   help=f"依人事行政總處辦公日曆表，目前內建到 {TW_HOLIDAYS_LAST:%Y/%m/%d}")
+            _extra_txt = st.text_input("其他不收土日期（選填，用逗號分開）", value="", key="grid_est_extra",
+                                       placeholder="例如 2027/01/18, 2027/01/19")
+            _extra = set()
+            for _t in _extra_txt.replace("，", ",").split(","):
+                _t = _t.strip()
+                if _t:
+                    try:
+                        _extra.add(pd.to_datetime(_t).date())
+                    except Exception:
+                        st.warning(f"看不懂的日期：{_t}")
+            _off_dates = frozenset((TW_HOLIDAYS if _use_hol else set()) | _extra)
 
         _rows = []
         for _i, (_label, _stage_name, _vk) in enumerate(_est_stage_defs):
@@ -237,12 +271,12 @@ def render(df_results, global_stage_choice):
             _acc, _dates = 0.0, []
             for _i, _v in enumerate(_df_est[_c]):
                 if _i == len(_df_est) - 1:
-                    _dates.append(_fmt_date(_finish_date(_start, _acc, _off)) if _df_est[_c].iloc[:-1].notna().all() else "—")
+                    _dates.append(_fmt_date(_finish_date(_start, _acc, _off, _off_dates)) if _df_est[_c].iloc[:-1].notna().all() else "—")
                 elif pd.isna(_v):
                     _dates.append("—")
                 else:
                     _acc += _v
-                    _dates.append(_fmt_date(_finish_date(_start, _acc, _off)))
+                    _dates.append(_fmt_date(_finish_date(_start, _acc, _off, _off_dates)))
             _df_est[_lab] = _dates
 
         with _left:
@@ -254,8 +288,8 @@ def render(df_results, global_stage_choice):
             a2.metric("剩餘方量（實方）", f"{_sel['剩餘方量(實方)']:,.0f} m³")
             a3.metric("預估總天數（從0開始）", _dd(_sel["預估總天數"]))
             # 單一挖：從起始日開始只算這一挖；合計：四挖依序全部出完
-            _fd_cur = _finish_date(_start, _sel["剩餘天數(目前功率)"], _off)
-            _fd_scn = _finish_date(_start, _sel[_scn_col], _off)
+            _fd_cur = _finish_date(_start, _sel["剩餘天數(目前功率)"], _off, _off_dates)
+            _fd_scn = _finish_date(_start, _sel[_scn_col], _off, _off_dates)
             b1, b2, b3 = st.columns(3)
             b1.metric("剩餘天數（目前功率）", _dd(_sel["剩餘天數(目前功率)"]))
             b2.metric(f"剩餘天數（每天 {_trips} 台）", _dd(_sel[_scn_col]))
@@ -273,7 +307,7 @@ def render(df_results, global_stage_choice):
             if _fd_cur and _fd_scn:
                 _cd = (_fd_cur - _fd_scn).days
                 c3.metric("日曆天差距", "同一天" if _cd == 0 else f"{'提早' if _cd > 0 else '延後'} {abs(_cd)} 天")
-            st.caption(f"從 {_fmt_date(_start)} 起算，扣掉每週{('、'.join(_off_names) if _off_names else '（無）')}不收土；剩餘天數無條件進位成整天。"
+            st.caption(f"從 {_fmt_date(_start)} 起算，扣掉每週{('、'.join(_off_names) if _off_names else '（無）')}不收土" + ("、國定假日" if _use_hol else "") + ("、另外指定的日期" if _extra else "") + "；剩餘天數無條件進位成整天。"
                        + ("「1~4挖 合計」＝四挖依序全部出完的日期。" if _view == "1~4挖 合計" else f"這裡只算{_view}本身從起始日開始挖完的日期（明細表裡另有四挖依序施作的日期）。"))
 
             # 比較圖：選單一挖 → 只畫那一挖；選合計 → 畫四挖＋合計
