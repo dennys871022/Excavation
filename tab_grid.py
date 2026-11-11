@@ -1,5 +1,8 @@
 """🗺️ 圖資與方量基準 分頁。"""
 
+import math
+from datetime import datetime, timedelta
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -7,6 +10,31 @@ from config import LOOSE_SOIL_FACTOR
 from data_store import filter_active_dispatch_logs, load_sheet_data, save_sheet_data
 from stage_calc import compute_stage_overview, get_stage_index
 from zones import local_stage_index, zone_active_in_stage
+
+
+_WEEKDAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+
+
+def _finish_date(start, work_days, off_weekdays):
+    """從 start 當天開始算，跳過不收土的星期幾，數滿 work_days 個出土日的那一天就是預計出完日。"""
+    if work_days is None or pd.isna(work_days):
+        return None
+    n = math.ceil(work_days - 1e-9)
+    if n <= 0:
+        return start
+    if len(off_weekdays) >= 7:
+        return None
+    d, cnt = start, 0
+    while True:
+        if d.weekday() not in off_weekdays:
+            cnt += 1
+            if cnt >= n:
+                return d
+        d += timedelta(days=1)
+
+
+def _fmt_date(d):
+    return "—" if d is None else f"{d:%Y/%m/%d}（{_WEEKDAYS[d.weekday()]}）"
 
 
 def render(df_results, global_stage_choice):
@@ -159,6 +187,11 @@ def render(df_results, global_stage_choice):
             _scn_loose = _trips * _per_truck
             st.caption(f"每天 **{_trips} 台** ＝ {_scn_loose:,.0f} m³ 鬆方 ＝ **{_scn_loose / LOOSE_SOIL_FACTOR:,.0f} m³ 實方**")
             st.caption(f"目前平均功率：{_base_loose:,.0f} m³/天 鬆方（約 {_base_loose / _per_truck:,.1f} 台/天，取自{_base_label}）")
+            st.markdown("**📅 預計出完日期**")
+            _tw_today = (datetime.utcnow() + timedelta(hours=8)).date()
+            _start = st.date_input("剩餘天數從哪一天開始算", value=_tw_today, key="grid_est_start")
+            _off_names = st.multiselect("每週不收土的日子（不算出土日）", _WEEKDAYS, default=["週六", "週日"], key="grid_est_off")
+            _off = {_WEEKDAYS.index(n) for n in _off_names}
 
         _rows = []
         for _i, (_label, _stage_name, _vk) in enumerate(_est_stage_defs):
@@ -199,6 +232,18 @@ def render(df_results, global_stage_choice):
         for _c in ["預估總天數", "剩餘天數(目前功率)", _scn_col, "可提早天數"]:
             _sum[_c] = _df_est[_c].sum() if _df_est[_c].notna().all() else None
         _df_est = pd.concat([_df_est, pd.DataFrame([_sum])], ignore_index=True)
+        # 四挖依序施作：第1挖從起始日開始，下一挖接著前一挖的累計天數往後排
+        for _c, _lab in (("剩餘天數(目前功率)", "預計出完(目前功率)"), (_scn_col, f"預計出完(每天{_trips}台)")):
+            _acc, _dates = 0.0, []
+            for _i, _v in enumerate(_df_est[_c]):
+                if _i == len(_df_est) - 1:
+                    _dates.append(_fmt_date(_finish_date(_start, _acc, _off)) if _df_est[_c].iloc[:-1].notna().all() else "—")
+                elif pd.isna(_v):
+                    _dates.append("—")
+                else:
+                    _acc += _v
+                    _dates.append(_fmt_date(_finish_date(_start, _acc, _off)))
+            _df_est[_lab] = _dates
 
         with _left:
             _sel = _df_est[_df_est["階段"] == _view].iloc[0]
@@ -208,6 +253,9 @@ def render(df_results, global_stage_choice):
             a1.metric("方量（實方）", f"{_sel['方量(實方)']:,.0f} m³")
             a2.metric("剩餘方量（實方）", f"{_sel['剩餘方量(實方)']:,.0f} m³")
             a3.metric("預估總天數（從0開始）", _dd(_sel["預估總天數"]))
+            # 單一挖：從起始日開始只算這一挖；合計：四挖依序全部出完
+            _fd_cur = _finish_date(_start, _sel["剩餘天數(目前功率)"], _off)
+            _fd_scn = _finish_date(_start, _sel[_scn_col], _off)
             b1, b2, b3 = st.columns(3)
             b1.metric("剩餘天數（目前功率）", _dd(_sel["剩餘天數(目前功率)"]))
             b2.metric(f"剩餘天數（每天 {_trips} 台）", _dd(_sel[_scn_col]))
@@ -219,6 +267,14 @@ def render(df_results, global_stage_choice):
                     b3.metric("可提早" if _d > 0 else "會延後", f"{abs(_d):.1f} 天", delta=f"{_d:+.1f} 天", delta_color="normal")
             else:
                 b3.metric("可提早天數", "資料不全")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("預計出完（目前功率）", _fmt_date(_fd_cur))
+            c2.metric(f"預計出完（每天 {_trips} 台）", _fmt_date(_fd_scn))
+            if _fd_cur and _fd_scn:
+                _cd = (_fd_cur - _fd_scn).days
+                c3.metric("日曆天差距", "同一天" if _cd == 0 else f"{'提早' if _cd > 0 else '延後'} {abs(_cd)} 天")
+            st.caption(f"從 {_fmt_date(_start)} 起算，扣掉每週{('、'.join(_off_names) if _off_names else '（無）')}不收土；剩餘天數無條件進位成整天。"
+                       + ("「1~4挖 合計」＝四挖依序全部出完的日期。" if _view == "1~4挖 合計" else f"這裡只算{_view}本身從起始日開始挖完的日期（明細表裡另有四挖依序施作的日期）。"))
 
             # 比較圖：選單一挖 → 只畫那一挖；選合計 → 畫四挖＋合計
             _plot = _df_est if _view == "1~4挖 合計" else _df_est[_df_est["階段"] == _view]
