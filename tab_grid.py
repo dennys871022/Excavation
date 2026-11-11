@@ -149,6 +149,8 @@ def render(df_results, global_stage_choice):
 
         _left, _right = st.columns([3, 1.1])
         with _right:
+            _views = ["第1挖", "第2挖", "第3挖", "第4挖", "1~4挖 合計"]
+            _view = st.radio("要看哪一階段", _views, index=_cur_idx, horizontal=True, key="grid_est_view")
             st.markdown("**🚚 每日車次情境**")
             _per_truck = st.number_input("每台載運（鬆方 m³）", min_value=1.0, max_value=30.0, value=12.0, step=0.5, key="grid_est_per_truck")
             _default_trips = max(1, int(round(_base_loose / _per_truck))) if _base_loose > 0 else 30
@@ -199,33 +201,40 @@ def render(df_results, global_stage_choice):
         _df_est = pd.concat([_df_est, pd.DataFrame([_sum])], ignore_index=True)
 
         with _left:
-            _tot = _df_est.iloc[-1]
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("剩餘方量（實方）", f"{_tot['剩餘方量(實方)']:,.0f} m³")
-            m2.metric("目前功率 剩餘天數", "資料不全" if pd.isna(_tot["剩餘天數(目前功率)"]) else f"{_tot['剩餘天數(目前功率)']:.1f} 天")
-            m3.metric(f"每天 {_trips} 台 剩餘天數", "資料不全" if pd.isna(_tot[_scn_col]) else f"{_tot[_scn_col]:.1f} 天")
-            if pd.notna(_tot["可提早天數"]):
-                _d = _tot["可提早天數"]
+            _sel = _df_est[_df_est["階段"] == _view].iloc[0]
+            _dd = lambda v: "資料不全" if pd.isna(v) else f"{v:.1f} 天"
+            st.markdown(f"**{_view}**" + (f"　｜　功率來源：{_sel['功率來源']}（{_sel['目前功率(實方/天)']:,.0f} m³/天 實方）" if _view != "1~4挖 合計" and pd.notna(_sel['目前功率(實方/天)']) else "　｜　四挖依序施作加總"))
+            a1, a2, a3 = st.columns(3)
+            a1.metric("方量（實方）", f"{_sel['方量(實方)']:,.0f} m³")
+            a2.metric("剩餘方量（實方）", f"{_sel['剩餘方量(實方)']:,.0f} m³")
+            a3.metric("預估總天數（從0開始）", _dd(_sel["預估總天數"]))
+            b1, b2, b3 = st.columns(3)
+            b1.metric("剩餘天數（目前功率）", _dd(_sel["剩餘天數(目前功率)"]))
+            b2.metric(f"剩餘天數（每天 {_trips} 台）", _dd(_sel[_scn_col]))
+            if pd.notna(_sel["可提早天數"]):
+                _d = _sel["可提早天數"]
                 if abs(_d) < 0.05:
-                    m4.metric("跟目前相比", "差不多")
+                    b3.metric("跟目前相比", "差不多")
                 else:
-                    m4.metric("可提早" if _d > 0 else "會延後", f"{abs(_d):.1f} 天", delta=f"{_d:+.1f} 天", delta_color="normal")
+                    b3.metric("可提早" if _d > 0 else "會延後", f"{abs(_d):.1f} 天", delta=f"{_d:+.1f} 天", delta_color="normal")
             else:
-                m4.metric("可提早天數", "資料不全")
-            _fmt = {c: "{:,.0f}" for c in ["方量(實方)", "剩餘方量(實方)", "目前功率(實方/天)"]}
-            _fmt.update({c: "{:,.1f}" for c in ["預估總天數", "剩餘天數(目前功率)", _scn_col, "可提早天數"]})
-            st.dataframe(_df_est.style.format(_fmt, na_rep="—"), use_container_width=True, hide_index=True)
+                b3.metric("可提早天數", "資料不全")
 
-            # 比較圖：各挖剩餘天數，目前功率 vs 假設車次
-            _plot = _df_est.iloc[:-1]
+            # 比較圖：選單一挖 → 只畫那一挖；選合計 → 畫四挖＋合計
+            _plot = _df_est if _view == "1~4挖 合計" else _df_est[_df_est["階段"] == _view]
             _fig = go.Figure()
             _fig.add_bar(x=_plot["階段"], y=_plot["剩餘天數(目前功率)"], name="目前功率", marker_color="#95A5A6",
                          text=[f"{v:.1f}" if pd.notna(v) else "" for v in _plot["剩餘天數(目前功率)"]], textposition="outside")
             _fig.add_bar(x=_plot["階段"], y=_plot[_scn_col], name=f"每天 {_trips} 台", marker_color="#3498DB",
                          text=[f"{v:.1f}" if pd.notna(v) else "" for v in _plot[_scn_col]], textposition="outside")
-            _fig.update_layout(barmode="group", height=320, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="剩餘天數（工作天）",
-                               legend=dict(orientation="h", y=1.12))
+            _fig.update_layout(barmode="group", height=300, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="剩餘天數（工作天）",
+                               legend=dict(orientation="h", y=1.14))
             st.plotly_chart(_fig, use_container_width=True, key="grid_est_compare")
+
+            with st.expander("四挖明細表"):
+                _fmt = {c: "{:,.0f}" for c in ["方量(實方)", "剩餘方量(實方)", "目前功率(實方/天)"]}
+                _fmt.update({c: "{:,.1f}" for c in ["預估總天數", "剩餘天數(目前功率)", _scn_col, "可提早天數"]})
+                st.dataframe(_df_est.style.format(_fmt, na_rep="—"), use_container_width=True, hide_index=True)
 
         st.caption(f"算法：全部用實方計算。功率＝該階段「預計開始時間」到今天的累計出土量（鬆方，含FDA）÷ 有計入工期的天數，再 ÷ {LOOSE_SOIL_FACTOR} 換成實方；"
                    "還沒開始出土的階段用目前施工中那一挖的功率推估（見「功率來源」）。「剩餘方量」只算每一挖自己那一層還沒挖的量（上一挖目標～這一挖目標之間），不會重複算前面幾挖。"
