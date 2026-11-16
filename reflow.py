@@ -131,6 +131,8 @@ def render_reflow(df_results, global_stage_choice):
         if not st.checkbox("開始計算並顯示預覽", value=False, key="reflow_open",
                            help="預覽需要逐筆模擬分配，會拖慢每次點選的速度，所以預設不計算；要用時再勾選。"):
             return
+        if st.button("🔄 重新讀取雲端最新資料（剛在試算表改過作廢時先按這個）", key="reflow_refresh"):
+            st.cache_data.clear()
         raw = load_sheet_data("dispatch_logs")
         if raw is None or raw.empty or "出土分區" not in raw.columns:
             st.info("目前沒有派車紀錄。")
@@ -157,7 +159,15 @@ def render_reflow(df_results, global_stage_choice):
         st.download_button("⬇️ 先下載目前 dispatch_logs 備份（CSV）", raw.to_csv(index=False).encode("utf-8-sig"),
                            file_name="dispatch_logs_backup.csv", mime="text/csv", key="reflow_backup")
         if st.button("✅ 確認重新分配並寫入雲端", type="primary", key="reflow_apply"):
-            out = apply_reflow(raw, new_s, splits)
+            # 雲端讀取有5分鐘快取：如果剛剛直接在試算表（或另一個分頁）改過作廢、補登，預覽用的可能是舊資料，
+            # 直接寫回會把剛改的作廢蓋掉。所以寫入前一定重新讀一次雲端最新資料，用最新資料重算分配再寫回。
+            st.cache_data.clear()
+            fresh = load_sheet_data("dispatch_logs")
+            if fresh is None or fresh.empty or "出土分區" not in fresh.columns:
+                st.error("寫入前重新讀取雲端失敗，這次不寫入，請重新整理後再試。")
+                return
+            new_s, summ, left, splits = reflow_assignments(fresh, df_results, stage_idx, order, inc)
+            out = apply_reflow(fresh, new_s, splits)
             if save_sheet_data("dispatch_logs", out):
                 sync_stage_daily_log(global_stage_choice, df_results)
                 st.success(f"已重新分配 {len(new_s)} 筆（{changed} 筆有改變）。")
