@@ -86,10 +86,14 @@ def _is_voided(val):
     """
     if pd.isna(val):
         return False
-    if isinstance(val, bool):
-        return val
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    if isinstance(val, (int, float, np.integer, np.floating)):
+        return float(val) == 1.0          # 試算表裡 1/0 讀回來常變成 1.0/0.0，"1.0" 字串比對不到會被當成沒作廢
     s = str(val).strip().upper()
-    return s in ('TRUE', '1', 'YES', 'V', '是')
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s in ('TRUE', '1', 'YES', 'Y', 'V', '是', '作廢')
 
 
 def filter_active_dispatch_logs(df_logs):
