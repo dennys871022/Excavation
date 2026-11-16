@@ -49,32 +49,73 @@ def reflow_assignments(logs, df_results, stage_idx, zone_order, include_unassign
     unassigned = zcol.isin(["未指定", "", "nan"]) if include_unassigned else pd.Series(False, index=logs.index)
     elig = logs[(~voided) & (in_order | unassigned)].copy()
     if elig.empty:
-        return pd.Series(dtype=object), pd.DataFrame(), 0
+        return pd.Series(dtype=object), pd.DataFrame(), 0, {}
     elig["_dt"] = pd.to_datetime(elig["日期"].astype(str).str[:10] + " " + elig.get("時間", "").fillna("").astype(str), errors="coerce")
     elig["_vol"] = pd.to_numeric(elig.get("載運方量(m³)", 12.0), errors="coerce").fillna(12.0) / LOOSE_SOIL_FACTOR
     elig = elig.sort_values(["_dt"], kind="stable")
+    trips_col = pd.to_numeric(elig["車次數"], errors="coerce") if "車次數" in elig.columns else pd.Series(1, index=elig.index)
+    elig["_trips"] = trips_col.fillna(1).clip(lower=1).round().astype(int)
     remaining = dict(caps)
     new = {}
+    splits = {}            # 多車次的集計列（例如FDA）跨到兩個以上分區時：idx -> [(分區, 車次), ...]
+    after_vol = {}
     p = 0
     left = 0
     for idx, r in elig.iterrows():
-        while p < len(order) and remaining[order[p]] <= 0:
-            p += 1
-        if p >= len(order):
-            new[idx] = "未指定"
-            left += 1
-            continue
-        z = order[p]
-        new[idx] = z
-        remaining[z] -= r["_vol"]          # 最後一車允許些微超挖收尾，跟批量分配規則一致
-    new_s = pd.Series(new)
+        n = int(r["_trips"])
+        per = r["_vol"] / n
+        alloc = []          # 依時間順序逐車填：集計列裡的每一車都跟同一天的車一樣分到當時正在挖的分區
+        for _ in range(n):
+            while p < len(order) and remaining[order[p]] <= 0:
+                p += 1
+            z = order[p] if p < len(order) else "未指定"
+            if z == "未指定":
+                left += 1
+            else:
+                remaining[z] -= per        # 最後一車允許些微超挖收尾，跟批量分配規則一致
+                after_vol[z] = after_vol.get(z, 0.0) + per
+            if alloc and alloc[-1][0] == z:
+                alloc[-1][1] += 1
+            else:
+                alloc.append([z, 1])
+        new[idx] = alloc[0][0]
+        if len(alloc) > 1:
+            splits[idx] = [(z, c) for z, c in alloc]
+    new_s = pd.Series(new, dtype=object)
     before = elig["_vol"].groupby(zcol[elig.index]).sum()
-    after = elig["_vol"].groupby(new_s).sum()
     rows = []
     for z in order:
         rows.append({"分區": z, "本階段目標(實方)": round(caps[z]), "調整前(實方)": round(float(before.get(z, 0))),
-                     "調整後(實方)": round(float(after.get(z, 0)))})
-    return new_s, pd.DataFrame(rows), left
+                     "調整後(實方)": round(float(after_vol.get(z, 0)))})
+    return new_s, pd.DataFrame(rows), left, splits
+
+
+def apply_reflow(raw, new_s, splits):
+    """把分配結果寫回：一般列直接改分區；跨分區的集計列拆成多列，車次與方量依車數比例分配。"""
+    out = raw.copy()
+    out.loc[new_s.index, "出土分區"] = new_s.values
+    if not splits:
+        return out
+    extra = []
+    out = out.astype({c: object for c in ("出土分區", "車次數", "載運方量(m³)", "車頭車號") if c in out.columns})
+    for idx, parts in splits.items():
+        row = out.loc[idx].astype(object)
+        n = sum(c for _, c in parts)
+        vol = pd.to_numeric(row.get("載運方量(m³)", 0), errors="coerce")
+        vol = 0.0 if pd.isna(vol) else float(vol)
+        for z, c in parts:
+            nr = row.copy()
+            nr["出土分區"] = z
+            nr["車次數"] = c
+            nr["載運方量(m³)"] = round(vol * c / n, 1)
+            car = str(row.get("車頭車號", ""))
+            if car.startswith("FDA集計") and z != "未指定":
+                nr["車頭車號"] = f"{car.split('-')[0]}-{car.split('-')[1]}-{z}" if car.count("-") >= 1 else car
+            extra.append(nr)
+    out = out.drop(index=list(splits))
+    out = pd.concat([out, pd.DataFrame(extra)], ignore_index=True)
+    key = pd.to_datetime(out["日期"].astype(str).str[:10] + " " + out.get("時間", "").fillna("").astype(str), errors="coerce")
+    return out.assign(_k=key).sort_values("_k", kind="stable").drop(columns="_k").reset_index(drop=True)
 
 
 def render_reflow(df_results, global_stage_choice):
@@ -85,7 +126,7 @@ def render_reflow(df_results, global_stage_choice):
             return
         st.caption(
             f"目前換算係數 {LOOSE_SOIL_FACTOR}（鬆方÷係數＝實方）。系統會把【{global_stage_choice}】範圍內已指定分區的車次"
-            "（不含作廢、不含「開挖前土方」）依日期時間順序，從挖掘順序的第一區開始逐區填到該區在本階段的目標，再換下一區。"
+            "（不含作廢、不含「開挖前土方」；FDA等多車次集計列會逐車分配，跨到兩區時自動拆成兩列）依日期時間順序，從挖掘順序的第一區開始逐區填到該區在本階段的目標，再換下一區。"
             "會直接改寫雲端 dispatch_logs 的「出土分區」欄，所以按確認前請先下載備份。")
         if not st.checkbox("開始計算並顯示預覽", value=False, key="reflow_open",
                            help="預覽需要逐筆模擬分配，會拖慢每次點選的速度，所以預設不計算；要用時再勾選。"):
@@ -101,7 +142,7 @@ def render_reflow(df_results, global_stage_choice):
         if not order:
             st.warning("請至少選一個分區。")
             return
-        new_s, summ, left = reflow_assignments(raw, df_results, stage_idx, order, inc)
+        new_s, summ, left, splits = reflow_assignments(raw, df_results, stage_idx, order, inc)
         if new_s.empty:
             st.info("沒有符合條件的車次可以重新分配。")
             return
@@ -109,14 +150,14 @@ def render_reflow(df_results, global_stage_choice):
         front = summ[summ["調整後(實方)"] > 0]
         frontier = front.iloc[-1]["分區"] if not front.empty else "—"
         st.write(f"共 **{len(new_s)}** 筆車次參與分配，其中 **{changed}** 筆分區會改變；推進到最前面的分區：**{frontier}**。"
-                 + (f"　⚠️ {left} 筆因所有分區目標都已填滿，會變成「未指定」。" if left else ""))
+                 + (f"　{len(splits)} 筆集計列會拆分到多個分區。" if splits else "")
+                 + (f"　⚠️ {left} 車因所有分區目標都已填滿，會變成「未指定」。" if left else ""))
         show = summ[(summ["調整前(實方)"] > 0) | (summ["調整後(實方)"] > 0)]
         st.dataframe(show, use_container_width=True, hide_index=True)
         st.download_button("⬇️ 先下載目前 dispatch_logs 備份（CSV）", raw.to_csv(index=False).encode("utf-8-sig"),
                            file_name="dispatch_logs_backup.csv", mime="text/csv", key="reflow_backup")
         if st.button("✅ 確認重新分配並寫入雲端", type="primary", key="reflow_apply"):
-            out = raw.copy()
-            out.loc[new_s.index, "出土分區"] = new_s.values
+            out = apply_reflow(raw, new_s, splits)
             if save_sheet_data("dispatch_logs", out):
                 sync_stage_daily_log(global_stage_choice, df_results)
                 st.success(f"已重新分配 {len(new_s)} 筆（{changed} 筆有改變）。")
