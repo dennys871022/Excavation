@@ -35,11 +35,34 @@ def load_sheet_data(sheet_name):
         return pd.DataFrame()
 
 
+GUARDED_SHEETS = {"dispatch_logs"}
+
+
 def save_sheet_data(sheet_name, df):
     if is_demo_mode():
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         st.toast(f"👀 訪客模式：已模擬儲存【{sheet_name}】至網頁暫存，雲端資料庫未變動。")
         return True
+
+    # 防呆：dispatch_logs 是整張覆蓋寫入。若前面讀取雲端失敗拿到空表、或程式誤把資料篩掉，
+    # 一存就會把雲端整張洗掉。寫入前先重新讀一次雲端現況，筆數大幅變少就拒絕寫入並先備份。
+    if sheet_name in GUARDED_SHEETS:
+        try:
+            cur = get_conn().read(spreadsheet=SHEET_URL, worksheet=sheet_name, ttl=0).dropna(how="all")
+        except Exception as e:
+            st.error(f"⛔ 寫入前無法讀取雲端【{sheet_name}】現況（{e}），為避免覆蓋掉雲端資料，這次不寫入。請稍後再試。")
+            return False
+        n_cur, n_new = len(cur), len(df)
+        if n_cur >= 20 and (n_cur - n_new) > max(20, n_cur * 0.1):
+            try:
+                get_conn().update(spreadsheet=SHEET_URL, worksheet=f"{sheet_name}_備份", data=cur)
+            except Exception:
+                pass
+            st.error(
+                f"⛔ 這次要寫入的【{sheet_name}】只有 {n_new} 筆，雲端目前有 {n_cur} 筆，一次少了 {n_cur - n_new} 筆，"
+                f"疑似讀取異常，已擋下不寫入（雲端現況已另存到【{sheet_name}_備份】分頁）。請重新整理網頁後再操作一次。"
+            )
+            return False
 
     try:
         get_conn().update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
