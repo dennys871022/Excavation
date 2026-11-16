@@ -94,6 +94,11 @@ def apply_reflow(raw, new_s, splits):
     """把分配結果寫回：一般列直接改分區；跨分區的集計列拆成多列，車次與方量依車數比例分配。"""
     out = raw.copy()
     out.loc[new_s.index, "出土分區"] = new_s.values
+    # 作廢的車不佔任何分區：一律改回「未指定」，表上一眼就看得出它沒被分配
+    if "作廢" in out.columns:
+        vmask = out["作廢"].apply(_is_voided) & (out["出土分區"].fillna("").astype(str).str.strip() != PRE_ZONE)
+        out["出土分區"] = out["出土分區"].astype(object)
+        out.loc[vmask, "出土分區"] = "未指定"
     if not splits:
         return out
     extra = []
