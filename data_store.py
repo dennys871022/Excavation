@@ -64,6 +64,11 @@ def save_sheet_data(sheet_name, df):
             )
             return False
 
+    # 「作廢」欄統一寫成 TRUE / FALSE：經過 pandas 運算後布林值常被轉成 1/0 或 numpy 型別，寫回試算表就變成 1、0，不好閱讀
+    if "作廢" in df.columns:
+        df = df.copy()
+        df["作廢"] = df["作廢"].apply(lambda v: "TRUE" if _is_voided(v) else "FALSE")
+
     try:
         get_conn().update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
         st.cache_data.clear()
