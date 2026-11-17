@@ -1,3 +1,4 @@
+import math
 """📋 週會簡報 分頁：剩餘土石方出土紀錄（FDA／台北港兩張表）＋週會車次折線圖，
 按「儲存」自動存到指定的雲端試算表（每週一個分頁，例如「土方出土紀錄1109」）。"""
 
@@ -264,10 +265,14 @@ def save_to_cloud(url, rep, area, end):
                                                   "properties": {"pixelSize": px}, "fields": "pixelSize"}})
     if len(daily):
         n = len(daily)
+        # 縱軸最大值要留空間：資料標籤放在點的上方，最高點貼著圖表上緣時標籤會被裁掉不顯示
+        _ymax = float(daily.select_dtypes("number").max().max() or 0)
+        _top = max(10, int(math.ceil((_ymax * 1.15 + 3) / 10.0) * 10))
         req.append({"addChart": {"chart": {
             "spec": {"title": "近三週每日車次", "basicChart": {
                 "chartType": "LINE", "legendPosition": "BOTTOM_LEGEND", "headerCount": 1,
-                "axis": [{"position": "BOTTOM_AXIS", "title": "日期"}, {"position": "LEFT_AXIS", "title": "車次 (台)"}],
+                "axis": [{"position": "BOTTOM_AXIS", "title": "日期"}, {"position": "LEFT_AXIS", "title": "車次 (台)",
+                                                                                  "viewWindowOptions": {"viewWindowMode": "EXPLICIT", "viewWindowMin": 0, "viewWindowMax": _top}}],
                 "domains": [{"domain": {"sourceRange": {"sources": [rng(3, 4 + n, 6, 7)]}}}],
                 "series": [{"series": {"sourceRange": {"sources": [rng(3, 4 + n, 7, 8)]}}, "targetAxis": "LEFT_AXIS",
                             "dataLabel": {"type": "DATA", "placement": "ABOVE"}, "pointStyle": {"shape": "CIRCLE", "size": 7}},
