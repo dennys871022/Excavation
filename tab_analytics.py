@@ -547,19 +547,26 @@ def _view_yilan(port):
     c[0].metric("宜蘭車隊車次", f"{yl_trips:,}", help="只算台北港、未作廢的紀錄，車號在名單內即計入。")
     c[1].metric("宜蘭車隊出土量", f"{yl['vol'].sum():,.1f} m³")
     c[2].metric("佔區間總車次", f"{(yl_trips / tot_trips * 100 if tot_trips else 0):.1f}%", help=f"區間全場車次 {tot_trips:,}")
-    c[3].metric("出車台數", f"{yl['truck'].map(_norm_plate).nunique()} / {len(fleet)}")
+    c[3].metric("出車台數", f"{yl['truck'].map(_norm_plate).nunique()} / {len(fleet)}", help="區間內至少出過一趟的車有幾台；每天各有幾台請看下方圖表與每日明細")
     c[4].metric("出車天數", f"{yl['日期'].nunique()}")
     if yl.empty:
         st.info("此區間沒有宜蘭車隊的出車紀錄。")
         return
 
     dd = rng.groupby("日期").apply(lambda g: pd.Series({
+        "宜蘭出車台數": int(g.loc[g["is_yl"], "truck"].map(_norm_plate).nunique()),
         "宜蘭車次": int(g.loc[g["is_yl"], "trips"].sum()), "宜蘭方量": float(g.loc[g["is_yl"], "vol"].sum()),
         "全場車次": int(g["trips"].sum())}), include_groups=False).sort_index()
     dd = dd[dd["宜蘭車次"] > 0]
-    fig = go.Figure(go.Bar(x=list(dd.index), y=list(dd["宜蘭車次"]), marker_color="#27ae60",
-                           text=_bar_text(dd["宜蘭車次"]) if _on() else None, textposition="outside", cliponaxis=False))
-    fig.update_layout(title="宜蘭車隊每日車次（僅列有出車的日子）", height=300, margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"))
+    fig = go.Figure([
+        go.Bar(x=list(dd.index), y=list(dd["宜蘭出車台數"]), name="出車台數", marker_color="#f39c12",
+               text=_bar_text(dd["宜蘭出車台數"]) if _on() else None, textposition="outside", cliponaxis=False),
+        go.Bar(x=list(dd.index), y=list(dd["宜蘭車次"]), name="車次（趟）", marker_color="#27ae60",
+               text=_bar_text(dd["宜蘭車次"]) if _on() else None, textposition="outside", cliponaxis=False),
+    ])
+    fig.update_layout(title="宜蘭車隊每日出車台數與車次（僅列有出車的日子）", barmode="group", height=320,
+                      margin=dict(l=10, r=10, t=40, b=10), xaxis=dict(type="category"),
+                      legend=dict(orientation="h", y=1.12, x=1, xanchor="right"))
     st.plotly_chart(fig, use_container_width=True, key="ana_yl_daily")
 
     rows = []
@@ -577,6 +584,9 @@ def _view_yilan(port):
 
     st.markdown("##### 宜蘭車隊每日明細")
     dd2 = dd.copy()
+    dd2["平均每台趟次"] = (dd2["宜蘭車次"] / dd2["宜蘭出車台數"].where(dd2["宜蘭出車台數"] > 0)).round(1)
+    _plates = yl_k.groupby("日期")["_k"].apply(lambda x: "、".join(sorted(set(x))))
+    dd2["出車車號"] = _plates.reindex(dd2.index).fillna("")
     dd2["佔當日全場"] = (dd2["宜蘭車次"] / dd2["全場車次"] * 100).round(1).astype(str) + "%"
     dd2["宜蘭方量"] = dd2["宜蘭方量"].round(1)
     _show_table(dd2.sort_index(ascending=False).reset_index(), 420)
