@@ -35,6 +35,53 @@ def load_sheet_data(sheet_name):
         return pd.DataFrame()
 
 
+def _cell(v):
+    """跟 st-gsheets-connection（gspread_dataframe）原本的轉換規則一樣：空值→空白、數字照原樣、其他轉文字。"""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating, float)):
+        return float(v)
+    if isinstance(v, int):
+        return v
+    s = str(v)
+    return "'" + s if s.startswith("'") else s
+
+
+def _overwrite_worksheet(sheet_name, df):
+    """
+    安全的整張覆蓋寫入（取代 conn.update）。
+    conn.update 的做法是「先清空整張 → 再寫入」，是好幾個分開的 API 呼叫；只要清空成功、寫入那一步
+    失敗（Google 流量限制、逾時、網路斷），整張分頁就變成空的。之後現場派車工具再 append 新的車次，
+    就會變成「只剩今天的資料」。dispatch_logs 最大、寫最頻繁，所以只有它會出事。
+    這裡改成「一次 API 呼叫直接覆寫」：多出來的舊列用空白蓋掉，不先清空。寫入失敗時雲端維持原樣，不會變空。
+    """
+    sh = get_conn().client._client.open_by_url(SHEET_URL)
+    try:
+        ws = sh.worksheet(sheet_name)
+    except Exception:
+        ws = sh.add_worksheet(title=sheet_name, rows=max(len(df) + 10, 100), cols=max(len(df.columns), 10))
+    values = [[str(c) for c in df.columns]] + [[_cell(v) for v in r] for r in df.to_numpy("object")]
+    n_rows, n_cols = len(values), len(df.columns)
+    old_rows, old_cols = ws.row_count, ws.col_count
+    if n_rows > old_rows:
+        ws.add_rows(n_rows - old_rows)          # 只會「增加」格子，不會動到既有資料
+    if n_cols > old_cols:
+        ws.add_cols(n_cols - old_cols)
+    tot_rows, tot_cols = max(n_rows, old_rows), max(n_cols, old_cols)
+    values = [r + [""] * (tot_cols - len(r)) for r in values]
+    values += [[""] * tot_cols for _ in range(tot_rows - n_rows)]
+    ws.update(range_name="A1", values=values, value_input_option="USER_ENTERED")
+
+
 GUARDED_SHEETS = {"dispatch_logs"}
 
 
@@ -55,7 +102,7 @@ def save_sheet_data(sheet_name, df):
         n_cur, n_new = len(cur), len(df)
         if n_cur >= 20 and (n_cur - n_new) > max(20, n_cur * 0.1):
             try:
-                get_conn().update(spreadsheet=SHEET_URL, worksheet=f"{sheet_name}_備份", data=cur)
+                _overwrite_worksheet(f"{sheet_name}_備份", cur)
             except Exception:
                 pass
             st.error(
@@ -70,7 +117,7 @@ def save_sheet_data(sheet_name, df):
         df["作廢"] = df["作廢"].apply(lambda v: "TRUE" if _is_voided(v) else "FALSE")
 
     try:
-        get_conn().update(spreadsheet=SHEET_URL, worksheet=sheet_name, data=df)
+        _overwrite_worksheet(sheet_name, df)
         st.cache_data.clear()
         st.session_state[f"cache_{sheet_name}"] = df.copy()
         return True
