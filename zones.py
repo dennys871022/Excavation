@@ -120,6 +120,14 @@ def get_thickness_from_gl(gl_str, gl_offset):
         return []
 
 
+def get_design_levels(gl_str):
+    """各挖設計開挖面高程（一律用負值 GL-x 表示），給 3D 畫面顯示用。"""
+    try:
+        return [-abs(float(x.strip())) for x in gl_str.split(",") if x.strip()]
+    except Exception:
+        return []
+
+
 def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
                        gl_admin_input, gl_lab_input, gl_bc_input, gl_a_input, gl_oil_input):
     """由側邊欄的座標/比例/GL高程設定，算出各分區面積與各挖方量 (df_results)。"""
@@ -138,6 +146,8 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
         depths_bc = get_thickness_from_gl(gl_bc_input, current_gl)
         depths_a = get_thickness_from_gl(gl_a_input, current_gl)
         depths_oil = get_thickness_from_gl(gl_oil_input, current_gl)
+        lv = {"admin": get_design_levels(gl_admin_input), "lab": get_design_levels(gl_lab_input),
+              "bc": get_design_levels(gl_bc_input), "a": get_design_levels(gl_a_input), "oil": get_design_levels(gl_oil_input)}
 
         results = []
 
@@ -159,7 +169,7 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
                     "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                     "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
-                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "各階設計高程": lv["admin"],
                     "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                     "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
                 })
@@ -180,7 +190,7 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
                     "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                     "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
-                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "各階設計高程": lv["lab"],
                     "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                     "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
                 })
@@ -210,7 +220,7 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
                     "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                     "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
-                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "各階設計高程": lv["bc"],
                     "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                     "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
                 })
@@ -235,7 +245,7 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
                     "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                     "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
-                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols,
+                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "各階設計高程": lv["a"],
                     "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                     "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
                 })
@@ -259,7 +269,7 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
             "分區代號": "油槽", "區域面積(㎡)": round(oil_poly.area, 0),
             "第1挖方量(m³)": 0, "第2挖方量(m³)": 0,
             "第3挖方量(m³)": 0, "第4挖方量(m³)": 0, "第5挖方量(m³)": round(v5_oil, 0),
-            "預估總土方": round(sum(vols_oil), 0), "各階累計方量": cum_vols_oil,
+            "預估總土方": round(sum(vols_oil), 0), "各階累計方量": cum_vols_oil, "各階設計高程": lv["oil"],
             "x_min": oil_x_min, "x_max": oil_x_max, "y_min": oil_y_min, "y_max": oil_y_max,
             "x_center": (oil_x_min + oil_x_max)/2, "y_center": (oil_y_min + oil_y_max)/2
         })
