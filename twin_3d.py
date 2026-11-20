@@ -607,7 +607,9 @@ if(S&&S.gantry&&S.x_w!==undefined){try{
   // 地面車道（進場／出場、西側便道、最南側車道）
   const lane=(x0,z0,x1,z1,w,c,grp,h=0.08)=>{const l=Math.hypot(x1-x0,z1-z0)+w*0.5,m=box(l,h,w,c,{r:1});m.castShadow=false;m.position.set((x0+x1)/2,h/2,(z0+z1)/2);m.rotation.y=Math.atan2(-(z1-z0),x1-x0);grp.add(m);return m;};
   const LC=0xd4d9e1;
-  lane(R.wsx,R.zIn,R.xW,R.zIn,6.5,LC,siteGrp);lane(R.xEx,R.zOut,R.xJog,R.zOut,6.5,LC,siteGrp);lane(R.wsx+4,R.zIn,R.xEx,R.zOut,6.5,LC,siteGrp);lane(R.wx1,R.zOut,R.xD0,R.zOut,6.5,LC,gantryGrp);
+  {// 大門進場車道往東只畫到開挖範圍外：原本畫到 x_w 會壓進 E1，E1 挖下去後變成浮在坑上的路
+   const zx=Z.filter(z=>z.y0-3.5<=S.lane_in&&S.lane_in<=z.y1+3.5).map(z=>z.x0);const xe=Math.min(R.xW,zx.length?WX(Math.min(...zx))-3.4:R.xW);
+   if(xe>R.wsx+1)lane(R.wsx,R.zIn,xe,R.zIn,6.5,LC,siteGrp);}lane(R.xEx,R.zOut,R.xJog,R.zOut,6.5,LC,siteGrp);lane(R.wsx+4,R.zIn,R.xEx,R.zOut,6.5,LC,siteGrp);lane(R.wx1,R.zOut,R.xD0,R.zOut,6.5,LC,gantryGrp);
   {const b1=R.bend[1];lane(R.xEx,R.zOut,b1[0],b1[1],6,LC,p1Grp);lane(b1[0],b1[1],R.xF,R.zE,6,LC,p1Grp);}lane(R.xF,R.zE,R.xF,R.zW,6,LC,p1Grp);lane(R.xF,R.zW,R.xJog,R.zW,6,LC,p1Grp);lane(R.xJog,R.zW,R.xJog,R.zOut,6,LC,p1Grp);
   // 鋪鐵板便道：繞歷建（走開挖區）
   // 繞歷建的鐵板（走開挖區）：西側往北 → 北側往東 → 東側往南 → 土堆旁；歷建西側出完後收掉
@@ -740,16 +742,28 @@ function buildFlow(){buildPhase();const p=curPhase,day=DAYS[DAY],trips=day.t+day
   const az=[];for(let k=0;k<NZ;k++)if(dly[DAY*NZ+k]>0)az.push(k);az.sort((a,b)=>dly[DAY*NZ+b]-dly[DAY*NZ+a]);
   const taken=plantGrp.children.filter(c=>c.userData.arm).map(c=>[c.position.x,c.position.z]);
   digPool.forEach((dg,i)=>{const k=az[i];dg.visible=k!==undefined;arcPool.slice(i*7,i*7+7).forEach(m=>m.visible=false);if(k===undefined)return;
-    const z=Z[k],pp=freeSpot(z,taken);taken.push(pp);dg.position.set(pp[0],-cd(k)*ZEX,pp[1]);dg.rotation.y=i*1.3+0.4;dg.userData.k=k;diggers.push(dg);
+    const z=Z[k],pp=freeSpot(z,taken);taken.push(pp);dg.position.set(pp[0],-cd(k)*ZEX,pp[1]);dg.rotation.y=pp[2]!==null?pp[2]+(i%2?Math.PI:0):i*1.3+0.4;
+    dg.scale.setScalar(pp[2]!==null?0.75:0.9);dg.userData.k=k;diggers.push(dg);
     if(screen&&p<2&&S&&(z.x0+z.x1)/2>S.hist[1])arcPool.slice(i*7,i*7+7).forEach(m=>{m.visible=true;arcs.push(m);});});
   plantGrp.children.forEach(c=>{if(c.userData.arm)diggers.push(c);});}
 const digPool=[],arcPool=[];
 function routeDist(x,z){let best=1e9;for(const P of [routeTP,routeFD]){if(!P)continue;const N=P.N;for(let i=1;i<N.length;i++){const a=N[i-1],b=N[i],dx=b.x-a.x,dz=b.z-a.z,L2=dx*dx+dz*dz||1;
   const q=Math.max(0,Math.min(1,((x-a.x)*dx+(z-a.z)*dz)/L2)),ex=a.x+dx*q-x,ez=a.z+dz*q-z;best=Math.min(best,Math.hypot(ex,ez));}}return best;}
-function freeSpot(z,taken){let best=null,bs=-1;const m=Math.min(3,(z.x1-z.x0)/3,(z.y1-z.y0)/3);
-  for(let i=0;i<=4;i++)for(let j=0;j<=4;j++){const x=WX(z.x0+m+(z.x1-z.x0-2*m)*i/4),zz=WZ(z.y0+m+(z.y1-z.y0-2*m)*j/4);
-    let sc=Math.min(routeDist(x,zz),12);for(const [tx,tz] of taken)sc=Math.min(sc,Math.hypot(x-tx,zz-tz)-1);if(sc>bs){bs=sc;best=[x,zz];}}
-  return best;}
+// 已經架好的安全支撐（俯視的線段）與中間柱：分區怪手要站在支撐格子中間，不能跟支撐、中間柱疊在一起
+function strutObstacles(z){const segs=[],pts=[];if(!M)return {segs,pts};const pad=6,lims=[0,1,2].map(strutLimit);
+  M.segs.forEach(s=>{const [x,y,ang,len,_w,_dt,_db,_k,lv]=s;if(!(x<=lims[lv]))return;if(x<z.x0-pad-len/2||x>z.x1+pad+len/2||y<z.y0-pad-len/2||y>z.y1+pad+len/2)return;
+    const cx2=WX(x),cz2=WZ(y),hx=Math.cos(ang)*len/2,hz=-Math.sin(ang)*len/2;segs.push([cx2-hx,cz2-hz,cx2+hx,cz2+hz,ang]);});
+  (M.kps||[]).forEach(([x,y])=>{if(x>=z.x0-2&&x<=z.x1+2&&y>=z.y0-2&&y<=z.y1+2)pts.push([WX(x),WZ(y)]);});return {segs,pts};}
+function segDist(x,z,a){const dx=a[2]-a[0],dz=a[3]-a[1],L2=dx*dx+dz*dz||1,q=Math.max(0,Math.min(1,((x-a[0])*dx+(z-a[1])*dz)/L2));return Math.hypot(a[0]+dx*q-x,a[1]+dz*q-z);}
+function freeSpot(z,taken){let best=null,bs=-1e9;const m=Math.min(1.5,(z.x1-z.x0)/4,(z.y1-z.y0)/4),ob=strutObstacles(z),N=8;
+  for(let i=0;i<=N;i++)for(let j=0;j<=N;j++){const x=WX(z.x0+m+(z.x1-z.x0-2*m)*i/N),zz=WZ(z.y0+m+(z.y1-z.y0-2*m)*j/N);
+    let sc=Math.min(routeDist(x,zz),12);for(const [tx,tz] of taken)sc=Math.min(sc,Math.hypot(x-tx,zz-tz)-1);
+    for(const a of ob.segs)sc=Math.min(sc,(segDist(x,zz,a)-2.2)*3);         // 離支撐至少 2.2m（怪手半寬＋手臂）
+    for(const [px,pz] of ob.pts)sc=Math.min(sc,(Math.hypot(x-px,zz-pz)-2.0)*3);
+    if(sc>bs){bs=sc;best=[x,zz];}}
+  // 手臂順著最近那支支撐的方向擺，才會落在格子裡、不會戳進支撐
+  let near=null,nd=1e9;for(const a of ob.segs){const d=segDist(best[0],best[1],a);if(d<nd){nd=d;near=a;}}
+  best.push(near&&nd<8?near[4]:null);return best;}
 // ---- 異常標記（紅色浮動大頭針）----
 const pinGrp=new THREE.Group();scene.add(pinGrp);
 let pinKey='';
