@@ -120,6 +120,9 @@ def get_thickness_from_gl(gl_str, gl_offset):
         return []
 
 
+LAB_ZONES_IN_ADMIN_GRID = {"A6", "B6"}
+
+
 def get_design_levels(gl_str):
     """各挖設計開挖面高程（一律用負值 GL-x 表示），給 3D 畫面顯示用。"""
     try:
@@ -159,7 +162,9 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
                 y_max, y_min = y_coords1[j], y_coords1[j+1]
                 if grid_id in ["E1", "E2", "E3"]: y_min -= e_ext
                 poly = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-                vols = [poly.area * d for d in depths_admin]
+                # A6、B6 雖然在行政棟這張格網裡，但屬於實驗棟，開挖深度要用實驗棟的設計 GL
+                is_lab = grid_id in LAB_ZONES_IN_ADMIN_GRID
+                vols = [poly.area * d for d in (depths_lab if is_lab else depths_admin)]
                 cum_vols = [round(v, 0) for v in list(np.cumsum(vols))]
                 v1 = vols[0] if len(vols) > 0 else 0
                 v2 = vols[1] if len(vols) > 1 else 0
@@ -169,7 +174,7 @@ def build_zone_results(base_x_input, base_y_input, scale_factor, current_gl,
                     "分區代號": grid_id, "區域面積(㎡)": round(poly.area, 0),
                     "第1挖方量(m³)": round(v1, 0), "第2挖方量(m³)": round(v2, 0),
                     "第3挖方量(m³)": round(v3, 0), "第4挖方量(m³)": round(v4, 0), "第5挖方量(m³)": 0,
-                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "各階設計高程": lv["admin"],
+                    "預估總土方": round(sum(vols), 0), "各階累計方量": cum_vols, "各階設計高程": lv["lab"] if is_lab else lv["admin"],
                     "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
                     "x_center": (x_min + x_max)/2, "y_center": (y_min + y_max)/2
                 })
