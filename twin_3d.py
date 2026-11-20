@@ -93,6 +93,7 @@ def build_twin_payload(logs, df_results, stage_idx, gl_off=0.0, title="CDC 工�
             "x0": round(float(r["x_min"]), 3), "x1": round(float(r["x_max"]), 3),
             "y0": round(float(r["y_min"]), 3), "y1": round(float(r["y_max"]), 3),
             "a": _num(r.get("區域面積(㎡)", 0)), "th": th, "li": li,
+            "g": [round(float(v), 2) for v in (r.get("各階設計高程", []) or [])],
         })
     codes = {z["c"]: k for k, z in enumerate(zones)}
 
@@ -190,7 +191,7 @@ def build_twin_payload(logs, df_results, stage_idx, gl_off=0.0, title="CDC 工�
     return {
         "strutPlan": strut_plan, "frontGantry": FRONT_GANTRY_DONE, "frontDecks": front, "fence": [list(p) for p in MODEL_FENCE], "office": MODEL_OFFICE,
         "title": title, "zones": zones, "days": days, "stage": stage_idx, "stageNames": STAGE_NAMES,
-        "loose": LOOSE_SOIL_FACTOR, "model": model, "site": site, "slabDay": slab_day, "westDay": west_day,
+        "loose": LOOSE_SOIL_FACTOR, "glOff": round(float(gl_off or 0), 2), "model": model, "site": site, "slabDay": slab_day, "westDay": west_day,
     }
 
 
@@ -362,6 +363,11 @@ for(let d=0;d<ND;d++){
 const depthOf=(d,k)=>(Z[k].a>0&&tot[k]>0)?Math.min(cum[d*NZ+k],tot[k])/Z[k].a:0;
 const curDep=new Float32Array(NZ),cd=k=>curDep[k];
 const planDepth=k=>(Z[k].a>0&&tot[k]>0)?tot[k]/Z[k].a:0;
+// 高程：深度是從「現地地面」（側邊欄的現地GL，例如 GL+0.3）往下算，開挖面高程＝現地GL－深度
+const GL0=+(D.glOff||0),glTxt=(v,n=2)=>{v=+v.toFixed(n);return 'GL'+(v>0?'+':v<0?'−':'±')+Math.abs(v).toFixed(n).replace(/(\.\d)0$/,'$1');};
+const curLevel=(d,k)=>GL0-depthOf(d,k);
+function designLv(k,hl){const z=Z[k],g=z.g||[];const out=[];for(let s=0;s<SN.length;s++){const li=z.li[s];if(li===undefined||li<0||li>=g.length)continue;
+  const t=SN[s].replace('第','').replace('挖(油槽)','挖')+' '+glTxt(g[li]);out.push(s===hl?'<b>'+t+'</b>':t);}return out;}
 // ---- 狀態（規則同 2D 地圖 zones.zone_progress_style），配色改成粉彩 ----
 const C_DONE=[95,211,164],C_RUN=[255,159,110],C_NONE=[226,230,236],C_NA=[208,213,221];
 const C_OVR=[[255,209,102],[255,159,110],[122,167,255],[176,140,255]];
@@ -785,7 +791,7 @@ renderer.domElement.addEventListener('pointerup',e=>{if(!downAt)return;const mv=
 renderer.domElement.addEventListener('pointermove',e=>{const k=pick(e);placeBox(hovBox,k===SEL?-1:k);
   if(k<0){tip.style.display='none';renderer.domElement.style.cursor='';return;}renderer.domElement.style.cursor='pointer';
   const cv=cum[DAY*NZ+k],st=status(k,cv,STAGE);
-  tip.innerHTML=`<b>${Z[k].c}</b>　<span style="color:${css(st.c.map(v=>v*0.7))}">● ${st.t}</span><br>已挖 ${fmt(cv)} / ${fmt(tot[k])} m³（實方）・深 ${depthOf(DAY,k).toFixed(1)} m`;
+  tip.innerHTML=`<b>${Z[k].c}</b>　<span style="color:${css(st.c.map(v=>v*0.7))}">● ${st.t}</span><br>已挖 ${fmt(cv)} / ${fmt(tot[k])} m³（實方）・深 ${depthOf(DAY,k).toFixed(1)} m<br>開挖面約 ${glTxt(curLevel(DAY,k),1)}（現地 ${glTxt(GL0)} 起算）${(()=>{const l=designLv(k,STAGE);return l.length?'<br>設計：'+l.join('／'):'';})()}`;
   const rc=wrap.getBoundingClientRect();tip.style.display='block';tip.style.left=Math.min(e.clientX-rc.left+14,rc.width-280)+'px';tip.style.top=(e.clientY-rc.top+14)+'px';});
 renderer.domElement.addEventListener('pointerleave',()=>{tip.style.display='none';hovBox.visible=false;});
 window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'&&e.target.type==='text')return;
@@ -843,6 +849,8 @@ function renderZone(){const k=SEL;if(k<0)return;const z=Z[k],cv=cum[DAY*NZ+k],st
    <div class="kv"><span>預估總實方</span><b>${fmt(tot[k])} m³</b></div>
    <div class="kv"><span>累計實挖（實方）</span><b style="color:${dotCol}">${fmt(cv)} m³</b></div>
    <div class="kv"><span>目前深度／預估深度</span><b>${depthOf(DAY,k).toFixed(2)} / ${planDepth(k).toFixed(2)} m</b></div>
+   <div class="kv"><span>目前開挖面（現地 ${glTxt(GL0)} 起算）</span><b>約 ${glTxt(curLevel(DAY,k),1)}</b></div>
+   <div class="kv"><span>各挖設計高程</span><b style="text-align:right;font-weight:400">${designLv(k,STAGE).join('<br>')||'–'}</b></div>
    <div class="kv"><span>累計車次</span><b>${fmt(ctr[DAY*NZ+k])} 台</b></div>
    <div class="kv"><span>最近出土</span><b>${ld>=0?DAYS[ld].d.slice(5).replace('-','/'):'–'}${ld===DAY?'（今天）':''}</b></div>
    <div class="fold">收合 ▴</div><div>
