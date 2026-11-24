@@ -323,13 +323,23 @@ def render(df_results, global_stage_choice):
         return
 
     st.markdown("##### 📈 折線圖日期區間")
-    k1, k2, k3 = st.columns([1, 1, 1.4])
-    with k1:   # key 帶本週結束日：換週時折線圖區間會自動回到預設的「往前三週」
-        cstart = st.date_input("折線圖開始", value=end - timedelta(days=CHART_DAYS), key=f"wk_cs_{end}")
-    with k2:
-        cend = st.date_input("折線圖結束", value=end, key=f"wk_ce_{end}")
-    with k3:
-        st.caption("預設是本週結束日往前三週；月會時可改成前一個月（例如 10/1 ~ 10/31）。這個區間也會用在「儲存」到雲端的折線圖。")
+    mode = st.radio("折線圖區間", ["週會：本週結束日往前三週", "月會：今天往前一個月", "自訂"], horizontal=True,
+                    key="wk_chart_mode", label_visibility="collapsed")
+    today = date.today()
+    if mode.startswith("週會"):
+        cstart, cend = end - timedelta(days=CHART_DAYS), end
+    elif mode.startswith("月會"):
+        # 今天往前一個月（同日），例如 11/24 → 10/24 ~ 11/24；上面兩張表仍然是「本週」
+        m, y = (today.month - 1, today.year) if today.month > 1 else (12, today.year - 1)
+        import calendar
+        cstart, cend = date(y, m, min(today.day, calendar.monthrange(y, m)[1])), today
+    else:
+        k1, k2 = st.columns(2)
+        with k1:
+            cstart = st.date_input("折線圖開始", value=end - timedelta(days=CHART_DAYS), key="wk_cs")
+        with k2:
+            cend = st.date_input("折線圖結束", value=end, key="wk_ce")
+    st.caption(f"折線圖：{cstart:%Y/%m/%d} ~ {cend:%Y/%m/%d}（上面兩張出土紀錄表仍是本週 {start:%m/%d} ~ {end:%m/%d}）。按「儲存」時雲端的折線圖也用這個區間。")
     if cstart > cend:
         st.error("折線圖開始日期不能晚於結束日期。")
         return
