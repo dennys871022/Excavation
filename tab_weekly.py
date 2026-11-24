@@ -323,13 +323,13 @@ def render(df_results, global_stage_choice):
         return
 
     st.markdown("##### 📈 折線圖日期區間")
-    mode = st.radio("折線圖區間", ["週會：本週結束日往前三週", "月會：今天往前一個月", "自訂"], horizontal=True,
+    mode = st.radio("折線圖區間", ["週會：本週結束日往前三週", "月會：昨天往前一個月", "自訂"], horizontal=True,
                     key="wk_chart_mode", label_visibility="collapsed")
     today = date.today()
     if mode.startswith("週會"):
         cstart, cend = end - timedelta(days=CHART_DAYS), end
     elif mode.startswith("月會"):
-        # 今天往前一個月（同日），例如 11/24 → 10/24 ~ 11/24；上面兩張表仍然是「本週」
+        # 往前一個月（同日），例如今天 11/24 → 10/24 ~ 11/23（今天不畫）；上面兩張表仍然是「本週」
         m, y = (today.month - 1, today.year) if today.month > 1 else (12, today.year - 1)
         import calendar
         cstart, cend = date(y, m, min(today.day, calendar.monthrange(y, m)[1])), today
@@ -339,7 +339,10 @@ def render(df_results, global_stage_choice):
             cstart = st.date_input("折線圖開始", value=end - timedelta(days=CHART_DAYS), key="wk_cs")
         with k2:
             cend = st.date_input("折線圖結束", value=end, key="wk_ce")
-    st.caption(f"折線圖：{cstart:%Y/%m/%d} ~ {cend:%Y/%m/%d}（上面兩張出土紀錄表仍是本週 {start:%m/%d} ~ {end:%m/%d}）。按「儲存」時雲端的折線圖也用這個區間。")
+    # 今天的車次還在跑、數字不確定，折線圖一律只畫到昨天
+    if cend >= today:
+        cend = today - timedelta(days=1)
+    st.caption(f"折線圖：{cstart:%Y/%m/%d} ~ {cend:%Y/%m/%d}（不含今天，今天的車次還不確定；上面兩張出土紀錄表仍是本週 {start:%m/%d} ~ {end:%m/%d}）。按「儲存」時雲端的折線圖也用這個區間。")
     if cstart > cend:
         st.error("折線圖開始日期不能晚於結束日期。")
         return
