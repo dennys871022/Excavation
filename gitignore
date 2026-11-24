@@ -1,0 +1,9 @@
+# 本機才有、絕對不能上傳 GitHub 的東西
+.streamlit/secrets.toml
+auto_manifest_config.json
+.manifest_browser/
+manifest_downloads/
+manifest_logs/
+__pycache__/
+*.pyc
+.venv/

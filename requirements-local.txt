@@ -1,0 +1,7 @@
+# 只在你自己電腦上需要（自動下載聯單用），Streamlit Cloud 不會用到這個檔
+-r requirements.txt
+playwright
+keyring
+gspread
+gspread-dataframe
+requests
