@@ -106,8 +106,18 @@ def notify(cfg, text):
 ZH_MONTH = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12}
 
 
+def settle(page, ms=8000):
+    """等頁面穩定：官網背景會一直有連線，不能等到「完全沒有網路活動」，最多等幾秒就繼續。"""
+    try:
+        page.wait_for_load_state("networkidle", timeout=ms)
+    except Exception:
+        pass
+    page.wait_for_timeout(800)
+
+
 def ensure_logged_in(page, cfg):
-    page.goto(cfg["site_url"], wait_until="networkidle")
+    page.goto(cfg["site_url"], wait_until="domcontentloaded", timeout=90000)
+    settle(page, 15000)
     pw = page.locator("input[type=password]")
     if pw.count() == 0 or not pw.first.is_visible():
         log("已是登入狀態")
@@ -118,7 +128,7 @@ def ensure_logged_in(page, cfg):
     user_box.fill(cfg["username"])
     pw.first.fill(get_password(cfg["username"]))
     page.get_by_role("button", name=re.compile("登入|登錄|Login|LOGIN|確定")).first.click()
-    page.wait_for_load_state("networkidle")
+    settle(page)
     page.wait_for_timeout(1500)
     if page.locator("input[type=password]").count() and page.locator("input[type=password]").first.is_visible():
         raise RuntimeError("登入失敗（帳密錯誤、密碼過期，或出現了驗證碼）。請手動登入一次確認，必要時重新執行 --setup。")
@@ -131,13 +141,13 @@ def discover_lists(page, cfg):
 
     def open_query():
         page.get_by_text(re.compile(r"即時查詢\s*\(單筆\)")).first.click()
-        page.wait_for_load_state("networkidle")
+        settle(page)
         box = page.get_by_label("場所流向編號")
         if box.count() == 0:
             box = page.locator("input").first
         box.first.fill(code)
         page.get_by_role("button", name=re.compile(r"^\s*查詢\s*$")).first.click()
-        page.wait_for_load_state("networkidle")
+        settle(page)
         page.locator("tr", has_text=code).first.wait_for(timeout=20000)
         return page.locator("tbody tr", has_text=code)
 
@@ -250,11 +260,12 @@ _CALENDAR_JS = r"""
 
 
 def download_csv(page, soil, url, d):
-    page.goto(url, wait_until="networkidle")
+    page.goto(url, wait_until="domcontentloaded", timeout=90000)
+    settle(page)
     page.get_by_text("聯單資料列表").first.wait_for(timeout=20000)
     set_exit_date(page, d)
     page.get_by_role("button", name=re.compile("重設查詢條件|查詢")).first.click()
-    page.wait_for_load_state("networkidle")
+    settle(page)
     page.wait_for_timeout(1500)
     DOWNLOAD_DIR.mkdir(exist_ok=True)
     safe = re.sub(r"[^\w\-]+", "_", soil)
