@@ -140,7 +140,12 @@ def discover_lists(page, cfg):
     code = cfg["flow_code"]
 
     def open_query():
-        page.get_by_text(re.compile(r"即時查詢\s*\(單筆\)")).first.click()
+        item = page.get_by_text(re.compile(r"即時查詢\s*\(單筆\)")).first
+        if not item.is_visible():
+            # 左側選單「聯單狀態統計」預設收合，要先展開才看得到「即時查詢 (單筆)」
+            page.get_by_text("聯單狀態統計", exact=True).first.click()
+            page.wait_for_timeout(800)
+        item.click()
         settle(page)
         box = page.get_by_label("場所流向編號")
         if box.count() == 0:
