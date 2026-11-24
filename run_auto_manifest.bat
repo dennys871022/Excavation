@@ -1,3 +1,3 @@
 @echo off
 cd /d %~dp0
-python auto_manifest.py %*
+py -3.12 auto_manifest.py %*
