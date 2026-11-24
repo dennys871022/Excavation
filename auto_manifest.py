@@ -12,7 +12,7 @@
   python auto_manifest.py --setup                 設定帳號、密碼（密碼存在 Windows 認證管理員）
   python auto_manifest.py --download-only --show  只下載CSV、看得到瀏覽器，先確認抓得到
   python auto_manifest.py --dry-run               下載＋對帳試算，不寫入雲端
-  python auto_manifest.py                         正式執行（預設處理昨天和今天）
+  python auto_manifest.py                         正式執行（預設只處理今天）
 其他：
   python auto_manifest.py --date 2026-11-20       指定日期（可重複多次）
 """
@@ -32,6 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "auto_manifest_config.json"
 SECRETS_PATH = BASE_DIR / ".streamlit" / "secrets.toml"
 DOWNLOAD_DIR = BASE_DIR / "manifest_downloads"
+RAW_DIR = DOWNLOAD_DIR / "_tmp"   # 下載暫存，整理好檔名後會搬出來
 LOG_DIR = BASE_DIR / "manifest_logs"
 PROFILE_DIR = BASE_DIR / ".manifest_browser"   # 瀏覽器登入狀態，不必每次重新登入
 KEYRING_SERVICE = "nlma-manifest"
@@ -165,14 +166,13 @@ def discover_lists(page, cfg):
         row = rows.nth(i)
         cells = row.locator("td")
         soil = cells.nth(2).inner_text().strip() if cells.count() > 2 else f"第{i + 1}列"
-        link = row.locator("a[href*='listReceipt']")
-        if link.count():
-            href = link.first.get_attribute("href")
-            url = href if href.startswith("http") else cfg["site_url"].rstrip("/") + "/" + href.lstrip("/")
-        else:
-            cells.first.click()
-            page.wait_for_url(re.compile(r"/listReceipt/"), timeout=15000)
-            url = page.url
+        # 點「尚未出場」那顆紅色數字按鈕（第8欄）才會進到該土質的聯單列表
+        btn = cells.nth(7)
+        if btn.locator("button").count():
+            btn = btn.locator("button").first
+        btn.click()
+        page.wait_for_url(re.compile(r"/listReceipt/"), timeout=20000)
+        url = page.url
         log(f"  土質 {soil} → {url}")
         result.append((soil, url))
     if not result:
@@ -181,9 +181,9 @@ def discover_lists(page, cfg):
 
 
 def _date_input(page):
-    box = page.get_by_label("出場日期區間")
-    if box.count():
-        return box.first
+    for box in (page.get_by_label("出場日期區間"), page.get_by_placeholder("出場日期區間")):
+        if box.count():
+            return box.first
     idx = page.evaluate(r"""() => [...document.querySelectorAll('input')]
         .findIndex(i => /\d{4}\/\d{1,2}\/\d{1,2}\s*-\s*\d{4}/.test(i.value))""")
     if idx < 0:
@@ -248,10 +248,12 @@ _CALENDAR_JS = r"""
   if (!panel) return {err: 'no panel'};
   const box = r => ({x: r.left + r.width / 2, y: r.top + r.height / 2});
   if (diff !== 0) {
+    // 翻月箭頭：不是日期數字的按鈕（日期格子本身也可能是按鈕，要排除）
+    const navBtns = el => [...el.querySelectorAll('button')].filter(b => b.offsetParent !== null && !/^\s*\d{1,2}\s*$/.test(b.textContent));
     let root = panel;
-    while (root && root.querySelectorAll('button').length < 2) root = root.parentElement;
+    while (root && navBtns(root).length < 2) root = root.parentElement;
     if (!root) return {err: 'no nav buttons'};
-    const btns = [...root.querySelectorAll('button')].filter(b => b.offsetParent !== null);
+    const btns = navBtns(root);
     const b = diff < 0 ? btns[0] : btns[btns.length - 1];
     return {action: diff < 0 ? 'prev' : 'next', ...box(b.getBoundingClientRect())};
   }
@@ -264,17 +266,34 @@ _CALENDAR_JS = r"""
 """
 
 
+def set_status_all(page):
+    """「聯單狀態」從預設的「未出場」改成「全部」。"""
+    sel = page.get_by_label("聯單狀態")
+    sel = sel.first if sel.count() else page.get_by_role("combobox").first
+    if sel.inner_text().strip() == "全部":
+        return
+    sel.click()
+    page.wait_for_timeout(400)
+    opt = page.get_by_role("option", name="全部", exact=True)
+    if opt.count() == 0:
+        opt = page.locator("li", has_text=re.compile(r"^\s*全部\s*$"))
+    opt.first.click()
+    page.wait_for_timeout(800)
+    if sel.inner_text().strip() != "全部":
+        raise RuntimeError(f"聯單狀態沒改成「全部」，目前是「{sel.inner_text().strip()}」")
+
+
 def download_csv(page, soil, url, d):
     page.goto(url, wait_until="domcontentloaded", timeout=90000)
     settle(page)
     page.get_by_text("聯單資料列表").first.wait_for(timeout=20000)
+    set_status_all(page)
     set_exit_date(page, d)
-    page.get_by_role("button", name=re.compile("重設查詢條件|查詢")).first.click()
     settle(page)
     page.wait_for_timeout(1500)
-    DOWNLOAD_DIR.mkdir(exist_ok=True)
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^\w\-]+", "_", soil)
-    out = DOWNLOAD_DIR / f"{d:%Y-%m-%d}_{safe}.csv"
+    out = RAW_DIR / f"{d:%Y-%m-%d}_{safe}.csv"
     with page.expect_download(timeout=60000) as dl:
         page.get_by_role("button", name=re.compile("匯出\\s*CSV")).first.click()
     dl.value.save_as(out)
@@ -296,11 +315,12 @@ def fetch_all(cfg, dates, show):
             ensure_logged_in(page, cfg)
             lists = discover_lists(page, cfg)
             for d in dates:
-                frames, all_ok = [], True
+                frames, files, all_ok = [], [], True
                 for soil, url in lists:
                     try:
                         f = download_csv(page, soil, url, d)
                         df = read_official_csv(f)
+                        files.append((f, df))
                         if len(df):
                             frames.append(df)
                     except Exception as e:
@@ -308,6 +328,7 @@ def fetch_all(cfg, dates, show):
                         log(f"  ✘ {d:%m/%d} 土質 {soil} 下載失敗：{e}")
                         _snap(page, f"fail_{d:%Y%m%d}_{soil}")
                 off = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+                save_day_files(cfg, files, d)
                 res[d] = (off, all_ok)
         except Exception:
             _snap(page, "fail")
@@ -315,6 +336,24 @@ def fetch_all(cfg, dates, show):
         finally:
             ctx.close()
     return res
+
+
+def save_day_files(cfg, files, d):
+    """每個土質一個檔：EYG10099聯單資料列表_2026-07-05_45台.csv（台數＝該土質當天出場車次）。
+    兩個土質台數剛好一樣時，第二個檔名後面加 (2)；當天 0 台的土質不留檔。"""
+    prefix = f"{cfg['flow_code']}聯單資料列表_{d:%Y-%m-%d}_"
+    for old in DOWNLOAD_DIR.glob(prefix + "*台*.csv"):   # 同一天重跑：先清掉舊的
+        old.unlink(missing_ok=True)
+    for tmp, df in files:
+        n = int((pd.to_datetime(df["出場日期"], errors="coerce").dt.date == d).sum()) if "出場日期" in df.columns else len(df)
+        if n == 0:
+            tmp.unlink(missing_ok=True)
+            continue
+        out, k = DOWNLOAD_DIR / f"{prefix}{n}台.csv", 2
+        while out.exists():
+            out, k = DOWNLOAD_DIR / f"{prefix}{n}台({k}).csv", k + 1
+        tmp.replace(out)   # 保留官方原始檔內容，只改檔名
+        log(f"  → {out.name}")
 
 
 def _snap(page, name):
@@ -427,7 +466,7 @@ def reconcile_and_save(fetched, dry_run):
 def main():
     ap = argparse.ArgumentParser(description="官方電子聯單 CSV 自動下載＋對帳")
     ap.add_argument("--setup", action="store_true", help="設定帳號密碼與 Discord")
-    ap.add_argument("--date", action="append", help="指定日期 YYYY-MM-DD，可重複；預設昨天＋今天")
+    ap.add_argument("--date", action="append", help="指定日期 YYYY-MM-DD，可重複；預設今天")
     ap.add_argument("--show", action="store_true", help="顯示瀏覽器畫面（除錯用）")
     ap.add_argument("--download-only", action="store_true", help="只下載CSV，不對帳")
     ap.add_argument("--dry-run", action="store_true", help="下載＋對帳試算，但不寫入雲端")
@@ -443,7 +482,7 @@ def main():
 
     today = date.today()
     dates = sorted({datetime.strptime(x, "%Y-%m-%d").date() for x in a.date} if a.date
-                   else {today - timedelta(days=1), today})
+                   else {today})
     log(f"處理日期：{', '.join(f'{d:%Y-%m-%d}' for d in dates)}")
     try:
         fetched = fetch_all(cfg, dates, a.show)
