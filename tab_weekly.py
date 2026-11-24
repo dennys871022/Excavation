@@ -110,20 +110,21 @@ def _port_stop_days(start, end):
     return stop, by_day
 
 
-def build_report(start, end):
+def build_report(start, end, chart_start=None, chart_end=None):
     df = _prep_logs()
     fda = _section_rows(_daily(df[df["_fda"]]), start, end)
     tp = _section_rows(_daily(df[~df["_fda"]]), start, end)
     stop, _ = _port_stop_days(start, end)
     if stop:
         tp[-2]["備註"] = f"台北港暫停收容作業{len(stop)}天"
-    # 週會折線圖：從本週結束日往前 3 週（例如 11/09 → 10/19 ~ 11/09）
-    cstart = end - timedelta(days=CHART_DAYS)
-    _, notes = _port_stop_days(cstart, end)
+    # 週會折線圖：預設從本週結束日往前 3 週（例如 11/09 → 10/19 ~ 11/09），也可以自己選區間（例如月會選前一個月）
+    cstart = chart_start or (end - timedelta(days=CHART_DAYS))
+    cend = chart_end or end
+    _, notes = _port_stop_days(cstart, cend)
     days = []
     d = cstart
-    dd = df[(df["_d"] >= cstart) & (df["_d"] <= end)]
-    while d <= end:
+    dd = df[(df["_d"] >= cstart) & (df["_d"] <= cend)]
+    while d <= cend:
         x = dd[dd["_d"] == d]
         days.append({"日期": d, "台北港車次": int(x.loc[~x["_fda"], "_trips"].sum()),
                      "FDA車次": int(x.loc[x["_fda"], "_trips"].sum()), "備註": "；".join(notes.get(d, []))})
@@ -192,6 +193,7 @@ def build_xlsx(rep, area, end):
 
     # 每日車次表＋折線圖（放在右邊 G 欄起）
     daily = rep["daily"]
+    _c0, _c1 = (daily["日期"].iloc[0], daily["日期"].iloc[-1]) if len(daily) else (end, end)
     ws["G4"], ws["H4"], ws["I4"], ws["J4"] = "日期", "台北港車次", "FDA車次", "備註"
     for c in "GHIJ":
         ws[f"{c}4"].fill, ws[f"{c}4"].font = head_fill, Font(bold=True, color="FFFFFF")
@@ -205,7 +207,7 @@ def build_xlsx(rep, area, end):
         ws.column_dimensions[col].width = w
     if len(daily):
         ch = LineChart()
-        ch.title, ch.y_axis.title, ch.x_axis.title = "近三週每日車次", "車次 (台)", "日期"
+        ch.title, ch.y_axis.title, ch.x_axis.title = f"每日車次（{_c0.month}/{_c0.day}～{_c1.month}/{_c1.day}）", "車次 (台)", "日期"
         ch.height, ch.width = 7.5, 16
         data = Reference(ws, min_col=8, max_col=9, min_row=4, max_row=4 + len(daily))
         ch.add_data(data, titles_from_data=True)
@@ -233,6 +235,7 @@ def save_to_cloud(url, rep, area, end):
     ws = sh.add_worksheet(title=title, rows=60, cols=12, index=0)
     rows, pos = _grid(rep, area)
     daily = rep["daily"]
+    _c0, _c1 = (daily["日期"].iloc[0], daily["日期"].iloc[-1]) if len(daily) else (end, end)
     grid = [list(r) + [""] * (5 - len(r)) for r in rows]
     ws.update("A1", grid, value_input_option="USER_ENTERED")
     dvals = [["日期", "台北港車次", "FDA車次", "備註"]] + [
@@ -269,7 +272,7 @@ def save_to_cloud(url, rep, area, end):
         _ymax = float(daily.select_dtypes("number").max().max() or 0)
         _top = max(10, int(math.ceil((_ymax * 1.15 + 3) / 10.0) * 10))
         req.append({"addChart": {"chart": {
-            "spec": {"title": "近三週每日車次", "basicChart": {
+            "spec": {"title": f"每日車次（{_c0.month}/{_c0.day}～{_c1.month}/{_c1.day}）", "basicChart": {
                 "chartType": "LINE", "legendPosition": "BOTTOM_LEGEND", "headerCount": 1,
                 "axis": [{"position": "BOTTOM_AXIS", "title": "日期"}, {"position": "LEFT_AXIS", "title": "車次 (台)",
                                                                                   "viewWindowOptions": {"viewWindowMode": "EXPLICIT", "viewWindowMin": 0, "viewWindowMax": _top}}],
@@ -319,12 +322,24 @@ def render(df_results, global_stage_choice):
         st.error("開始日期不能晚於結束日期。")
         return
 
-    rep = build_report(start, end)
+    st.markdown("##### 📈 折線圖日期區間")
+    k1, k2, k3 = st.columns([1, 1, 1.4])
+    with k1:   # key 帶本週結束日：換週時折線圖區間會自動回到預設的「往前三週」
+        cstart = st.date_input("折線圖開始", value=end - timedelta(days=CHART_DAYS), key=f"wk_cs_{end}")
+    with k2:
+        cend = st.date_input("折線圖結束", value=end, key=f"wk_ce_{end}")
+    with k3:
+        st.caption("預設是本週結束日往前三週；月會時可改成前一個月（例如 10/1 ~ 10/31）。這個區間也會用在「儲存」到雲端的折線圖。")
+    if cstart > cend:
+        st.error("折線圖開始日期不能晚於結束日期。")
+        return
+
+    rep = build_report(start, end, cstart, cend)
     st.markdown(f"**土方工程**　｜　剩餘土石方出土紀錄　｜　施作區域：{area}")
     _show_table(rep["fda"], "土方平衡-FDA")
     _show_table(rep["tp"], "土方交換-臺北港")
 
-    st.markdown("#### 📈 週會車次折線圖（本週結束日往前三週）")
+    st.markdown(f"#### 📈 每日車次折線圖（{cstart:%m/%d} ~ {cend:%m/%d}）")
     daily = rep["daily"].copy()
     daily["_x"] = pd.to_datetime(daily["日期"])
     fig = go.Figure()
@@ -332,7 +347,7 @@ def render(df_results, global_stage_choice):
                              text=daily["台北港車次"].astype(str), textposition="top center", line=dict(color="#3498DB", width=2)))
     if daily["FDA車次"].sum() > 0:
         fig.add_trace(go.Scatter(x=daily["_x"], y=daily["FDA車次"], mode="lines+markers", name="FDA車次", line=dict(color="#E67E22", width=2, dash="dot")))
-    fig.update_layout(title=f"{rep['daily']['日期'].iloc[0]:%Y/%m/%d} ~ {end:%m/%d} 每日車次（近三週）", height=420, margin=dict(l=20, r=20, t=50, b=50),
+    fig.update_layout(title=f"{cstart:%Y/%m/%d} ~ {cend:%m/%d} 每日車次", height=420, margin=dict(l=20, r=20, t=50, b=50),
                       xaxis=dict(title="日期", tickmode="array", tickvals=daily["_x"], ticktext=[f"{d.month}/{d.day}" for d in daily["日期"]]),
                       yaxis_title="車次 (台)", legend=dict(orientation="h", y=-0.2))
     st.plotly_chart(fig, use_container_width=True, key="wk_chart")
