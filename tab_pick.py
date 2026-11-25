@@ -9,13 +9,14 @@
 
 import hashlib
 import hmac
+import json
 from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
 
 from config import LOOSE_SOIL_FACTOR
-from data_store import filter_active_dispatch_logs, load_sheet_data, save_global_pref
+from data_store import _clean_serial, _is_voided, filter_active_dispatch_logs, load_sheet_data, save_global_pref
 from stage_calc import get_stage_index
 from zone_picker import zone_map_picker
 
@@ -46,7 +47,8 @@ def render(df_results, global_stage_choice):
     st.caption(f"目前作業階段：{global_stage_choice}　｜　點一下分區＝選取，再點一下＝取消，選好按最下面「送出」。"
                "　地圖分成東區、西區，用上方按鈕切換，兩區選的會一起送出。")
 
-    logs = filter_active_dispatch_logs(load_sheet_data("dispatch_logs"))
+    raw = load_sheet_data("dispatch_logs")
+    logs = filter_active_dispatch_logs(raw)
     excavated, n_today = {}, 0
     if logs is not None and not logs.empty and "出土分區" in logs.columns:
         dd = pd.to_datetime(logs["日期"], errors="coerce").dt.date
@@ -56,6 +58,33 @@ def render(df_results, global_stage_choice):
         a["載運方量(m³)"] = pd.to_numeric(a["載運方量(m³)"], errors="coerce")
         excavated = (a.groupby("出土分區")["載運方量(m³)"].sum() / LOOSE_SOIL_FACTOR).to_dict()
     st.info(f"🚚 {day:%m/%d} 目前系統裡台北港車次：{n_today} 車")
+
+    # ── ① 今日有無作廢聯單 ──
+    st.markdown("#### 🚫 ① 今天有沒有要作廢的聯單？")
+    st.caption("例如爆胎超時遭台北港拒收、原車返回工地。沒有就跳過這一段。作廢的聯單不會被分配分區，也不計入車次與出土量。")
+    tickets = {}
+    if raw is not None and not raw.empty and "聯單序號" in raw.columns:
+        r = raw.copy()
+        r["_d"] = pd.to_datetime(r["日期"], errors="coerce").dt.date
+        r["_s"] = r["聯單序號"].apply(_clean_serial)
+        r["_dest"] = r.get("運送目的地", pd.Series("台北港", index=r.index)).fillna("台北港").astype(str)
+        r["_v"] = r.get("作廢", pd.Series(False, index=r.index)).apply(_is_voided)
+        today = r[(r["_d"] == day) & (r["_dest"] != "FDA") & (r["_s"] != "")].sort_values("時間")
+        already = today[today["_v"]]
+        for _, t in today[~today["_v"]].iterrows():
+            show = t["_s"].zfill(8) if t["_s"].isdigit() else t["_s"]   # 跟官網一樣顯示 8 位數
+            tickets[t["_s"]] = f"{show}｜{str(t['時間'])[:5]}｜{t['車頭車號']}"
+        if len(already):
+            st.caption("已作廢：" + "、".join(f"{x}（{y}）" for x, y in zip(already["_s"], already.get("作廢原因", ""))))
+    void_sel = st.multiselect("要作廢的聯單（序號｜出場時間｜車號）", list(tickets), format_func=lambda k: tickets[k],
+                              key="pick_voids", placeholder="沒有作廢就不用選")
+    voids, missing_reason = [], False
+    for sn in void_sel:
+        why = st.text_input(f"{tickets[sn]} 作廢原因", key=f"void_reason_{sn}", placeholder="例如：爆胎超時遭台北港拒收，原車返回工地")
+        missing_reason |= not why.strip()
+        voids.append({"s": sn, "r": why.strip()})
+
+    st.markdown("#### 📍 ② 今日出土分區")
 
     # 手機上整張地圖太小，分成西區／東區兩塊各自放大顯示（兩區選的分區會合在一起）
     if not df_results.empty:
@@ -73,12 +102,23 @@ def render(df_results, global_stage_choice):
     codes = df_results["分區代號"].tolist() if not df_results.empty else []
     zones = st.multiselect("已選分區（也可以直接在這裡增減）", ["開挖前土方"] + codes, key="pick_zones")
 
+    if missing_reason:
+        st.warning("要作廢的聯單請填寫原因才能送出。")
+
+    def _send(z):
+        payload = json.dumps({"zones": z, "voids": voids}, ensure_ascii=False)
+        if save_global_pref(PREF_FIELD, f"{tag}|{payload}"):
+            msg = []
+            if voids:
+                msg.append(f"作廢 {len(voids)} 張聯單")
+            msg.append(f"分區：{'、'.join(z)}" if z else "今天不指派分區")
+            st.success("已送出：" + "；".join(msg) + "。電腦會接著自動處理並產出報表，可以關掉這個頁面了。")
+
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("✅ 送出", type="primary", use_container_width=True, disabled=not zones):
-            if save_global_pref(PREF_FIELD, f"{tag}|{' '.join(zones)}"):
-                st.success(f"已送出：{'、'.join(zones)}。電腦會接著自動指派分區並產出報表，可以關掉這個頁面了。")
+        if st.button("✅ 送出", type="primary", use_container_width=True, disabled=(not zones) or missing_reason):
+            _send(list(zones))
     with c2:
-        if st.button("今天不指派分區", use_container_width=True):
-            if save_global_pref(PREF_FIELD, f"{tag}|跳過"):
-                st.success("已送出：今天不指派分區，報表照樣產出。")
+        if st.button("今天不指派分區", use_container_width=True, disabled=missing_reason,
+                     help="有選作廢的話，作廢一樣會送出"):
+            _send([])
