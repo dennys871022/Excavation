@@ -41,7 +41,7 @@ def render(df_results, global_stage_choice):
 
     st.markdown(f"### 📍 {day:%m/%d} 今日出土分區")
     st.caption(f"目前作業階段：{global_stage_choice}　｜　點一下分區＝選取，再點一下＝取消，選好按最下面「送出」。"
-               "　📱 手機**橫放**比較好點，也可以兩指放大地圖；點不準的話直接用下面的清單選。")
+               "　地圖分成東區、西區，用上方按鈕切換，兩區選的會一起送出。")
 
     logs = filter_active_dispatch_logs(load_sheet_data("dispatch_logs"))
     excavated, n_today = {}, 0
@@ -54,8 +54,19 @@ def render(df_results, global_stage_choice):
         excavated = (a.groupby("出土分區")["載運方量(m³)"].sum() / LOOSE_SOIL_FACTOR).to_dict()
     st.info(f"🚚 {day:%m/%d} 目前系統裡台北港車次：{n_today} 車")
 
-    zone_map_picker(df_results, "pick_zones", get_stage_index(global_stage_choice), excavated,
-                    chart_key="pick_zone_map", height=480, marker_size=16)
+    # 手機上整張地圖太小，分成西區／東區兩塊各自放大顯示（兩區選的分區會合在一起）
+    if not df_results.empty:
+        x_split = df_results.loc[df_results["分區代號"] == "A7", "x_min"]
+        x_split = float(x_split.iloc[0]) if len(x_split) else float(df_results["x_center"].median())
+        west = df_results[df_results["x_center"] < x_split]
+        east = df_results[df_results["x_center"] >= x_split]
+        part = st.radio("選擇區域", ["東區（A7～F'16、滯洪池A、油槽）", "西區（A1～E3、滯洪池BC）"],
+                        horizontal=True, key="pick_part", label_visibility="collapsed")
+        sub = east if part.startswith("東") else west
+        h = 380 if part.startswith("東") else 460
+        zone_map_picker(sub, "pick_zones", get_stage_index(global_stage_choice), excavated,
+                        chart_key="pick_map_east" if part.startswith("東") else "pick_map_west",
+                        height=h, marker_size=26)
     codes = df_results["分區代號"].tolist() if not df_results.empty else []
     zones = st.multiselect("已選分區（也可以直接在這裡增減）", ["開挖前土方"] + codes, key="pick_zones")
 
