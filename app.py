@@ -50,8 +50,27 @@ TAB_RENDERERS = {
     "🎫 聯單庫存管理": tab_manifest.render,
     "✍️ 現場廠商簽收": tab_delivery.render,
 }
+# 目前分頁記在網址上（?tab=stats）：重新整理/重新連線時才會停在同一個分頁，
+# 不會出現「上方選項顯示出土儀表板、內容卻是 3D」的情況；也可以直接用網址開指定分頁。
+TAB_KEYS = {
+    "🏗️ 3D 工地管理中心": "twin", "🗺️ 圖資與方量基準": "grid", "📊 出土統計儀表板": "stats",
+    "📈 階段開挖管控": "stage", "📋 週會簡報": "weekly", "🔬 聯單進階分析": "analytics",
+    "🧾 官方聯單對帳": "sync", "🎫 聯單庫存管理": "manifest", "✍️ 現場廠商簽收": "delivery",
+}
+_KEY_TO_TAB = {v: k for k, v in TAB_KEYS.items()}
+if st.session_state.get("active_tab") not in TAB_RENDERERS:
+    st.session_state["active_tab"] = _KEY_TO_TAB.get(st.query_params.get("tab"), list(TAB_RENDERERS)[0])
+
+
+def _on_tab_change():
+    st.query_params["tab"] = TAB_KEYS[st.session_state["active_tab"]]
+
+
 active_tab = st.radio(
     "目前分頁", list(TAB_RENDERERS), horizontal=True, key="active_tab", label_visibility="collapsed",
+    on_change=_on_tab_change,
 )
+if st.query_params.get("tab") != TAB_KEYS[active_tab]:
+    st.query_params["tab"] = TAB_KEYS[active_tab]
 st.divider()
 TAB_RENDERERS[active_tab](df_results, global_stage_choice)
