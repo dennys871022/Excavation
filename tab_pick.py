@@ -38,6 +38,9 @@ def render(df_results, global_stage_choice):
         st.error("⛔ 這個連結無效或已過期（連結只在當天有效），請用 Discord 傳來的今天的連結開啟。")
         return
     st.session_state["demo_mode"] = False   # 有正確通關碼才能寫入
+    # 每次自動執行都有自己的編號（r）：電腦只接受「這一次」連結送出的答案，同一天重跑不會誤用舊的回覆
+    run = "".join(ch for ch in str(st.query_params.get("r", "")) if ch.isalnum())[:12]
+    tag = f"{day_s}#{run}" if run else day_s
 
     st.markdown(f"### 📍 {day:%m/%d} 今日出土分區")
     st.caption(f"目前作業階段：{global_stage_choice}　｜　點一下分區＝選取，再點一下＝取消，選好按最下面「送出」。"
@@ -73,9 +76,9 @@ def render(df_results, global_stage_choice):
     c1, c2 = st.columns(2)
     with c1:
         if st.button("✅ 送出", type="primary", use_container_width=True, disabled=not zones):
-            if save_global_pref(PREF_FIELD, f"{day_s}|{' '.join(zones)}"):
+            if save_global_pref(PREF_FIELD, f"{tag}|{' '.join(zones)}"):
                 st.success(f"已送出：{'、'.join(zones)}。電腦會接著自動指派分區並產出報表，可以關掉這個頁面了。")
     with c2:
         if st.button("今天不指派分區", use_container_width=True):
-            if save_global_pref(PREF_FIELD, f"{day_s}|跳過"):
+            if save_global_pref(PREF_FIELD, f"{tag}|跳過"):
                 st.success("已送出：今天不指派分區，報表照樣產出。")
