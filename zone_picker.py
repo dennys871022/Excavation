@@ -26,7 +26,7 @@ def _status(code, df_results, stage_idx, excavated_dict):
     return COLOR_OPEN, f"本階段剩餘 {cap:,.0f} m³"
 
 
-def zone_map_picker(df_results, target_key, stage_idx=None, excavated_dict=None, chart_key=None, height=420):
+def zone_map_picker(df_results, target_key, stage_idx=None, excavated_dict=None, chart_key=None, height=420, marker_size=24):
     """畫出可點選的分區地圖，並把選取結果寫入 st.session_state[target_key]（需在對應 multiselect 之前呼叫）。"""
     if df_results is None or df_results.empty:
         return
@@ -53,8 +53,8 @@ def zone_map_picker(df_results, target_key, stage_idx=None, excavated_dict=None,
     fig.add_trace(go.Scatter(
         x=df_results["x_center"], y=df_results["y_center"], mode="markers+text",
         text=codes, textposition="middle center", textfont=dict(size=9, color="black"),
-        marker=dict(size=24, color=[s[0] for s in stat], opacity=0.55, line=dict(width=1, color="white")),
-        selected=dict(marker=dict(color=COLOR_PICK, opacity=1.0, size=26)),
+        marker=dict(size=marker_size, color=[s[0] for s in stat], opacity=0.55, line=dict(width=1, color="white")),
+        selected=dict(marker=dict(color=COLOR_PICK, opacity=1.0, size=marker_size + 2)),
         unselected=dict(marker=dict(opacity=0.45)),
         selectedpoints=[codes.index(c) for c in current] if current else None,
         hovertext=[f"{c}<br>{s[1]}" for c, s in zip(codes, stat)], hoverinfo="text", showlegend=False,
