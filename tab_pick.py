@@ -73,10 +73,12 @@ def render(df_results, global_stage_choice):
         already = today[today["_v"]]
         for _, t in today[~today["_v"]].iterrows():
             show = t["_s"].zfill(8) if t["_s"].isdigit() else t["_s"]   # 跟官網一樣顯示 8 位數
-            tickets[t["_s"]] = f"{show}｜{str(t['時間'])[:5]}｜{t['車頭車號']}"
+            soil = t.get("土質", "")
+            soil = (str(soil).strip() if pd.notna(soil) else "") or "－"
+            tickets[t["_s"]] = f"{show}｜{soil}｜{str(t['時間'])[:5]}｜{t['車頭車號']}"
         if len(already):
             st.caption("已作廢：" + "、".join(f"{x}（{y}）" for x, y in zip(already["_s"], already.get("作廢原因", ""))))
-    void_sel = st.multiselect("要作廢的聯單（序號｜出場時間｜車號）", list(tickets), format_func=lambda k: tickets[k],
+    void_sel = st.multiselect("要作廢的聯單（序號｜土質｜出場時間｜車號）", list(tickets), format_func=lambda k: tickets[k],
                               key="pick_voids", placeholder="沒有作廢就不用選")
     voids, missing_reason = [], False
     for sn in void_sel:
