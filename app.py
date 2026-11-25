@@ -50,6 +50,12 @@ TAB_RENDERERS = {
     "🎫 聯單庫存管理": tab_manifest.render,
     "✍️ 現場廠商簽收": tab_delivery.render,
 }
+# 手機選今日出土分區的小頁面（?tab=pick&k=通關碼），只顯示這一頁
+if st.query_params.get("tab") == "pick":
+    import tab_pick
+    tab_pick.render(df_results, global_stage_choice)
+    st.stop()
+
 # 目前分頁記在網址上（?tab=stats）：重新整理/重新連線時才會停在同一個分頁，
 # 不會出現「上方選項顯示出土儀表板、內容卻是 3D」的情況；也可以直接用網址開指定分頁。
 TAB_KEYS = {
