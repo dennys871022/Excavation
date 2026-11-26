@@ -49,15 +49,16 @@ def render(df_results, global_stage_choice):
 
     raw = load_sheet_data("dispatch_logs")
     logs = filter_active_dispatch_logs(raw)
-    excavated, n_today = {}, 0
+    excavated, n_today, n_unassigned = {}, 0, 0
     if logs is not None and not logs.empty and "出土分區" in logs.columns:
         dd = pd.to_datetime(logs["日期"], errors="coerce").dt.date
         dest = logs.get("運送目的地", pd.Series("台北港", index=logs.index)).fillna("台北港").astype(str)
         n_today = int(((dd == day) & (dest != "FDA")).sum())
+        n_unassigned = int(((dd == day) & (dest != "FDA") & (logs["出土分區"].astype(str).str.strip() == "未指定")).sum())
         a = logs[logs["出土分區"].astype(str) != "未指定"].copy()
         a["載運方量(m³)"] = pd.to_numeric(a["載運方量(m³)"], errors="coerce")
         excavated = (a.groupby("出土分區")["載運方量(m³)"].sum() / LOOSE_SOIL_FACTOR).to_dict()
-    st.info(f"🚚 {day:%m/%d} 目前系統裡台北港車次：{n_today} 車")
+    st.info(f"🚚 {day:%m/%d} 目前系統裡台北港車次：{n_today} 車，其中**還沒分配分區 {n_unassigned} 車**")
 
     # ── ① 今日有無作廢聯單 ──
     st.markdown("#### 🚫 ① 今天有沒有要作廢的聯單？")
